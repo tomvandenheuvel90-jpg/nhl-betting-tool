@@ -1,0 +1,236 @@
+
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Bet Analyzer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; }
+
+  .header { background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 20px; text-align: center; border-bottom: 1px solid #2a2a4a; }
+  .header h1 { font-size: 22px; color: #fff; }
+  .header p { font-size: 13px; color: #888; margin-top: 4px; }
+
+  .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+
+  .upload-area { border: 2px dashed #3a3a6a; border-radius: 16px; padding: 30px 20px; text-align: center; margin-bottom: 16px; cursor: pointer; transition: border-color 0.2s; background: #1a1a2e; }
+  .upload-area:active { border-color: #6c63ff; }
+  .upload-area .icon { font-size: 40px; margin-bottom: 10px; }
+  .upload-area p { color: #aaa; font-size: 14px; }
+  .upload-area .hint { font-size: 12px; color: #666; margin-top: 6px; }
+  #fileInput { display: none; }
+  #preview { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  #preview img { height: 80px; border-radius: 8px; border: 2px solid #3a3a6a; }
+
+  .btn { width: 100%; padding: 16px; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; background: linear-gradient(135deg, #6c63ff, #4facfe); color: #fff; transition: opacity 0.2s; }
+  .btn:active { opacity: 0.85; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .loading { text-align: center; padding: 40px 20px; display: none; }
+  .spinner { width: 40px; height: 40px; border: 3px solid #3a3a6a; border-top-color: #6c63ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading p { color: #aaa; font-size: 14px; }
+
+  .results { margin-top: 24px; }
+  .bet-card { background: #1a1a2e; border-radius: 14px; margin-bottom: 14px; overflow: hidden; border: 1px solid #2a2a4a; }
+  .bet-header { padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a2a4a; }
+  .bet-rank { font-size: 13px; color: #888; }
+  .bet-rating { font-size: 14px; font-weight: 700; }
+  .rating-strong { color: #4ade80; }
+  .rating-matig { color: #facc15; }
+  .rating-vermijd { color: #f87171; }
+  .bet-body { padding: 14px 16px; }
+  .bet-player { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 2px; }
+  .bet-type { font-size: 13px; color: #aaa; margin-bottom: 12px; }
+  .bet-ev { font-size: 22px; font-weight: 800; margin-bottom: 12px; }
+  .ev-positive { color: #4ade80; }
+  .ev-low { color: #facc15; }
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+  .stat-item { background: #0f0f1a; border-radius: 8px; padding: 8px 10px; }
+  .stat-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-size: 14px; font-weight: 600; color: #e0e0e0; margin-top: 2px; }
+  .progress-bar { height: 6px; background: #2a2a4a; border-radius: 3px; margin-top: 10px; }
+  .progress-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, #6c63ff, #4facfe); }
+  .opp-info { font-size: 12px; color: #888; margin-top: 8px; padding-top: 8px; border-top: 1px solid #2a2a4a; }
+
+  .top3 { background: linear-gradient(135deg, #1a1a2e, #16213e); border-radius: 14px; padding: 16px; margin-bottom: 20px; border: 1px solid #3a3a6a; }
+  .top3 h2 { font-size: 16px; color: #fff; margin-bottom: 12px; }
+  .top3-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #2a2a4a; }
+  .top3-item:last-child { border-bottom: none; }
+  .top3-num { width: 24px; height: 24px; border-radius: 50%; background: #6c63ff; color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .top3-text { flex: 1; }
+  .top3-name { font-size: 14px; font-weight: 600; color: #fff; }
+  .top3-sub { font-size: 12px; color: #888; }
+  .top3-ev { font-size: 14px; font-weight: 700; color: #4ade80; }
+
+  .disclaimer { font-size: 11px; color: #555; text-align: center; padding: 16px; line-height: 1.5; }
+  .error { background: #2a1a1a; border: 1px solid #f87171; border-radius: 12px; padding: 16px; color: #f87171; font-size: 14px; margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🎯 Bet Analyzer</h1>
+  <p>Linemate + seizoensstats + tegenstander</p>
+</div>
+
+<div class="container">
+  <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+    <div class="icon">📱</div>
+    <p>Tik om screenshots te selecteren</p>
+    <p class="hint">Je kunt meerdere Linemate-schermen tegelijk uploaden</p>
+  </div>
+  <input type="file" id="fileInput" accept="image/*" multiple onchange="handleFiles(this)">
+  <div id="preview"></div>
+  <button class="btn" id="analyzeBtn" onclick="analyze()" disabled>Analyseer</button>
+
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <p id="loadingText">Screenshots analyseren...</p>
+  </div>
+
+  <div id="results"></div>
+</div>
+
+<script>
+let selectedFiles = [];
+
+function handleFiles(input) {
+  selectedFiles = Array.from(input.files);
+  const preview = document.getElementById('preview');
+  preview.innerHTML = '';
+  selectedFiles.forEach(file => {
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(file);
+    preview.appendChild(img);
+  });
+  document.getElementById('analyzeBtn').disabled = selectedFiles.length === 0;
+}
+
+async function analyze() {
+  if (selectedFiles.length === 0) return;
+
+  document.getElementById('analyzeBtn').disabled = true;
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('results').innerHTML = '';
+
+  const steps = [
+    'Screenshots analyseren...',
+    'Spelers opzoeken in NHL API...',
+    'Seizoensstats ophalen...',
+    'Tegenstanders bepalen...',
+    'Score berekenen...'
+  ];
+  let step = 0;
+  const interval = setInterval(() => {
+    if (step < steps.length - 1) step++;
+    document.getElementById('loadingText').textContent = steps[step];
+  }, 3000);
+
+  const formData = new FormData();
+  selectedFiles.forEach(f => formData.append('images', f));
+
+  try {
+    const resp = await fetch('/analyze', { method: 'POST', body: formData });
+    const data = await resp.json();
+    clearInterval(interval);
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('analyzeBtn').disabled = false;
+    if (data.error) {
+      document.getElementById('results').innerHTML = `<div class="error">❌ ${data.error}</div>`;
+    } else {
+      renderResults(data);
+    }
+  } catch(e) {
+    clearInterval(interval);
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('analyzeBtn').disabled = false;
+    document.getElementById('results').innerHTML = `<div class="error">❌ Verbindingsfout: ${e.message}</div>`;
+  }
+}
+
+function ratingClass(r) {
+  if (r.includes('Sterk')) return 'rating-strong';
+  if (r.includes('Matig')) return 'rating-matig';
+  return 'rating-vermijd';
+}
+
+function evClass(ev) {
+  return ev >= 0.3 ? 'ev-positive' : 'ev-low';
+}
+
+function renderResults(data) {
+  const bets = data.bets;
+  const top3 = data.top3;
+  let html = '';
+
+  // Top 3
+  if (top3.length > 0) {
+    html += '<div class="top3"><h2>🏆 Top aanbevelingen</h2>';
+    top3.forEach((b, i) => {
+      html += `<div class="top3-item">
+        <div class="top3-num">${i+1}</div>
+        <div class="top3-text">
+          <div class="top3-name">${b.player}</div>
+          <div class="top3-sub">${b.bet_type} @ ${b.odds}</div>
+        </div>
+        <div class="top3-ev">EV ${b.ev >= 0 ? '+' : ''}${b.ev.toFixed(2)}</div>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Alle bets
+  html += '<div class="results">';
+  bets.forEach((bet, i) => {
+    const composite = (bet.composite * 100).toFixed(0);
+    html += `
+    <div class="bet-card">
+      <div class="bet-header">
+        <span class="bet-rank">#${i+1} van ${bets.length}</span>
+        <span class="bet-rating ${ratingClass(bet.rating)}">${bet.rating}</span>
+      </div>
+      <div class="bet-body">
+        <div class="bet-player">${bet.player}</div>
+        <div class="bet-type">${bet.bet_type} · ${bet.sport}</div>
+        <div class="bet-ev ${evClass(bet.ev)}">EV ${bet.ev >= 0 ? '+' : ''}${bet.ev.toFixed(3)}</div>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <div class="stat-label">Linemate HR</div>
+            <div class="stat-value">${(bet.linemate_hr * 100).toFixed(1)}%</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Seizoens HR</div>
+            <div class="stat-value">${(bet.season_hr * 100).toFixed(1)}%</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Odds</div>
+            <div class="stat-value">${bet.odds}</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">Sample</div>
+            <div class="stat-value">${bet.sample}</div>
+          </div>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: ${composite}%"></div>
+        </div>
+        <div class="opp-info">
+          Composite: ${composite}%
+          ${bet.opponent ? ` · Speelt vs ${bet.opponent}` : ''}
+          ${bet.gaa ? ` · GAA ${bet.gaa}` : ''}
+          ${bet.avg_shots ? ` · Gem. ${bet.avg_shots} shots/game` : ''}
+        </div>
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+  html += '<div class="disclaimer">⚠️ Past performance biedt geen garantie voor toekomstige resultaten. Gok verantwoord.</div>';
+
+  document.getElementById('results').innerHTML = html;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Bet Analyzer — dependencies
+# Installeer alles: pip3 install -r requirements.txt
+
+# Web frameworks
+flask>=2.3
+streamlit>=1.35
+
+# Data
+pandas>=2.0
+requests>=2.31
+
+# Claude API (voor analyze_bets / app.py)
+anthropic>=0.25

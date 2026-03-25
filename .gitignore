@@ -1,0 +1,31 @@
+# Data directories (grote bestanden, niet in repo)
+moneypuck_data/
+nba_data/
+mlb_data/
+football_data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment & secrets
+.env
+api_keys.txt
+.stats_cache.json
+
+# macOS
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# Cache bestanden
+.bet_cache.json
+
+# Tijdelijke bestanden
+*.tmp
+*.log
+~$*
