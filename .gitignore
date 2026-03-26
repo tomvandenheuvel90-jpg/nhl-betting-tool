@@ -1,5 +1,6 @@
 # Data directories (grote bestanden, niet in repo)
-moneypuck_data/
+moneypuck_data/raw/
+moneypuck_data/filtered/raw/
 nba_data/
 mlb_data/
 football_data/

@@ -113,8 +113,14 @@ def main():
     parser.add_argument("--credentials", default="gdrive_credentials.json",
                         help="Pad naar service account JSON key")
     parser.add_argument("--folder-id", required=True,
-                        help="Google Drive map-ID (uit de URL van je gedeelde map)")
+                        help="Google Drive map-ID of volledige URL van de gedeelde map")
     args = parser.parse_args()
+
+    # Accepteer zowel volledige URL als alleen het ID
+    folder_id = args.folder_id.strip()
+    if "folders/" in folder_id:
+        folder_id = folder_id.split("folders/")[-1].split("?")[0].split("&")[0]
+        print(f"ℹ️  Map-ID uit URL gehaald: {folder_id}")
 
     creds_path = Path(args.credentials)
     if not creds_path.exists():
@@ -135,7 +141,7 @@ def main():
     print(f"✅ Ingelogd als: {about.get('user', {}).get('emailAddress', 'onbekend')}")
 
     print("\n📁 Mappenstructuur aanmaken...")
-    folder_ids = _build_folder_tree(service, args.folder_id)
+    folder_ids = _build_folder_tree(service, folder_id)
     print(f"✅ {len(folder_ids)} mappen klaar")
 
     print("\n⬆ Bestanden uploaden...")
