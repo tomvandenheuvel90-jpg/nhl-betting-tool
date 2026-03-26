@@ -13,7 +13,6 @@ import datetime
 from pathlib import Path
 
 # ─── Secrets injecteren vóór import van sports modules ────────────────────────
-# soccer.py leest FOOTBALL_DATA_API_KEY bij module-import; zet env var vroegtijdig
 try:
     os.environ.setdefault(
         "FOOTBALL_DATA_API_KEY",
@@ -29,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from sports import nhl, nba, mlb, soccer
 from scorer import composite_score, ev, rating
 
-# Patch soccer API key (voor het geval de env var na module-import is gewijzigd)
 try:
     soccer.API_KEY = st.secrets.get("FOOTBALL_DATA_TOKEN", "")
 except Exception:
@@ -43,7 +41,9 @@ except ImportError:
 
 # ─── Constanten ───────────────────────────────────────────────────────────────
 
-SOCCER_COMPS = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1", "LIGUE1", "VOETBAL", "SOCCER"}
+SOCCER_COMPS   = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1", "LIGUE1", "VOETBAL", "SOCCER"}
+HISTORY_FILE   = Path(__file__).parent / "analyse_geschiedenis.json"
+HISTORY_DAYS   = 7
 
 EXTRACT_PROMPT = """
 Je ziet één of meerdere screenshots van Linemate en/of Flashscore.
@@ -117,12 +117,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Donker mobiel-vriendelijk thema via CSS
 st.markdown("""
 <style>
   .block-container { max-width: 720px; padding-top: 1.5rem; }
   div[data-testid="stFileUploaderDropzone"] { background: #1a1a2e; border: 2px dashed #3a3a6a; }
-  .bet-card { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 16px; margin-bottom: 14px; }
   .rating-strong { color: #4ade80; font-weight: 700; }
   .rating-matig  { color: #facc15; font-weight: 700; }
   .rating-vermijd { color: #f87171; font-weight: 700; }
@@ -137,7 +135,6 @@ st.markdown("""
 def _check_password() -> bool:
     if st.session_state.get("authenticated"):
         return True
-
     st.markdown("## 🎯 Bet Analyzer")
     pwd = st.text_input("Wachtwoord", type="password", key="pwd_input")
     if st.button("Inloggen", use_container_width=True):
@@ -157,11 +154,52 @@ if not _check_password():
     st.stop()
 
 
-# ─── Daycache (sessie-level, wordt per deploy niet bewaard) ───────────────────
+# ─── Geschiedenis helpers ─────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _player_cache_today():
-    return {}
+def load_history() -> list:
+    """Laad analysegeschiedenis, filter op laatste 7 dagen."""
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        entries = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        cutoff = (datetime.date.today() - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
+        return [e for e in entries if e.get("datum", "") >= cutoff]
+    except Exception:
+        return []
+
+
+def save_to_history(enriched: list):
+    """Sla top 5 bets op in analysegeschiedenis."""
+    now  = datetime.datetime.now()
+    top5 = enriched[:5]
+
+    entry = {
+        "datum": now.strftime("%Y-%m-%d"),
+        "tijd":  now.strftime("%H:%M"),
+        "top5": [
+            {
+                "rank":     i + 1,
+                "speler":   b["player"],
+                "bet":      b["bet_type"],
+                "odds":     str(b["odds"]),
+                "ev_score": f"{b['ev']:+.3f}",
+                "rating":   b["rating"],
+            }
+            for i, b in enumerate(top5)
+        ],
+    }
+
+    entries = load_history()
+    entries.insert(0, entry)
+
+    # Bewaar alleen laatste 7 dagen
+    cutoff = (datetime.date.today() - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
+    entries = [e for e in entries if e.get("datum", "") >= cutoff]
+
+    try:
+        HISTORY_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass  # Op read-only filesystems: stil falen
 
 
 # ─── Extractie via Claude Haiku ───────────────────────────────────────────────
@@ -257,19 +295,16 @@ def enrich_bet(bet: dict, cache: dict) -> dict:
                     opponent_name = nhl.get_opponent(team) if team else None
                     if opponent_name:
                         opponent_stats = nhl.get_team_defense(opponent_name)
-
             elif sport == "NBA":
                 player = nba.find_player(player_name)
                 if player:
                     player_stats = nba.get_player_stats(player["id"])
-
             elif sport == "MLB":
                 player = mlb.find_player(player_name)
                 if player:
                     pos_code = player.get("primaryPosition", {}).get("code", "")
                     pos_type = "pitching" if pos_code == "1" else "hitting"
                     player_stats = mlb.get_player_stats(player.get("id"), position_type=pos_type)
-
             elif sport in SOCCER_COMPS:
                 comp = sport if sport != "VOETBAL" else "EPL"
                 player = soccer.find_player(player_name, team_hint=team_hint, competition=comp)
@@ -343,10 +378,10 @@ def render_top3(top3: list):
 
 
 def render_bet_card(bet: dict, rank: int, total: int):
-    sport_icon = SPORT_ICONS.get(bet["sport"].upper(), "⚽")
-    ev_str     = f"+{bet['ev']:.3f}" if bet["ev"] >= 0 else f"{bet['ev']:.3f}"
+    sport_icon    = SPORT_ICONS.get(bet["sport"].upper(), "⚽")
+    ev_str        = f"+{bet['ev']:.3f}" if bet["ev"] >= 0 else f"{bet['ev']:.3f}"
     composite_pct = int(bet["composite"] * 100)
-    rat_color  = _rating_color(bet["rating"])
+    rat_color     = _rating_color(bet["rating"])
 
     with st.container():
         st.markdown(
@@ -354,8 +389,6 @@ def render_bet_card(bet: dict, rank: int, total: int):
             f"border-radius:12px;padding:16px;margin-bottom:12px;'>",
             unsafe_allow_html=True,
         )
-
-        # Header row
         col_l, col_r = st.columns([3, 1])
         with col_l:
             st.markdown(f"**{sport_icon} #{rank} van {total}**")
@@ -364,29 +397,22 @@ def render_bet_card(bet: dict, rank: int, total: int):
                 f"<span style='color:{rat_color};font-weight:700;'>{bet['rating']}</span>",
                 unsafe_allow_html=True,
             )
-
-        # Speler + bet type
         st.markdown(f"#### {bet['player']}")
         st.caption(f"{bet['bet_type']} · {bet['sport']}")
 
-        # EV groot
         ev_color = "#4ade80" if bet["ev"] >= 0.05 else "#facc15"
         st.markdown(
             f"<span style='color:{ev_color};font-size:1.4rem;font-weight:800;'>EV {ev_str}</span>",
             unsafe_allow_html=True,
         )
-
-        # Stats raster
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Linemate HR", f"{bet['linemate_hr']*100:.1f}%")
         c2.metric("Seizoens HR", f"{bet['season_hr']*100:.1f}%")
         c3.metric("Odds", f"{bet['odds']}")
         c4.metric("Sample", bet["sample"])
 
-        # Composite progress
         st.progress(bet["composite"], text=f"Composite: {composite_pct}%")
 
-        # Extra info
         info_parts = []
         if bet.get("opponent"):
             info_parts.append(f"vs {bet['opponent']}")
@@ -405,27 +431,25 @@ def render_bet_card(bet: dict, rank: int, total: int):
 st.markdown("## 🎯 Bet Analyzer")
 st.caption("Linemate + Flashscore · NHL · NBA · MLB · Voetbal")
 
-# API key ophalen
+# API key
 try:
     api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
 except Exception:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
 if not api_key:
-    st.error("❌ Geen `ANTHROPIC_API_KEY` gevonden in st.secrets. Voeg deze toe in de Streamlit Cloud instellingen.")
+    st.error("❌ Geen `ANTHROPIC_API_KEY` gevonden in st.secrets.")
     st.stop()
 
 if not ANTHROPIC_AVAILABLE:
-    st.error("❌ `anthropic` pakket niet geïnstalleerd. Voeg `anthropic` toe aan requirements.txt.")
+    st.error("❌ `anthropic` pakket niet geïnstalleerd.")
     st.stop()
 
-# Moneypuck: GDrive credentials injecteren en data status tonen
+# Moneypuck GDrive credentials
 try:
     from sports.moneypuck_local import set_gdrive_credentials, RAW_DIR, FILTERED_DIR
     from pathlib import Path as _Path
-    import json as _json
 
-    # Probeer GDrive credentials te laden
     _gdrive_ok = False
     try:
         _gdrive_dict = dict(st.secrets.get("gcp_service_account", {}))
@@ -435,105 +459,150 @@ try:
     except Exception:
         pass
 
-    # Data status melding
-    _local_ok = RAW_DIR.exists() or FILTERED_DIR.exists()
+    _local_ok    = RAW_DIR.exists() or FILTERED_DIR.exists()
     _file_ids_ok = _Path(__file__).parent.joinpath("gdrive_file_ids.json").exists()
 
     if not _local_ok:
         if _gdrive_ok and _file_ids_ok:
-            st.success("☁️ **Cloud modus** — MoneyPuck data wordt geladen vanuit Google Drive.")
-        elif _gdrive_ok and not _file_ids_ok:
-            st.warning("⚠️ `gdrive_file_ids.json` ontbreekt — voer eerst `upload_to_gdrive.py` uit.")
-        else:
-            st.info(
-                "ℹ️ **Cloud versie** — Historische MoneyPuck data niet beschikbaar. "
-                "NHL scoring gebruikt alleen live seizoensdata."
-            )
+            st.success("☁️ **Cloud modus** — MoneyPuck data via Google Drive.")
+        elif not _gdrive_ok:
+            st.info("ℹ️ **Cloud versie** — Historische MoneyPuck data niet beschikbaar.")
 except Exception:
     pass
 
-# Uploader
-uploaded_files = st.file_uploader(
-    "Upload Linemate en/of Flashscore screenshots",
-    type=["png", "jpg", "jpeg", "webp"],
-    accept_multiple_files=True,
-    help="Je kunt meerdere screenshots tegelijk uploaden",
-)
+# ─── Session state initialiseren ──────────────────────────────────────────────
 
-if uploaded_files:
-    cols = st.columns(min(len(uploaded_files), 4))
-    for i, f in enumerate(uploaded_files):
-        cols[i % 4].image(f, use_container_width=True)
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
 
-analyze_btn = st.button(
-    "🔍 Analyseer",
-    use_container_width=True,
-    disabled=not uploaded_files,
-    type="primary",
-)
+if "last_analysis" not in st.session_state:
+    st.session_state.last_analysis = None
 
-if analyze_btn and uploaded_files:
-    tmp_paths = []
-    try:
-        # Sla uploads op als tijdelijke bestanden
-        for f in uploaded_files:
-            suffix = Path(f.name).suffix or ".png"
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            tmp.write(f.read())
-            tmp.flush()
-            tmp_paths.append(tmp.name)
+# ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-        client = anthropic.Anthropic(api_key=api_key)
+tab_analyse, tab_history = st.tabs(["🔍 Analyse", "📋 Geschiedenis"])
 
-        with st.status("⏳ Analyseren...", expanded=True) as status:
-            # Stap 1: extraheer bets + matches
-            st.write("📸 Screenshots herkennen...")
-            bets, matches = extract_bets(client, tmp_paths)
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — ANALYSE
+# ══════════════════════════════════════════════════════════════════════════════
 
-            if not bets and not matches:
-                st.error("Geen bets of wedstrijden gevonden in de afbeeldingen.")
-                st.stop()
+with tab_analyse:
 
-            st.write(f"✅ Gevonden: {len(bets)} props, {len(matches)} wedstrijden")
+    # Melding na vorige analyse
+    if st.session_state.get("just_analyzed"):
+        st.success("✅ Analyse klaar — bestanden gewist. Upload nieuwe screenshots voor een nieuwe analyse.")
+        st.session_state.just_analyzed = False
 
-            # Stap 2: verrijk props
-            if bets:
-                st.write("🔎 Spelersdata ophalen...")
-                cache: dict = {}
-                enriched = []
-                prog = st.progress(0)
-                for i, bet in enumerate(bets):
-                    enriched.append(enrich_bet(bet, cache))
-                    prog.progress((i + 1) / len(bets))
-                enriched.sort(key=lambda x: x["ev"], reverse=True)
-                st.write(f"✅ {len(enriched)} props gescoord")
-            else:
-                enriched = []
+    # Uploader — key incrementeert na elke analyse om hem te resetten
+    uploaded_files = st.file_uploader(
+        "Upload Linemate en/of Flashscore screenshots",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        help="Je kunt meerdere screenshots tegelijk uploaden",
+        key=f"uploader_{st.session_state.uploader_key}",
+    )
 
-            # Stap 3: Flashscore analyse
-            flashscore_text = ""
-            if matches:
-                st.write("📺 Flashscore analyseren via Claude...")
-                flashscore_text = analyze_flashscore(client, matches, enriched)
-                st.write("✅ Flashscore analyse klaar")
+    if uploaded_files:
+        cols = st.columns(min(len(uploaded_files), 4))
+        for i, f in enumerate(uploaded_files):
+            cols[i % 4].image(f, use_container_width=True)
 
-            status.update(label="✅ Analyse compleet!", state="complete")
+    analyze_btn = st.button(
+        "🔍 Analyseer",
+        use_container_width=True,
+        disabled=not uploaded_files,
+        type="primary",
+    )
 
-        # ── Resultaten weergeven ──
+    if analyze_btn and uploaded_files:
+        tmp_paths = []
+        try:
+            for f in uploaded_files:
+                suffix = Path(f.name).suffix or ".png"
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+                tmp.write(f.read())
+                tmp.flush()
+                tmp_paths.append(tmp.name)
+
+            client = anthropic.Anthropic(api_key=api_key)
+
+            with st.status("⏳ Analyseren...", expanded=True) as status:
+                st.write("📸 Screenshots herkennen...")
+                bets, matches = extract_bets(client, tmp_paths)
+
+                if not bets and not matches:
+                    st.error("Geen bets of wedstrijden gevonden in de afbeeldingen.")
+                    st.stop()
+
+                st.write(f"✅ Gevonden: {len(bets)} props, {len(matches)} wedstrijden")
+
+                if bets:
+                    st.write("🔎 Spelersdata ophalen...")
+                    cache: dict = {}
+                    enriched = []
+                    prog = st.progress(0)
+                    for i, bet in enumerate(bets):
+                        enriched.append(enrich_bet(bet, cache))
+                        prog.progress((i + 1) / len(bets))
+                    enriched.sort(key=lambda x: x["ev"], reverse=True)
+                    st.write(f"✅ {len(enriched)} props gescoord")
+                else:
+                    enriched = []
+
+                flashscore_text = ""
+                if matches:
+                    st.write("📺 Flashscore analyseren via Claude...")
+                    flashscore_text = analyze_flashscore(client, matches, enriched)
+                    st.write("✅ Flashscore analyse klaar")
+
+                status.update(label="✅ Analyse compleet!", state="complete")
+
+            # Top 3 berekenen
+            top3 = [b for b in enriched if b["rating"].startswith("✅")][:3]
+            if not top3:
+                top3 = enriched[:3]
+            top3_out = [{"player": b["player"], "bet_type": b["bet_type"],
+                         "odds": b["odds"], "ev": b["ev"]} for b in top3]
+
+            # Opslaan in geschiedenis
+            if enriched:
+                save_to_history(enriched)
+
+            # Resultaten opslaan in session state
+            st.session_state.last_analysis = {
+                "enriched":       enriched,
+                "top3":           top3_out,
+                "flashscore":     flashscore_text,
+            }
+
+            # Uploader resetten + rerun
+            st.session_state.uploader_key   += 1
+            st.session_state.just_analyzed   = True
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"❌ Fout: {e}")
+            raise
+        finally:
+            for p in tmp_paths:
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
+
+    # ── Vorige analyseresultaten tonen ──
+    if st.session_state.last_analysis:
+        res       = st.session_state.last_analysis
+        enriched  = res["enriched"]
+        top3_out  = res["top3"]
+        flashscore_text = res["flashscore"]
 
         if flashscore_text:
             render_flashscore(flashscore_text)
 
         if enriched:
             st.markdown("---")
-
-            # Top 3
-            top3 = [b for b in enriched if b["rating"].startswith("✅")][:3]
-            if not top3:
-                top3 = enriched[:3]
-            render_top3(top3)
-
-            # Alle kaarten
+            render_top3(top3_out)
             st.markdown("---")
             st.markdown("### 📊 Alle props")
             for i, bet in enumerate(enriched, 1):
@@ -541,12 +610,42 @@ if analyze_btn and uploaded_files:
 
         st.caption("⚠️ Statistische analyse ter ondersteuning. Wedden brengt financiële risico's. Speel verantwoord.")
 
-    except Exception as e:
-        st.error(f"❌ Fout: {e}")
-        raise
-    finally:
-        for p in tmp_paths:
-            try:
-                os.unlink(p)
-            except Exception:
-                pass
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — GESCHIEDENIS
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_history:
+    st.markdown("### 📋 Analysegeschiedenis (laatste 7 dagen)")
+
+    history = load_history()
+
+    if not history:
+        st.info("Nog geen analyses opgeslagen. Voer een analyse uit om de geschiedenis te vullen.")
+    else:
+        for entry in history:
+            datum = entry.get("datum", "")
+            tijd  = entry.get("tijd", "")
+            top5  = entry.get("top5", [])
+
+            with st.expander(f"📅 {datum} om {tijd}  —  {len(top5)} aanbevelingen", expanded=False):
+                if not top5:
+                    st.caption("Geen props in deze analyse.")
+                    continue
+
+                import pandas as pd
+                rows = []
+                for b in top5:
+                    rows.append({
+                        "#":       b.get("rank", ""),
+                        "Speler":  b.get("speler", ""),
+                        "Bet":     b.get("bet", ""),
+                        "Odds":    b.get("odds", ""),
+                        "EV":      b.get("ev_score", ""),
+                        "Rating":  b.get("rating", ""),
+                    })
+                st.dataframe(
+                    pd.DataFrame(rows),
+                    hide_index=True,
+                    use_container_width=True,
+                )
