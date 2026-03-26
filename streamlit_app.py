@@ -45,6 +45,33 @@ SOCCER_COMPS   = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1"
 HISTORY_FILE   = Path(__file__).parent / "analyse_geschiedenis.json"
 HISTORY_DAYS   = 7
 
+# Referentie-odds voor auto-gegenereerde props (geen Linemate)
+_REF_ODDS = {
+    "shots":       1.85,
+    "anytime":     2.50,
+    "points":      1.85,
+    "rebounds":    1.85,
+    "assists":     1.90,
+    "threes":      2.00,
+    "hits":        1.80,
+    "total_bases": 1.85,
+    "strikeouts":  1.90,
+}
+
+# Scenario labels
+SCENARIO_LABELS = {
+    1: "📊 Analyse op basis van historische data (geen Linemate)",
+    2: "📊 Analyse op basis van Linemate + historische data (gecombineerd)",
+    3: "📊 Analyse op basis van Linemate data",
+}
+
+# Scoring weights per scenario
+SCENARIO_WEIGHTS = {
+    1: (0.00, 0.70),   # (linemate_weight, season_weight)
+    2: (0.42, 0.28),   # 60% linemate-deel + 40% historisch-deel van 70%
+    3: (0.35, 0.35),   # standaard
+}
+
 EXTRACT_PROMPT = """
 Je ziet één of meerdere screenshots van Linemate en/of Flashscore.
 
@@ -267,9 +294,242 @@ def analyze_flashscore(client, matches: list, enriched_bets: list) -> str:
     return response.content[0].text
 
 
+# ─── Scenario detectie ────────────────────────────────────────────────────────
+
+def detect_scenario(bets: list, matches: list) -> int:
+    """
+    1 = Alleen Flashscore  → auto-props van schema
+    2 = Flashscore + Linemate → gecombineerde scoring
+    3 = Alleen Linemate (of niets)
+    """
+    if matches and not bets:
+        return 1
+    if matches and bets:
+        return 2
+    return 3
+
+
+# ─── Sport detectie uit wedstrijden ───────────────────────────────────────────
+
+def _detect_sports_from_matches(matches: list) -> set:
+    """Detecteer welke sporten aanwezig zijn op basis van competitienaam."""
+    sports = set()
+    for m in matches:
+        comp = (m.get("competition") or "").lower()
+        if not comp:
+            continue
+        if any(k in comp for k in ("nhl", "hockey")):
+            sports.add("NHL")
+        elif any(k in comp for k in ("nba", "basketball")):
+            sports.add("NBA")
+        elif any(k in comp for k in ("mlb", "baseball")):
+            sports.add("MLB")
+        elif any(k in comp for k in (
+            "premier", "la liga", "bundesliga", "serie a", "ligue", "epl"
+        )):
+            sports.add("SOCCER")
+    # Als geen sport herkend → probeer NHL + NBA + MLB (meest voorkomend)
+    if not sports:
+        sports = {"NHL", "NBA", "MLB"}
+    return sports
+
+
+# ─── Auto-props genereren (Scenario 1) ────────────────────────────────────────
+
+def _nhl_auto_props(progress_cb=None) -> list:
+    """NHL props voor alle spelers die vandaag spelen."""
+    try:
+        today_teams = nhl.get_today_teams()
+    except Exception:
+        return []
+    if not today_teams:
+        return []
+
+    props = []
+    for team_abbrev in today_teams:
+        try:
+            players = nhl.get_team_players(team_abbrev, n=7)
+        except Exception:
+            continue
+        for p in players:
+            if progress_cb:
+                progress_cb(f"NHL — {p['name']} ({team_abbrev})")
+            try:
+                stats = nhl.get_player_stats(p["id"])
+            except Exception:
+                continue
+
+            avg_shots = stats.get("avg_shots") or stats.get("hist_shots_avg", 0)
+            avg_goals = stats.get("avg_goals") or stats.get("hist_goals_avg", 0)
+            games_n   = stats.get("games_sampled", 0)
+
+            # Kies schot-lijn vlak onder het gemiddelde
+            for line in (4.5, 3.5, 2.5, 1.5):
+                if avg_shots > line:
+                    props.append({
+                        "player":        p["name"],
+                        "sport":         "NHL",
+                        "team":          team_abbrev,
+                        "bet_type":      f"Over {line} Shots on Goal",
+                        "linemate_odds": _REF_ODDS["shots"],
+                        "hit_rate":      0.0,
+                        "sample":        "auto",
+                        "sample_n":      games_n,
+                    })
+                    break  # één shot-prop per speler
+
+            if avg_goals >= 0.18:
+                props.append({
+                    "player":        p["name"],
+                    "sport":         "NHL",
+                    "team":          team_abbrev,
+                    "bet_type":      "Anytime Goal Scorer",
+                    "linemate_odds": _REF_ODDS["anytime"],
+                    "hit_rate":      0.0,
+                    "sample":        "auto",
+                    "sample_n":      games_n,
+                })
+    return props
+
+
+def _nba_auto_props(progress_cb=None) -> list:
+    """NBA props voor spelers die vandaag spelen (max 4 wedstrijden × 3 spelers)."""
+    try:
+        today_games = nba.get_today_games()
+    except Exception:
+        return []
+    if not today_games:
+        return []
+
+    team_ids_done: set = set()
+    props: list = []
+
+    for game in today_games[:4]:
+        for tid in (game.get("home_team_id"), game.get("away_team_id")):
+            if not tid or tid in team_ids_done:
+                continue
+            team_ids_done.add(tid)
+            try:
+                players = nba.get_team_players(tid, n=3)
+            except Exception:
+                continue
+            for p in players:
+                if progress_cb:
+                    progress_cb(f"NBA — {p['name']}")
+                try:
+                    stats = nba.get_player_stats(p["id"])
+                except Exception:
+                    continue
+
+                avg_pts = stats.get("avg_points", 0)
+                avg_reb = stats.get("avg_rebounds", 0)
+                games_n = stats.get("games_sampled", 0)
+
+                if avg_pts >= 15:
+                    # lijn ≈ 80% van gemiddelde, afgerond op .5
+                    import math
+                    line = math.floor(avg_pts * 0.82) + 0.5
+                    props.append({
+                        "player": p["name"], "sport": "NBA", "team": str(tid),
+                        "bet_type": f"Over {line:.1f} Points",
+                        "linemate_odds": _REF_ODDS["points"], "hit_rate": 0.0,
+                        "sample": "auto", "sample_n": games_n,
+                    })
+                if avg_reb >= 6:
+                    line = math.floor(avg_reb * 0.80) + 0.5
+                    props.append({
+                        "player": p["name"], "sport": "NBA", "team": str(tid),
+                        "bet_type": f"Over {line:.1f} Rebounds",
+                        "linemate_odds": _REF_ODDS["rebounds"], "hit_rate": 0.0,
+                        "sample": "auto", "sample_n": games_n,
+                    })
+    return props
+
+
+def _mlb_auto_props(progress_cb=None) -> list:
+    """MLB props voor batters die vandaag spelen (max 4 wedstrijden × 4 batters)."""
+    try:
+        today_games = mlb.get_today_games()
+    except Exception:
+        return []
+    if not today_games:
+        return []
+
+    team_ids_done: set = set()
+    props: list = []
+
+    for game in today_games[:4]:
+        for tid in (game.get("home_team_id"), game.get("away_team_id")):
+            if not tid or tid in team_ids_done:
+                continue
+            team_ids_done.add(tid)
+            try:
+                players = mlb.get_team_players(tid, n=4)
+            except Exception:
+                continue
+            for p in players:
+                if progress_cb:
+                    progress_cb(f"MLB — {p['name']}")
+                try:
+                    stats = mlb.get_player_stats(p["id"])
+                except Exception:
+                    continue
+
+                avg_hits = stats.get("avg_hits", 0)
+                avg_tb   = stats.get("avg_total_bases", 0)
+                games_n  = stats.get("games_sampled", 0)
+
+                if avg_hits >= 0.75:
+                    props.append({
+                        "player": p["name"], "sport": "MLB", "team": str(tid),
+                        "bet_type": "Over 0.5 Hits",
+                        "linemate_odds": _REF_ODDS["hits"], "hit_rate": 0.0,
+                        "sample": "auto", "sample_n": games_n,
+                    })
+                if avg_tb >= 1.4:
+                    props.append({
+                        "player": p["name"], "sport": "MLB", "team": str(tid),
+                        "bet_type": "Over 1.5 Total Bases",
+                        "linemate_odds": _REF_ODDS["total_bases"], "hit_rate": 0.0,
+                        "sample": "auto", "sample_n": games_n,
+                    })
+    return props
+
+
+def generate_auto_props(matches: list, progress_cb=None) -> list:
+    """
+    Genereer automatische props voor sporten gedetecteerd uit Flashscore wedstrijden.
+    Enkel gebruikt in Scenario 1 (geen Linemate).
+    """
+    sports = _detect_sports_from_matches(matches)
+    all_props: list = []
+
+    if "NHL" in sports:
+        if progress_cb:
+            progress_cb("🏒 NHL schema + spelersstats ophalen...")
+        all_props.extend(_nhl_auto_props(progress_cb))
+
+    if "NBA" in sports:
+        if progress_cb:
+            progress_cb("🏀 NBA schema + spelersstats ophalen...")
+        all_props.extend(_nba_auto_props(progress_cb))
+
+    if "MLB" in sports:
+        if progress_cb:
+            progress_cb("⚾ MLB schema + spelersstats ophalen...")
+        all_props.extend(_mlb_auto_props(progress_cb))
+
+    if "SOCCER" in sports and progress_cb:
+        progress_cb("⚽ Voetbal: wedstrijdanalyse via Flashscore (automatische props niet beschikbaar)")
+
+    return all_props
+
+
 # ─── Bet verrijken ────────────────────────────────────────────────────────────
 
-def enrich_bet(bet: dict, cache: dict) -> dict:
+def enrich_bet(bet: dict, cache: dict,
+               linemate_weight: float = 0.35,
+               season_weight:   float = 0.35) -> dict:
     sport       = (bet.get("sport") or "").upper().strip()
     player_name = bet.get("player", "")
     team_hint   = bet.get("team") or ""
@@ -329,6 +589,8 @@ def enrich_bet(bet: dict, cache: dict) -> dict:
         player_stats=player_stats,
         opponent_stats=opponent_stats,
         sport=sport,
+        linemate_weight=linemate_weight,
+        season_weight=season_weight,
     )
     ev_score = ev(score["composite"], odds)
     rat      = rating(ev_score, score["composite"])
@@ -535,15 +797,34 @@ with tab_analyse:
                     st.error("Geen bets of wedstrijden gevonden in de afbeeldingen.")
                     st.stop()
 
+                scenario = detect_scenario(bets, matches)
                 st.write(f"✅ Gevonden: {len(bets)} props, {len(matches)} wedstrijden")
+                st.write(SCENARIO_LABELS[scenario])
+
+                lm_w, s_w = SCENARIO_WEIGHTS[scenario]
+
+                # Scenario 1: genereer auto-props uit het wedstrijdschema
+                if scenario == 1:
+                    st.write("📅 Wedstrijdschema ophalen en props genereren...")
+                    auto_bets = generate_auto_props(
+                        matches,
+                        progress_cb=lambda msg: st.write(f"  · {msg}"),
+                    )
+                    if auto_bets:
+                        bets = auto_bets
+                        st.write(f"✅ {len(auto_bets)} automatische props gegenereerd")
+                    else:
+                        st.warning("⚠️ Geen automatische props beschikbaar (schema of API niet bereikbaar)")
 
                 if bets:
-                    st.write("🔎 Spelersdata ophalen...")
+                    st.write("🔎 Spelersdata ophalen en EV berekenen...")
                     cache: dict = {}
                     enriched = []
                     prog = st.progress(0)
                     for i, bet in enumerate(bets):
-                        enriched.append(enrich_bet(bet, cache))
+                        enriched.append(enrich_bet(bet, cache,
+                                                    linemate_weight=lm_w,
+                                                    season_weight=s_w))
                         prog.progress((i + 1) / len(bets))
                     enriched.sort(key=lambda x: x["ev"], reverse=True)
                     st.write(f"✅ {len(enriched)} props gescoord")
@@ -574,6 +855,7 @@ with tab_analyse:
                 "enriched":       enriched,
                 "top3":           top3_out,
                 "flashscore":     flashscore_text,
+                "scenario":       scenario,
             }
 
             # Uploader resetten + rerun
@@ -597,6 +879,14 @@ with tab_analyse:
         enriched  = res["enriched"]
         top3_out  = res["top3"]
         flashscore_text = res["flashscore"]
+        scenario  = res.get("scenario", 3)
+
+        # Scenario label
+        st.info(SCENARIO_LABELS.get(scenario, ""))
+
+        # Tip bij Scenario 3: alleen Linemate, geen Flashscore
+        if scenario == 3:
+            st.info("⚠️ Tip: upload ook een Flashscore screenshot voor wedstrijdcontext en automatische prop-suggesties.")
 
         if flashscore_text:
             render_flashscore(flashscore_text)

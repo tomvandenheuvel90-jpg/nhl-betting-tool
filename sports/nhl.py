@@ -20,7 +20,8 @@ from cache import get as cache_get, set as cache_set
 from rate_limiter import nhl_limiter, moneypuck_limiter
 from moneypuck_local import career_averages, playoff_averages
 
-NHL_BASE       = "https://api-web.nhle.com/v1"
+NHL_BASE            = "https://api-web.nhle.com/v1"
+_TEAM_PLAYERS_CACHE: dict = {}   # team_abbrev → [{name, id, team, position}]
 MP_GAMELOG_URL = "https://moneypuck.com/moneypuck/playerData/careers/gameByGame/2024/regular/skaters.csv"
 MP_SEASON_URL  = "https://moneypuck.com/moneypuck/playerData/seasonSummary/2024/regular/skaters.csv"
 SEASON         = "20242025"
@@ -72,18 +73,22 @@ def _mp_download_csv(url: str, cache_key: str, ttl_hours: int = 6) -> list:
 
 @lru_cache(maxsize=1)
 def _all_rosters() -> dict:
-    """Bouw name→(player_id, team) index van alle NHL-teams."""
+    """Bouw name→(player_id, team) index van alle NHL-teams.
+    Vult tegelijk _TEAM_PLAYERS_CACHE (skaters per team, geen goalies)."""
+    global _TEAM_PLAYERS_CACHE
     standings = _nhl_get(f"{NHL_BASE}/standings/now").get("standings", [])
     teams = [
         t.get("teamAbbrev", {}).get("default")
         for t in standings
         if t.get("teamAbbrev")
     ]
-    index = {}
+    index: dict = {}
+    _TEAM_PLAYERS_CACHE = {}
     for team in teams:
         if not team:
             continue
         roster = _nhl_get(f"{NHL_BASE}/roster/{team}/{SEASON}")
+        _TEAM_PLAYERS_CACHE.setdefault(team, [])
         for pos in ("forwards", "defensemen", "goalies"):
             for p in roster.get(pos, []):
                 fn  = p.get("firstName", {}).get("default", "")
@@ -97,6 +102,14 @@ def _all_rosters() -> dict:
                     ln.lower(),
                 ):
                     index.setdefault(key, (pid, team))
+                # Skaters only (geen goalies) in de teamcache
+                if pos != "goalies" and fn and ln:
+                    _TEAM_PLAYERS_CACHE[team].append({
+                        "name":     f"{fn} {ln}",
+                        "id":       pid,
+                        "team":     team,
+                        "position": "forward" if pos == "forwards" else "defenseman",
+                    })
     return index
 
 
@@ -320,3 +333,22 @@ def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
     result.update(career_averages(player_id))
     result.update(playoff_averages(player_id))
     return result
+
+
+# ─── Auto-props helpers ───────────────────────────────────────────────────────
+
+def get_today_teams() -> list:
+    """Alle teamafkortingen die vandaag een NHL-wedstrijd spelen."""
+    try:
+        return list(set(_today_schedule().keys()))
+    except Exception:
+        return []
+
+
+def get_team_players(team_abbrev: str, n: int = 8) -> list:
+    """
+    Geeft lijst van {name, id, team, position} voor skaters (geen goalies) in een team.
+    Gebruikt de _TEAM_PLAYERS_CACHE die gevuld wordt door _all_rosters().
+    """
+    _all_rosters()   # zorgt dat cache gevuld is
+    return list(_TEAM_PLAYERS_CACHE.get(team_abbrev, []))[:n]

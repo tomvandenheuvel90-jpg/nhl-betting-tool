@@ -184,3 +184,55 @@ def get_player_stats(player_id: int, position_type: str = "hitting", n_games: in
 def get_team_defense(team_id: int) -> dict:
     """Beperkte teamstats — ERA is beschikbaar via standings."""
     return {}
+
+
+# ─── Auto-props helpers ───────────────────────────────────────────────────────
+
+def get_today_games() -> list:
+    """Geeft vandaag's MLB wedstrijden: [{home_team_id, away_team_id, home_team_name, away_team_name}]."""
+    today = datetime.date.today().isoformat()
+    cache_key = f"mlb_today_{today}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    data  = _get(f"{BASE}/schedule?date={today}&sportId=1&gameType=R")
+    games = []
+    for d in data.get("dates", []):
+        for g in d.get("games", []):
+            home = g.get("teams", {}).get("home", {}).get("team", {})
+            away = g.get("teams", {}).get("away", {}).get("team", {})
+            if home.get("id") and away.get("id"):
+                games.append({
+                    "home_team_id":   home["id"],
+                    "away_team_id":   away["id"],
+                    "home_team_name": home.get("name", ""),
+                    "away_team_name": away.get("name", ""),
+                })
+    cache_set(cache_key, games, ttl_hours=2)
+    return games
+
+
+def get_team_players(team_id: int, n: int = 5, position_type: str = "hitting") -> list:
+    """Haal actieve batters of pitchers op voor een MLB team."""
+    cache_key = f"mlb_roster_{team_id}_{position_type}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached[:n]
+    season = _current_season()
+    data   = _get(f"{BASE}/teams/{team_id}/roster?rosterType=active&season={season}")
+    players = []
+    for p in data.get("roster", []):
+        person   = p.get("person", {})
+        pos_code = p.get("position", {}).get("code", "")
+        pos_type = "pitching" if pos_code == "1" else "hitting"
+        if pos_type != position_type:
+            continue
+        pid = person.get("id")
+        if pid:
+            players.append({
+                "name":     person.get("fullName", ""),
+                "id":       pid,
+                "position": pos_code,
+            })
+    cache_set(cache_key, players, ttl_hours=6)
+    return players[:n]

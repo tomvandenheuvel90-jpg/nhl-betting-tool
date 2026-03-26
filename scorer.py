@@ -190,6 +190,8 @@ def composite_score(
     player_stats: dict,
     opponent_stats: dict,
     sport: str = "NHL",
+    linemate_weight: float = 0.35,
+    season_weight: float = 0.35,
 ) -> dict:
     """
     Berekent composite score voor één bet.
@@ -213,10 +215,10 @@ def composite_score(
     reliability  = _sample_reliability(sample_size)
 
     composite = (
-        0.35 * linemate_hit_rate
-        + 0.35 * season_hr
-        + 0.20 * opp_factor
-        + 0.10 * reliability
+        linemate_weight * linemate_hit_rate
+        + season_weight  * season_hr
+        + 0.20           * opp_factor
+        + 0.10           * reliability
     )
     composite = min(max(composite, 0.0), 1.0)
 

@@ -160,3 +160,76 @@ def get_player_stats(player_id: int, n_games: int = 20) -> dict:
 def get_team_defense(team_name: str) -> dict:
     """Beperkte teamstats (nba_api gratis tier heeft geen uitgebreide defensieve stats)."""
     return {"team": team_name}
+
+
+# ─── Auto-props helpers ───────────────────────────────────────────────────────
+
+def find_team(name: str):
+    """Zoek NBA team op (deel van) naam/stad/afkorting. Geeft team dict of None."""
+    if not NBA_API_AVAILABLE:
+        return None
+    try:
+        from nba_api.stats.static import teams as _nba_teams_static
+        all_teams = _nba_teams_static.get_teams()
+    except Exception:
+        return None
+    n = name.strip().lower()
+    for t in all_teams:
+        if (n in t.get("full_name", "").lower()
+                or n == t.get("nickname", "").lower()
+                or n == t.get("abbreviation", "").lower()
+                or n == t.get("city", "").lower()):
+            return t
+    return None
+
+
+def get_team_players(team_id: int, n: int = 5) -> list:
+    """Haal actieve NBA roster op voor team_id via nba_api."""
+    if not NBA_API_AVAILABLE:
+        return []
+    cache_key = f"nba_roster_{team_id}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached[:n]
+    try:
+        from nba_api.stats.endpoints import commonteamroster
+        nba_limiter.wait()
+        roster = commonteamroster.CommonTeamRoster(team_id=team_id, timeout=30)
+        df = roster.get_data_frames()[0]
+        players = [
+            {"name": row["PLAYER"], "id": int(row["PLAYER_ID"]), "team_id": team_id}
+            for _, row in df.iterrows()
+        ]
+        cache_set(cache_key, players, ttl_hours=6)
+        return players[:n]
+    except Exception as e:
+        print(f"  ⚠️  NBA roster fout (team {team_id}): {e}")
+        return []
+
+
+def get_today_games() -> list:
+    """Geeft vandaag's NBA wedstrijden: [{home_team_id, away_team_id}]."""
+    if not NBA_API_AVAILABLE:
+        return []
+    cache_key = "nba_today_games"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        from nba_api.stats.endpoints import scoreboardv2
+        nba_limiter.wait()
+        board = scoreboardv2.ScoreboardV2(timeout=30)
+        df = board.get_data_frames()[0]  # GameHeader
+        games = [
+            {
+                "home_team_id": int(row.get("HOME_TEAM_ID", 0)),
+                "away_team_id": int(row.get("VISITOR_TEAM_ID", 0)),
+            }
+            for _, row in df.iterrows()
+            if row.get("HOME_TEAM_ID") and row.get("VISITOR_TEAM_ID")
+        ]
+        cache_set(cache_key, games, ttl_hours=2)
+        return games
+    except Exception as e:
+        print(f"  ⚠️  NBA scoreboard fout: {e}")
+        return []
