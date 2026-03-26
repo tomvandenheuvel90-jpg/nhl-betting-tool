@@ -1,13 +1,18 @@
 # Bet Analyzer — dependencies
-# Installeer alles: pip3 install -r requirements.txt
+# Streamlit Cloud: dit bestand wordt automatisch gebruikt bij deploy
 
-# Web frameworks
-flask>=2.3
+# Web framework (Streamlit Cloud)
 streamlit>=1.35
+
+# Claude API
+anthropic>=0.25
+
+# NBA stats (gratis, geen key)
+nba_api>=1.4
 
 # Data
 pandas>=2.0
 requests>=2.31
 
-# Claude API (voor analyze_bets / app.py)
-anthropic>=0.25
+# Flask (alleen lokaal, niet nodig op Streamlit Cloud)
+flask>=2.3

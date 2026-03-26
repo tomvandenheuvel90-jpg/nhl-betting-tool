@@ -19,8 +19,10 @@ api_keys.txt
 # macOS
 .DS_Store
 
-# Streamlit
-.streamlit/
+# Streamlit — secrets niet in repo, maar .example wel
+.streamlit/secrets.toml
+.streamlit/*.toml
+!.streamlit/secrets.toml.example
 
 # Cache bestanden
 .bet_cache.json
