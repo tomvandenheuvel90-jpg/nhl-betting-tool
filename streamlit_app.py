@@ -222,6 +222,7 @@ def extract_bets(client, image_paths: list):
     response = client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=4096,
+        temperature=0,
         messages=[{"role": "user", "content": content}],
     )
     raw = response.content[0].text.strip()
