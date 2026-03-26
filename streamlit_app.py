@@ -783,6 +783,29 @@ with tab_analyse:
         for i, f in enumerate(uploaded_files):
             cols[i % 4].image(f, use_container_width=True)
 
+    # ── Odds API gebruik indicator ──
+    if _odds_key:
+        _usage    = odds_api.get_usage()
+        _calls    = _usage.get("calls", 0)
+        _limiet   = _usage.get("limiet", 500)
+        _maand    = _usage.get("maand", "")
+        # Bereken eerste dag volgende maand
+        _today    = datetime.date.today()
+        _nxt      = (_today.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+        _nxt_str  = _nxt.strftime("%-d %B %Y")
+        if _calls >= _limiet:
+            st.warning(
+                f"ℹ️ Bet365 verificatie tijdelijk uitgeschakeld (maandlimiet bereikt). "
+                f"Reset op {_nxt_str}."
+            )
+        elif _calls > 400:
+            st.warning(
+                f"⚠️ Bijna op Odds API limiet — bet365 verificatie wordt binnenkort "
+                f"uitgeschakeld ({_calls}/{_limiet} calls deze maand)"
+            )
+        else:
+            st.caption(f"🎯 Odds API: {_calls}/{_limiet} calls gebruikt deze maand")
+
     analyze_btn = st.button(
         "🔍 Analyseer",
         use_container_width=True,
@@ -843,23 +866,39 @@ with tab_analyse:
                     st.write(f"✅ {len(enriched)} props gescoord")
 
                     # ── Bet365 verificatie (optioneel) ──
-                    if odds_api._API_KEY:
-                        st.write("💰 Bet365 player props controleren...")
-                        b365_prog = st.progress(0)
-                        for _i, _bet in enumerate(enriched):
-                            b365 = odds_api.check_bet365_availability(
-                                player_name=_bet["player"],
-                                bet_type=_bet["bet_type"],
-                                sport=_bet["sport"],
-                                team=_bet.get("team", ""),
+                    if odds_api._API_KEY and not odds_api.is_limit_reached():
+                        # Opt 2: alleen props met EV > 0 controleren
+                        _to_check = [b for b in enriched if b["ev"] > 0]
+                        if _to_check:
+                            st.write(
+                                f"💰 Bet365 verificatie voor {len(_to_check)}/{len(enriched)} "
+                                f"props (EV > 0)..."
                             )
-                            _bet["bet365"] = b365
-                            # Als beschikbaar: herbereken EV met Bet365 odds
-                            if b365["status"] == "available" and b365.get("bet365_odds"):
-                                _bet["odds"]   = b365["bet365_odds"]
-                                _bet["ev"]     = ev(_bet["composite"], b365["bet365_odds"])
-                                _bet["rating"] = rating(_bet["ev"], _bet["composite"])
-                            b365_prog.progress((_i + 1) / len(enriched))
+                            # Opt 3: batch prefetch — één API call per uniek event
+                            odds_api.prefetch_event_props_for_bets(_to_check)
+
+                            b365_prog = st.progress(0)
+                            for _i, _bet in enumerate(_to_check):
+                                b365 = odds_api.check_bet365_availability(
+                                    player_name=_bet["player"],
+                                    bet_type=_bet["bet_type"],
+                                    sport=_bet["sport"],
+                                    team=_bet.get("team", ""),
+                                )
+                                _bet["bet365"] = b365
+                                # Als beschikbaar: herbereken EV met Bet365 odds
+                                if b365["status"] == "available" and b365.get("bet365_odds"):
+                                    _bet["odds"]   = b365["bet365_odds"]
+                                    _bet["ev"]     = ev(_bet["composite"], b365["bet365_odds"])
+                                    _bet["rating"] = rating(_bet["ev"], _bet["composite"])
+                                b365_prog.progress((_i + 1) / len(_to_check))
+
+                            _usage_now = odds_api.get_usage()
+                            st.write(
+                                f"✅ Bet365 verificatie klaar "
+                                f"({_usage_now['calls']}/{_usage_now['limiet']} "
+                                f"calls deze maand)"
+                            )
 
                         # Herrangschik met bet365 penalty
                         def _ev_rank(b):
@@ -871,7 +910,9 @@ with tab_analyse:
                             return b["ev"]
 
                         enriched.sort(key=_ev_rank, reverse=True)
-                        st.write("✅ Bet365 verificatie klaar")
+
+                    elif odds_api._API_KEY and odds_api.is_limit_reached():
+                        st.write("ℹ️ Bet365 verificatie overgeslagen (maandlimiet bereikt)")
                 else:
                     enriched = []
 

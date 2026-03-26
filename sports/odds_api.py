@@ -12,6 +12,7 @@ Status:
 """
 
 import json
+import datetime
 import unicodedata
 import urllib.request
 import urllib.parse
@@ -20,6 +21,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 from cache import get as cache_get, set as cache_set
+
+# Teller-bestand in de repo-root (BetAnalyzer/)
+USAGE_FILE = Path(__file__).parent.parent / "odds_api_usage.json"
 
 # ─── Configuratie ─────────────────────────────────────────────────────────────
 
@@ -31,6 +35,54 @@ def set_api_key(key: str) -> None:
 
 
 BASE_URL = "https://api.the-odds-api.com/v4"
+
+
+# ─── Request teller ───────────────────────────────────────────────────────────
+
+def _get_usage() -> dict:
+    """Lees of initialiseer de maandelijkse teller. Reset automatisch bij nieuwe maand."""
+    maand = datetime.date.today().strftime("%Y-%m")
+    default = {
+        "maand":          maand,
+        "calls":          0,
+        "limiet":         500,
+        "laatste_reset":  f"{maand}-01",
+    }
+    if not USAGE_FILE.exists():
+        return default
+    try:
+        data = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+        if data.get("maand") != maand:
+            # Nieuwe maand → reset teller
+            data = default
+        return data
+    except Exception:
+        return default
+
+
+def _save_usage(data: dict) -> None:
+    try:
+        USAGE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass  # read-only filesystem (bijv. sommige cloud omgevingen)
+
+
+def _increment_counter() -> None:
+    """Verhoog de teller na elke echte API call (geen cache hits)."""
+    data = _get_usage()
+    data["calls"] = data.get("calls", 0) + 1
+    _save_usage(data)
+
+
+def get_usage() -> dict:
+    """Publieke functie: geeft huidig gebruik terug."""
+    return _get_usage()
+
+
+def is_limit_reached() -> bool:
+    """Geeft True als de maandlimiet bereikt is."""
+    data = _get_usage()
+    return data.get("calls", 0) >= data.get("limiet", 500)
 
 # Sport keys voor The Odds API
 SPORT_KEYS = {
@@ -108,8 +160,8 @@ _NHL_TEAM_NAMES = {
 
 # ─── HTTP helper ──────────────────────────────────────────────────────────────
 
-def _get(url: str) -> dict | list | None:
-    """GET-request naar The Odds API. Geeft None bij fout."""
+def _get(url: str):
+    """GET-request naar The Odds API. Geeft None bij fout. Verhoogt teller bij succes."""
     if not _API_KEY:
         return None
     try:
@@ -118,23 +170,11 @@ def _get(url: str) -> dict | list | None:
             headers={"User-Agent": "Mozilla/5.0 BetAnalyzer/1.0"},
         )
         with urllib.request.urlopen(req, timeout=15) as r:
-            return json.loads(r.read())
+            data = json.loads(r.read())
+        _increment_counter()   # alleen bij succesvol HTTP-verzoek
+        return data
     except Exception as e:
         print(f"  ⚠️  Odds API fout: {e}")
-        return None
-
-
-def get_requests_remaining() -> int | None:
-    """Geeft het aantal resterende requests voor deze maand, of None."""
-    if not _API_KEY:
-        return None
-    url = f"{BASE_URL}/sports?apiKey={_API_KEY}"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 BetAnalyzer/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            remaining = r.headers.get("x-requests-remaining")
-            return int(remaining) if remaining else None
-    except Exception:
         return None
 
 
@@ -161,16 +201,20 @@ def get_events(sport_key: str) -> list:
 def get_event_props(sport_key: str, event_id: str, markets: list) -> dict:
     """
     Haalt player props op voor één event via bet365.
-    Gecacht 4 uur (odds veranderen niet snel).
+    Cache key is per event_id (ongeacht market combinatie) → TTL 2 uur.
+
+    Gebruik prefetch_event_props_for_bets() om meerdere markets per event
+    in één API call op te halen vóór de per-bet loop.
 
     markets: lijst van market keys bijv. ["player_shots_on_target", "player_anytime_goalscorer"]
     """
-    market_str = ",".join(sorted(set(markets)))
-    cache_key  = f"odds_props_{event_id}_{market_str}"
+    # Cache per event (niet per market combo) — prefetch vult alle benodigde markets tegelijk
+    cache_key = f"odds_props_{event_id}"
     cached = cache_get(cache_key)
     if cached is not None:
         return cached
 
+    market_str = ",".join(sorted(set(markets)))
     params = urllib.parse.urlencode({
         "apiKey":      _API_KEY,
         "bookmakers":  "bet365",
@@ -183,7 +227,7 @@ def get_event_props(sport_key: str, event_id: str, markets: list) -> dict:
     if not isinstance(data, dict):
         return {}
 
-    cache_set(cache_key, data, ttl_hours=4)
+    cache_set(cache_key, data, ttl_hours=2)
     return data
 
 
@@ -231,7 +275,7 @@ def _names_match(a: str, b: str) -> bool:
 
 # ─── Event matching ───────────────────────────────────────────────────────────
 
-def _find_team_event(events: list, team: str, sport: str) -> dict | None:
+def _find_team_event(events: list, team: str, sport: str):
     """
     Zoek het event op in de events-lijst dat overeenkomt met het team.
     team kan een afkorting zijn (NHL) of een teamnaam.
@@ -260,7 +304,7 @@ def _find_team_event(events: list, team: str, sport: str) -> dict | None:
 
 # ─── Markt bepaling ───────────────────────────────────────────────────────────
 
-def _market_for_bet(bet_type: str) -> str | None:
+def _market_for_bet(bet_type: str):
     """Geeft de The Odds API market key voor een bet type, of None."""
     bt = bet_type.lower()
     for keyword, market in BET_MARKETS.items():
@@ -379,3 +423,48 @@ def check_bet365_availability(
             "our_line":    our_line,
             "label":       f"⚠️ Bet365 line {bet365_line} (wij: {our_line})",
         }
+
+
+# ─── Batch prefetch (Optimalisatie 3) ────────────────────────────────────────
+
+def prefetch_event_props_for_bets(bets: list) -> None:
+    """
+    Pre-fetcht bet365 props voor alle unieke events in één ronde.
+    Groepeer alle benodigde markets per event en haal ze in één API call op.
+    Resultaten worden gecacht zodat check_bet365_availability() geen nieuwe
+    calls meer hoeft te maken.
+
+    bets: lijst van enriched bets (moeten 'sport', 'team', 'bet_type' hebben)
+    """
+    if not _API_KEY:
+        return
+
+    # Groepeer per (sport_key, event_id) → set van markets
+    event_markets: dict = {}
+    event_id_map:  dict = {}  # (sport_key, event_id) → sport_key (voor API call)
+
+    for bet in bets:
+        sport     = (bet.get("sport") or "").upper()
+        sport_key = SPORT_KEYS.get(sport)
+        if not sport_key:
+            continue
+        market = _market_for_bet(bet.get("bet_type", ""))
+        if not market:
+            continue
+        team = bet.get("team", "")
+
+        # get_events is gecacht — geen extra API call
+        events = get_events(sport_key)
+        event  = _find_team_event(events, team, sport)
+        if not event:
+            continue
+
+        key = (sport_key, event["id"])
+        event_markets.setdefault(key, set()).add(market)
+        event_id_map[key] = sport_key
+
+    # Eén API call per uniek event (met alle benodigde markets tegelijk)
+    for (sport_key, event_id), markets in event_markets.items():
+        cache_key = f"odds_props_{event_id}"
+        if cache_get(cache_key) is None:
+            get_event_props(sport_key, event_id, list(markets))
