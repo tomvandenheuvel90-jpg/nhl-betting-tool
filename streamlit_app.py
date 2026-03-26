@@ -7,6 +7,7 @@ Ondersteunt: NHL · NBA · MLB · Voetbal (EPL/La Liga/Bundesliga/Serie A/Ligue 
 import streamlit as st
 import os
 import json
+import re
 import hashlib
 import base64
 import tempfile
@@ -234,40 +235,101 @@ def save_to_history(enriched: list):
 
 # ─── Extractie via Claude Haiku ───────────────────────────────────────────────
 
+_EXTRACT_MODEL = "claude-haiku-4-5"
+_MEDIA_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".png": "image/png", ".webp": "image/webp"}
+
+
+def _image_content_block(path: str) -> dict:
+    """Bouw een Anthropic image-content-blok van een lokaal bestandspad."""
+    media_type = _MEDIA_MAP.get(Path(path).suffix.lower(), "image/jpeg")
+    with open(path, "rb") as fh:
+        img_b64 = base64.b64encode(fh.read()).decode("utf-8")
+    return {
+        "type": "image",
+        "source": {"type": "base64", "media_type": media_type, "data": img_b64},
+    }
+
+
+def _parse_json_from_text(text: str):
+    """
+    Probeert op 4 manieren een JSON-object uit de tekst te extraheren:
+      1. Directe json.loads()
+      2. Extraheer uit ```json … ``` blok
+      3. Extraheer uit ``` … ``` blok
+      4. Zoek het eerste volledige { … } object in de tekst
+    Geeft None terug als niets werkt.
+    """
+    # Strategie 1: directe parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategie 2: ```json ... ```
+    m = re.search(r"```json\s*([\s\S]*?)\s*```", text)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Strategie 3: ``` ... ```
+    m = re.search(r"```\s*([\s\S]*?)\s*```", text)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Strategie 4: zoek eerste volledig JSON-object { ... }
+    start = text.find("{")
+    if start != -1:
+        depth, end = 0, -1
+        for i, ch in enumerate(text[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end != -1:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+
+    return None
+
+
 def extract_bets(client, image_paths: list):
-    content = []
-    for path in image_paths:
-        ext = Path(path).suffix.lower()
-        media_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                     ".png": "image/png", ".webp": "image/webp"}
-        media_type = media_map.get(ext, "image/jpeg")
-        with open(path, "rb") as f:
-            img_data = base64.standard_b64encode(f.read()).decode("utf-8")
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": media_type, "data": img_data},
-        })
+    """
+    Stuurt afbeeldingen naar Claude Haiku en extraheert bets + matches als JSON.
+    Slaat de ruwe response op in st.session_state['_dbg_raw'] voor debugging.
+    """
+    content = [_image_content_block(p) for p in image_paths]
     content.append({"type": "text", "text": EXTRACT_PROMPT})
 
     response = client.messages.create(
-        model="claude-haiku-4-5",
+        model=_EXTRACT_MODEL,
         max_tokens=4096,
         temperature=0,
         messages=[{"role": "user", "content": content}],
     )
     raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip().strip("```")
-    try:
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return data, []
-        return data.get("bets", []), data.get("matches", [])
-    except Exception:
+
+    # Sla ruwe response op zodat we kunnen debuggen als parsing mislukt
+    st.session_state["_dbg_raw"]   = raw
+    st.session_state["_dbg_model"] = _EXTRACT_MODEL
+
+    data = _parse_json_from_text(raw)
+    if data is None:
+        # JSON niet gevonden — raw response opgeslagen voor diagnose
         return [], []
+    if isinstance(data, list):
+        return data, []
+    return data.get("bets", []), data.get("matches", [])
 
 
 # ─── Flashscore analyse via Claude Haiku ──────────────────────────────────────
@@ -914,12 +976,14 @@ with tab_analyse:
 
     if analyze_btn and uploaded_files:
         tmp_paths = []
+        _analysis_aborted = False
         try:
             for f in uploaded_files:
                 suffix = Path(f.name).suffix or ".png"
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
                 tmp.write(f.read())
                 tmp.flush()
+                tmp.close()   # sluit voor lezen door Claude
                 tmp_paths.append(tmp.name)
 
             client = anthropic.Anthropic(api_key=api_key)
@@ -929,128 +993,148 @@ with tab_analyse:
                 bets, matches = extract_bets(client, tmp_paths)
 
                 if not bets and not matches:
+                    _analysis_aborted = True
                     st.error("Geen bets of wedstrijden gevonden in de afbeeldingen.")
-                    st.stop()
 
-                scenario = detect_scenario(bets, matches)
-                st.write(f"✅ Gevonden: {len(bets)} props, {len(matches)} wedstrijden")
-                st.write(SCENARIO_LABELS[scenario])
+                    # ── Debug: toon wat Claude werkelijk antwoordde ──
+                    _dbg       = st.session_state.get("_dbg_raw", "")
+                    _dbg_model = st.session_state.get("_dbg_model", _EXTRACT_MODEL)
+                    with st.expander("🔧 Debug — Claude's ruwe response", expanded=True):
+                        st.caption(f"Model: `{_dbg_model}` · {len(_dbg)} tekens teruggegeven")
+                        st.code(_dbg[:3000] if _dbg else "(leeg — API-call mislukt?)", language="text")
 
-                lm_w, s_w = SCENARIO_WEIGHTS[scenario]
+                    # ── Auto-test: beschrijf de eerste afbeelding ──
+                    st.write("🔍 **Auto-test:** Claude beschrijft de afbeelding...")
+                    try:
+                        _test_block = _image_content_block(tmp_paths[0])
+                        _test_resp  = client.messages.create(
+                            model=_EXTRACT_MODEL,
+                            max_tokens=512,
+                            messages=[{"role": "user", "content": [
+                                _test_block,
+                                {"type": "text",
+                                 "text": "Beschrijf wat je ziet in deze afbeelding."},
+                            ]}],
+                        )
+                        st.info(f"**Claude ziet:** {_test_resp.content[0].text}")
+                    except Exception as _te:
+                        st.error(f"Beschrijvingstest ook mislukt: {_te}")
 
-                # Scenario 1: genereer auto-props uit het wedstrijdschema
-                if scenario == 1:
-                    st.write("📅 Wedstrijdschema ophalen en props genereren...")
-                    auto_bets = generate_auto_props(
-                        matches,
-                        progress_cb=lambda msg: st.write(f"  · {msg}"),
-                    )
-                    if auto_bets:
-                        bets = auto_bets
-                        st.write(f"✅ {len(auto_bets)} automatische props gegenereerd")
-                    else:
-                        st.warning("⚠️ Geen automatische props beschikbaar (schema of API niet bereikbaar)")
-
-                if bets:
-                    st.write("🔎 Spelersdata ophalen en EV berekenen...")
-                    cache: dict = {}
-                    enriched = []
-                    prog = st.progress(0)
-                    for i, bet in enumerate(bets):
-                        enriched.append(enrich_bet(bet, cache,
-                                                    linemate_weight=lm_w,
-                                                    season_weight=s_w))
-                        prog.progress((i + 1) / len(bets))
-                    enriched.sort(key=lambda x: x["ev"], reverse=True)
-                    st.write(f"✅ {len(enriched)} props gescoord")
-
-                    # ── Bet365 verificatie (optioneel) ──
-                    if odds_api._API_KEY and not odds_api.is_limit_reached():
-                        # Opt 2: alleen props met EV > 0 controleren
-                        _to_check = [b for b in enriched if b["ev"] > 0]
-                        if _to_check:
-                            st.write(
-                                f"💰 Bet365 verificatie voor {len(_to_check)}/{len(enriched)} "
-                                f"props (EV > 0)..."
-                            )
-                            # Opt 3: batch prefetch — één API call per uniek event
-                            odds_api.prefetch_event_props_for_bets(_to_check)
-
-                            b365_prog = st.progress(0)
-                            for _i, _bet in enumerate(_to_check):
-                                b365 = odds_api.check_bet365_availability(
-                                    player_name=_bet["player"],
-                                    bet_type=_bet["bet_type"],
-                                    sport=_bet["sport"],
-                                    team=_bet.get("team", ""),
-                                )
-                                _bet["bet365"] = b365
-                                # Als beschikbaar: herbereken EV met Bet365 odds
-                                if b365["status"] == "available" and b365.get("bet365_odds"):
-                                    _bet["odds"]   = b365["bet365_odds"]
-                                    _bet["ev"]     = ev(_bet["composite"], b365["bet365_odds"])
-                                    _bet["rating"] = rating(_bet["ev"], _bet["composite"])
-                                b365_prog.progress((_i + 1) / len(_to_check))
-
-                            _usage_now = odds_api.get_usage()
-                            st.write(
-                                f"✅ Bet365 verificatie klaar "
-                                f"({_usage_now['calls']}/{_usage_now['limiet']} "
-                                f"calls deze maand)"
-                            )
-
-                        # Herrangschik met bet365 penalty
-                        def _ev_rank(b):
-                            s = b.get("bet365", {}).get("status", "unknown")
-                            if s == "unavailable":
-                                return -999.0
-                            if s == "different_line":
-                                return b["ev"] * 0.85
-                            return b["ev"]
-
-                        enriched.sort(key=_ev_rank, reverse=True)
-
-                    elif odds_api._API_KEY and odds_api.is_limit_reached():
-                        st.write("ℹ️ Bet365 verificatie overgeslagen (maandlimiet bereikt)")
+                if _analysis_aborted:
+                    status.update(label="⚠️ Analyse mislukt — zie debug info hierboven", state="error")
                 else:
-                    enriched = []
+                    scenario = detect_scenario(bets, matches)
+                    st.write(f"✅ Gevonden: {len(bets)} props, {len(matches)} wedstrijden")
+                    st.write(SCENARIO_LABELS[scenario])
 
-                flashscore_text = ""
-                if matches:
-                    st.write("📺 Flashscore analyseren via Claude...")
-                    flashscore_text = analyze_flashscore(client, matches, enriched)
-                    st.write("✅ Flashscore analyse klaar")
+                    lm_w, s_w = SCENARIO_WEIGHTS[scenario]
 
-                status.update(label="✅ Analyse compleet!", state="complete")
+                    # Scenario 1: genereer auto-props uit het wedstrijdschema
+                    if scenario == 1:
+                        st.write("📅 Wedstrijdschema ophalen en props genereren...")
+                        auto_bets = generate_auto_props(
+                            matches,
+                            progress_cb=lambda msg: st.write(f"  · {msg}"),
+                        )
+                        if auto_bets:
+                            bets = auto_bets
+                            st.write(f"✅ {len(auto_bets)} automatische props gegenereerd")
+                        else:
+                            st.warning("⚠️ Geen automatische props beschikbaar (schema of API niet bereikbaar)")
 
-            # Top 3 berekenen (bet365-unavailable props uitsluiten)
-            def _is_b365_ok(b):
-                return b.get("bet365", {}).get("status", "unknown") != "unavailable"
+                    if bets:
+                        st.write("🔎 Spelersdata ophalen en EV berekenen...")
+                        cache: dict = {}
+                        enriched = []
+                        prog = st.progress(0)
+                        for i, bet in enumerate(bets):
+                            enriched.append(enrich_bet(bet, cache,
+                                                        linemate_weight=lm_w,
+                                                        season_weight=s_w))
+                            prog.progress((i + 1) / len(bets))
+                        enriched.sort(key=lambda x: x["ev"], reverse=True)
+                        st.write(f"✅ {len(enriched)} props gescoord")
 
-            top3 = [b for b in enriched if b["rating"].startswith("✅") and _is_b365_ok(b)][:3]
-            if not top3:
-                top3 = [b for b in enriched if _is_b365_ok(b)][:3]
-            if not top3:
-                top3 = enriched[:3]
-            top3_out = [{"player": b["player"], "bet_type": b["bet_type"],
-                         "odds": b["odds"], "ev": b["ev"]} for b in top3]
+                        # ── Bet365 verificatie (optioneel) ──
+                        if odds_api._API_KEY and not odds_api.is_limit_reached():
+                            _to_check = [b for b in enriched if b["ev"] > 0]
+                            if _to_check:
+                                st.write(
+                                    f"💰 Bet365 verificatie voor {len(_to_check)}/{len(enriched)} "
+                                    f"props (EV > 0)..."
+                                )
+                                odds_api.prefetch_event_props_for_bets(_to_check)
+                                b365_prog = st.progress(0)
+                                for _i, _bet in enumerate(_to_check):
+                                    b365 = odds_api.check_bet365_availability(
+                                        player_name=_bet["player"],
+                                        bet_type=_bet["bet_type"],
+                                        sport=_bet["sport"],
+                                        team=_bet.get("team", ""),
+                                    )
+                                    _bet["bet365"] = b365
+                                    if b365["status"] == "available" and b365.get("bet365_odds"):
+                                        _bet["odds"]   = b365["bet365_odds"]
+                                        _bet["ev"]     = ev(_bet["composite"], b365["bet365_odds"])
+                                        _bet["rating"] = rating(_bet["ev"], _bet["composite"])
+                                    b365_prog.progress((_i + 1) / len(_to_check))
+                                _usage_now = odds_api.get_usage()
+                                st.write(
+                                    f"✅ Bet365 verificatie klaar "
+                                    f"({_usage_now['calls']}/{_usage_now['limiet']} calls deze maand)"
+                                )
 
-            # Opslaan in geschiedenis
-            if enriched:
-                save_to_history(enriched)
+                            def _ev_rank(b):
+                                s = b.get("bet365", {}).get("status", "unknown")
+                                if s == "unavailable":
+                                    return -999.0
+                                if s == "different_line":
+                                    return b["ev"] * 0.85
+                                return b["ev"]
+                            enriched.sort(key=_ev_rank, reverse=True)
 
-            # Resultaten opslaan in session state
-            st.session_state.last_analysis = {
-                "enriched":       enriched,
-                "top3":           top3_out,
-                "flashscore":     flashscore_text,
-                "scenario":       scenario,
-            }
+                        elif odds_api._API_KEY and odds_api.is_limit_reached():
+                            st.write("ℹ️ Bet365 verificatie overgeslagen (maandlimiet bereikt)")
+                    else:
+                        enriched = []
 
-            # Uploader resetten + rerun
-            st.session_state.uploader_key   += 1
-            st.session_state.just_analyzed   = True
-            st.rerun()
+                    flashscore_text = ""
+                    if matches:
+                        st.write("📺 Flashscore analyseren via Claude...")
+                        flashscore_text = analyze_flashscore(client, matches, enriched)
+                        st.write("✅ Flashscore analyse klaar")
+
+                    status.update(label="✅ Analyse compleet!", state="complete")
+
+            if not _analysis_aborted:
+                # Top 3 berekenen (bet365-unavailable props uitsluiten)
+                def _is_b365_ok(b):
+                    return b.get("bet365", {}).get("status", "unknown") != "unavailable"
+
+                top3 = [b for b in enriched if b["rating"].startswith("✅") and _is_b365_ok(b)][:3]
+                if not top3:
+                    top3 = [b for b in enriched if _is_b365_ok(b)][:3]
+                if not top3:
+                    top3 = enriched[:3]
+                top3_out = [{"player": b["player"], "bet_type": b["bet_type"],
+                             "odds": b["odds"], "ev": b["ev"]} for b in top3]
+
+                # Opslaan in geschiedenis
+                if enriched:
+                    save_to_history(enriched)
+
+                # Resultaten opslaan in session state
+                st.session_state.last_analysis = {
+                    "enriched":       enriched,
+                    "top3":           top3_out,
+                    "flashscore":     flashscore_text,
+                    "scenario":       scenario,
+                }
+
+                # Uploader resetten + rerun
+                st.session_state.uploader_key += 1
+                st.session_state.just_analyzed = True
+                st.rerun()
 
         except Exception as e:
             st.error(f"❌ Fout: {e}")
