@@ -10,6 +10,10 @@ anthropic>=0.25
 # NBA stats (gratis, geen key)
 nba_api>=1.4
 
+# Google Drive API (voor MoneyPuck data in cloud)
+google-api-python-client>=2.100
+google-auth>=2.20
+
 # Data
 pandas>=2.0
 requests>=2.31

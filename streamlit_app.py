@@ -419,14 +419,36 @@ if not ANTHROPIC_AVAILABLE:
     st.error("❌ `anthropic` pakket niet geïnstalleerd. Voeg `anthropic` toe aan requirements.txt.")
     st.stop()
 
-# Moneypuck lokale data check
+# Moneypuck: GDrive credentials injecteren en data status tonen
 try:
-    from sports.moneypuck_local import DATA_DIR as MP_DATA_DIR
-    if not MP_DATA_DIR.exists():
-        st.info(
-            "ℹ️ **Cloud versie** — Historische MoneyPuck data niet beschikbaar. "
-            "NHL scoring gebruikt alleen live seizoensdata (licht verminderde nauwkeurigheid)."
-        )
+    from sports.moneypuck_local import set_gdrive_credentials, RAW_DIR, FILTERED_DIR
+    from pathlib import Path as _Path
+    import json as _json
+
+    # Probeer GDrive credentials te laden
+    _gdrive_ok = False
+    try:
+        _gdrive_dict = dict(st.secrets.get("gcp_service_account", {}))
+        if _gdrive_dict.get("type") == "service_account":
+            set_gdrive_credentials(_gdrive_dict)
+            _gdrive_ok = True
+    except Exception:
+        pass
+
+    # Data status melding
+    _local_ok = RAW_DIR.exists() or FILTERED_DIR.exists()
+    _file_ids_ok = _Path(__file__).parent.joinpath("gdrive_file_ids.json").exists()
+
+    if not _local_ok:
+        if _gdrive_ok and _file_ids_ok:
+            st.success("☁️ **Cloud modus** — MoneyPuck data wordt geladen vanuit Google Drive.")
+        elif _gdrive_ok and not _file_ids_ok:
+            st.warning("⚠️ `gdrive_file_ids.json` ontbreekt — voer eerst `upload_to_gdrive.py` uit.")
+        else:
+            st.info(
+                "ℹ️ **Cloud versie** — Historische MoneyPuck data niet beschikbaar. "
+                "NHL scoring gebruikt alleen live seizoensdata."
+            )
 except Exception:
     pass
 
