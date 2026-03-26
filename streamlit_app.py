@@ -7,6 +7,7 @@ Ondersteunt: NHL · NBA · MLB · Voetbal (EPL/La Liga/Bundesliga/Serie A/Ligue 
 import streamlit as st
 import os
 import json
+import hashlib
 import base64
 import tempfile
 import datetime
@@ -44,6 +45,8 @@ except ImportError:
 SOCCER_COMPS   = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1", "LIGUE1", "VOETBAL", "SOCCER"}
 HISTORY_FILE   = Path(__file__).parent / "analyse_geschiedenis.json"
 HISTORY_DAYS   = 7
+FAV_FILE       = Path(__file__).parent / "favorieten.json"
+RESULTS_FILE   = Path(__file__).parent / "resultaten.json"
 
 # Referentie-odds voor auto-gegenereerde props (geen Linemate)
 _REF_ODDS = {
@@ -614,6 +617,91 @@ def enrich_bet(bet: dict, cache: dict,
     }
 
 
+# ─── Favorieten helpers ───────────────────────────────────────────────────────
+
+def _make_fav_id(player: str, bet_type: str) -> str:
+    return hashlib.md5(f"{player.strip().lower()}|{bet_type.strip().lower()}".encode()).hexdigest()[:10]
+
+
+def load_favorieten() -> list:
+    if not FAV_FILE.exists():
+        return []
+    try:
+        return json.loads(FAV_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_favorieten(favs: list) -> None:
+    try:
+        FAV_FILE.write_text(json.dumps(favs, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def add_favoriet(bet: dict) -> None:
+    favs = load_favorieten()
+    fid  = _make_fav_id(bet["player"], bet["bet_type"])
+    if any(f.get("id") == fid for f in favs):
+        return
+    favs.insert(0, {
+        "id":            fid,
+        "datum":         datetime.date.today().isoformat(),
+        "speler":        bet["player"],
+        "bet":           bet["bet_type"],
+        "odds":          round(float(bet.get("odds", 0)), 2),
+        "ev_score":      round(float(bet.get("ev", 0)), 4),
+        "sport":         bet.get("sport", ""),
+        "bet365_status": bet.get("bet365", {}).get("status", "unknown"),
+    })
+    save_favorieten(favs)
+
+
+def remove_favoriet(fav_id: str) -> None:
+    save_favorieten([f for f in load_favorieten() if f.get("id") != fav_id])
+
+
+# ─── Resultaten helpers ───────────────────────────────────────────────────────
+
+def load_resultaten() -> list:
+    if not RESULTS_FILE.exists():
+        return []
+    try:
+        return json.loads(RESULTS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_resultaten(results: list) -> None:
+    try:
+        RESULTS_FILE.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> None:
+    results = [r for r in load_resultaten() if r.get("id") != fav_id]
+    odds = float(fav.get("odds", 1.0))
+    wl = round(inzet * (odds - 1), 2) if uitkomst == "gewonnen" else round(-inzet, 2)
+    results.insert(0, {
+        "id":            fav_id,
+        "datum":         fav.get("datum", datetime.date.today().isoformat()),
+        "speler":        fav.get("speler", ""),
+        "bet":           fav.get("bet", ""),
+        "odds":          odds,
+        "inzet":         round(inzet, 2),
+        "uitkomst":      uitkomst,
+        "winst_verlies": wl,
+        "sport":         fav.get("sport", ""),
+        "ev_score":      fav.get("ev_score", 0.0),
+    })
+    save_resultaten(results)
+
+
+def remove_resultaat(fav_id: str) -> None:
+    save_resultaten([r for r in load_resultaten() if r.get("id") != fav_id])
+
+
 # ─── Resultaten renderen ──────────────────────────────────────────────────────
 
 SPORT_ICONS = {"NHL": "🏒", "NBA": "🏀", "MLB": "⚾"}
@@ -642,7 +730,7 @@ def render_top3(top3: list):
         )
 
 
-def render_bet_card(bet: dict, rank: int, total: int):
+def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
     sport_icon    = SPORT_ICONS.get(bet["sport"].upper(), "⚽")
     ev_str        = f"+{bet['ev']:.3f}" if bet["ev"] >= 0 else f"{bet['ev']:.3f}"
     composite_pct = int(bet["composite"] * 100)
@@ -691,6 +779,15 @@ def render_bet_card(bet: dict, rank: int, total: int):
             info_parts.append(f"Bron: {bet['source']}")
         if info_parts:
             st.caption(" · ".join(info_parts))
+
+        # ⭐ Favoriet knop
+        _fav_label = "⭐ Verwijder favoriet" if is_fav else "⭐ Sla op als favoriet"
+        if st.button(_fav_label, key=f"fav_{rank}_{total}", use_container_width=False):
+            if is_fav:
+                remove_favoriet(_make_fav_id(bet["player"], bet["bet_type"]))
+            else:
+                add_favoriet(bet)
+            st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -756,7 +853,9 @@ if "last_analysis" not in st.session_state:
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-tab_analyse, tab_history = st.tabs(["🔍 Analyse", "📋 Geschiedenis"])
+tab_analyse, tab_favorieten, tab_bankroll, tab_history = st.tabs(
+    ["🔍 Analyse", "⭐ Favorieten", "📊 Bankroll", "📋 Geschiedenis"]
+)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — ANALYSE
@@ -986,14 +1085,219 @@ with tab_analyse:
             render_top3(top3_out)
             st.markdown("---")
             st.markdown("### 📊 Alle props")
+            _fav_ids_set = {f["id"] for f in load_favorieten()}
             for i, bet in enumerate(enriched, 1):
-                render_bet_card(bet, i, len(enriched))
+                _is_fav = _make_fav_id(bet["player"], bet["bet_type"]) in _fav_ids_set
+                render_bet_card(bet, i, len(enriched), is_fav=_is_fav)
 
         st.caption("⚠️ Statistische analyse ter ondersteuning. Wedden brengt financiële risico's. Speel verantwoord.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — GESCHIEDENIS
+# TAB 2 — FAVORIETEN
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_favorieten:
+    st.markdown("### ⭐ Favorieten")
+
+    _favs    = load_favorieten()
+    _res_map = {r["id"]: r for r in load_resultaten()}
+
+    if not _favs:
+        st.info("Nog geen favorieten. Klik op ⭐ in een prop-kaart om te bewaren.")
+    else:
+        # Samenvatting bovenaan als er resultaten zijn
+        _done_favs = [r for r in load_resultaten() if r.get("uitkomst") in ("gewonnen", "verloren")]
+        if _done_favs:
+            _fn_won  = sum(1 for r in _done_favs if r.get("uitkomst") == "gewonnen")
+            _fn_lost = len(_done_favs) - _fn_won
+            _ft_inzet = sum(r.get("inzet", 0) for r in _done_favs)
+            _ft_wl    = sum(r.get("winst_verlies", 0) for r in _done_favs)
+            _froi     = (_ft_wl / _ft_inzet * 100) if _ft_inzet > 0 else 0.0
+            _fc1, _fc2, _fc3, _fc4 = st.columns(4)
+            _fc1.metric("✅ Gewonnen", _fn_won)
+            _fc2.metric("❌ Verloren", _fn_lost)
+            _fc3.metric("💰 P&L", f"€{_ft_wl:+.2f}")
+            _fc4.metric("📈 ROI", f"{_froi:+.1f}%")
+            st.markdown("---")
+
+        for _idx, _fav in enumerate(_favs):
+            _fid      = _fav.get("id", "")
+            _res      = _res_map.get(_fid, {})
+            _uitkomst = _res.get("uitkomst", "")
+            _icon = "✅" if _uitkomst == "gewonnen" else ("❌" if _uitkomst == "verloren" else "⏳")
+            _ev_disp  = f"{float(_fav.get('ev_score', 0)):+.3f}"
+
+            with st.expander(
+                f"{_icon} {_fav.get('speler','')} · {_fav.get('bet','')} "
+                f"@ {_fav.get('odds','')}  |  EV {_ev_disp}  |  {_fav.get('datum','')}",
+                expanded=(_uitkomst == ""),
+            ):
+                _ci, _cd = st.columns([4, 1])
+                with _ci:
+                    _cap = f"Sport: {_fav.get('sport','')} · Bet365: {_fav.get('bet365_status','')}"
+                    if _res:
+                        _cap += f"  ·  Inzet: €{_res.get('inzet',0):.2f}  ·  P&L: €{_res.get('winst_verlies',0):+.2f}"
+                    st.caption(_cap)
+                with _cd:
+                    if st.button("🗑️", key=f"delfav_{_fid}_{_idx}", help="Verwijder favoriet"):
+                        remove_favoriet(_fid)
+                        remove_resultaat(_fid)
+                        st.rerun()
+
+                _inzet_default = float(_res.get("inzet", 10.0))
+                _inzet = st.number_input(
+                    "💰 Inzet (€)", min_value=0.10, value=_inzet_default,
+                    step=1.0, format="%.2f", key=f"inzet_{_fid}_{_idx}",
+                )
+                _cw, _cl, _cp = st.columns(3)
+                with _cw:
+                    if st.button("✅ Gewonnen", key=f"won_{_fid}_{_idx}", use_container_width=True):
+                        upsert_resultaat(_fid, _fav, "gewonnen", _inzet)
+                        st.rerun()
+                with _cl:
+                    if st.button("❌ Verloren", key=f"lost_{_fid}_{_idx}", use_container_width=True):
+                        upsert_resultaat(_fid, _fav, "verloren", _inzet)
+                        st.rerun()
+                with _cp:
+                    if st.button("⏳ Reset", key=f"reset_{_fid}_{_idx}", use_container_width=True):
+                        remove_resultaat(_fid)
+                        st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — BANKROLL
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_bankroll:
+    st.markdown("### 📊 Bankroll Tracker")
+
+    _alle_res = load_resultaten()
+    _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren")]
+
+    if not _gedaan:
+        st.info(
+            "Nog geen afgeronde weddenschappen. "
+            "Markeer props als ✅/❌ in het **⭐ Favorieten** tabblad."
+        )
+    else:
+        import pandas as pd
+
+        # ── Overzicht ──────────────────────────────────────────────────────────
+        st.markdown("#### 🎯 Overzicht")
+        _bn_won   = sum(1 for r in _gedaan if r.get("uitkomst") == "gewonnen")
+        _bn_lost  = len(_gedaan) - _bn_won
+        _bt_inzet = sum(r.get("inzet", 0) for r in _gedaan)
+        _bt_wl    = sum(r.get("winst_verlies", 0) for r in _gedaan)
+        _broi     = (_bt_wl / _bt_inzet * 100) if _bt_inzet > 0 else 0.0
+        _bwin_pct = (_bn_won / len(_gedaan) * 100) if _gedaan else 0.0
+
+        _bc1, _bc2, _bc3, _bc4 = st.columns(4)
+        _bc1.metric("💰 Totaal P&L",  f"€{_bt_wl:+.2f}")
+        _bc2.metric("📈 ROI",          f"{_broi:+.1f}%")
+        _bc3.metric("🎯 Win %",        f"{_bwin_pct:.1f}%")
+        _bc4.metric("📊 W / L",        f"{_bn_won} / {_bn_lost}")
+
+        # ── Cumulatieve P&L grafiek ────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 📈 P&L over tijd")
+        _sorted_res = sorted(_gedaan, key=lambda r: r.get("datum", ""))
+        if len(_sorted_res) >= 2:
+            _cum_wl = 0.0
+            _chart_rows = []
+            for _r in _sorted_res:
+                _cum_wl += _r.get("winst_verlies", 0)
+                _chart_rows.append({
+                    "Datum":   _r.get("datum", ""),
+                    "P&L (€)": round(_cum_wl, 2),
+                })
+            _df_chart = pd.DataFrame(_chart_rows).set_index("Datum")
+            st.line_chart(_df_chart)
+        else:
+            st.caption("Minimaal 2 afgeronde weddenschappen nodig voor een grafiek.")
+
+        # ── Per sport ──────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🏟️ Per sport")
+        _bsports = sorted({r.get("sport", "?") for r in _gedaan})
+        for _bsport in _bsports:
+            _sr   = [r for r in _gedaan if r.get("sport", "") == _bsport]
+            _sw   = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen")
+            _si   = sum(r.get("inzet", 0) for r in _sr)
+            _swl  = sum(r.get("winst_verlies", 0) for r in _sr)
+            _sroi = (_swl / _si * 100) if _si > 0 else 0.0
+            _sico = SPORT_ICONS.get(_bsport.upper(), "⚽")
+
+            with st.expander(
+                f"{_sico} {_bsport}  —  P&L: €{_swl:+.2f}  |  ROI: {_sroi:+.1f}%",
+                expanded=True,
+            ):
+                _sc1, _sc2, _sc3 = st.columns(3)
+                _sc1.metric("W / L",       f"{_sw} / {len(_sr) - _sw}")
+                _sc2.metric("Totale inzet", f"€{_si:.2f}")
+                _sc3.metric("P&L",          f"€{_swl:+.2f}")
+
+                # Beste bet type per sport
+                _btype_wl = {}
+                for _r in _sr:
+                    _bt = _r.get("bet", "?")
+                    _btype_wl.setdefault(_bt, 0.0)
+                    _btype_wl[_bt] += _r.get("winst_verlies", 0)
+                if _btype_wl:
+                    _best_bt  = max(_btype_wl, key=lambda k: _btype_wl[k])
+                    _best_val = _btype_wl[_best_bt]
+                    if _best_val > 0:
+                        st.caption(f"✨ Meest winstgevend: **{_best_bt}** (€{_best_val:+.2f})")
+
+        # ── EV Analyse ─────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🔬 EV Analyse")
+        st.caption(
+            "Vergelijkt voorspelde hit rate (via EV + odds) met werkelijk win % per sport. "
+            "Minimaal 3 weddenschappen per sport nodig."
+        )
+        _ev_rows = []
+        for _bsport in _bsports:
+            _sr = [r for r in _gedaan if r.get("sport", "") == _bsport]
+            if len(_sr) < 3:
+                continue
+            # Voorspelde hit rate: hr = (ev + 1) / odds
+            _pred_hrs = []
+            for _r in _sr:
+                _ev_val  = float(_r.get("ev_score", 0))
+                _odds_r  = float(_r.get("odds", 2.0))
+                if _odds_r > 1.0:
+                    _pred_hrs.append((_ev_val + 1) / _odds_r)
+            if not _pred_hrs:
+                continue
+            _pred_hr   = sum(_pred_hrs) / len(_pred_hrs)
+            _actual_hr = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen") / len(_sr)
+            _diff      = _actual_hr - _pred_hr
+            _ev_rows.append({
+                "Sport":        _bsport,
+                "Voorspeld HR": f"{_pred_hr*100:.1f}%",
+                "Werkelijk HR": f"{_actual_hr*100:.1f}%",
+                "Verschil":     f"{_diff*100:+.1f}%",
+                "N":            len(_sr),
+            })
+            # Waarschuwing bij >20% onder verwacht
+            if _pred_hr > 0 and _actual_hr < _pred_hr * 0.80:
+                st.warning(
+                    f"⚠️ {_bsport} props presteren {abs(_diff)*100:.0f}% onder verwachte hit rate "
+                    f"— overweeg filters aan te passen"
+                )
+        if _ev_rows:
+            st.dataframe(
+                pd.DataFrame(_ev_rows),
+                hide_index=True,
+                use_container_width=True,
+            )
+        elif _gedaan:
+            st.caption("Minimaal 3 afgeronde weddenschappen per sport nodig voor EV analyse.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — GESCHIEDENIS
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_history:
