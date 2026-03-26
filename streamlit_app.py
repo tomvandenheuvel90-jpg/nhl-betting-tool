@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from sports import nhl, nba, mlb, soccer, odds_api
 from scorer import composite_score, ev, rating
+import db
 
 try:
     soccer.API_KEY = st.secrets.get("FOOTBALL_DATA_TOKEN", "")
@@ -58,11 +59,7 @@ except ImportError:
 
 # ─── Constanten ───────────────────────────────────────────────────────────────
 
-SOCCER_COMPS   = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1", "LIGUE1", "VOETBAL", "SOCCER"}
-HISTORY_FILE   = Path(__file__).parent / "analyse_geschiedenis.json"
-HISTORY_DAYS   = 7
-FAV_FILE       = Path(__file__).parent / "favorieten.json"
-RESULTS_FILE   = Path(__file__).parent / "resultaten.json"
+SOCCER_COMPS = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1", "LIGUE1", "VOETBAL", "SOCCER"}
 
 # Referentie-odds voor auto-gegenereerde props (geen Linemate)
 _REF_ODDS = {
@@ -203,52 +200,13 @@ if not _check_password():
     st.stop()
 
 
-# ─── Geschiedenis helpers ─────────────────────────────────────────────────────
+# ─── Geschiedenis helpers (gedelegeerd aan db.py) ─────────────────────────────
 
 def load_history() -> list:
-    """Laad analysegeschiedenis, filter op laatste 7 dagen."""
-    if not HISTORY_FILE.exists():
-        return []
-    try:
-        entries = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-        cutoff = (datetime.date.today() - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
-        return [e for e in entries if e.get("datum", "") >= cutoff]
-    except Exception:
-        return []
-
+    return db.load_history()
 
 def save_to_history(enriched: list):
-    """Sla top 5 bets op in analysegeschiedenis."""
-    now  = datetime.datetime.now()
-    top5 = enriched[:5]
-
-    entry = {
-        "datum": now.strftime("%Y-%m-%d"),
-        "tijd":  now.strftime("%H:%M"),
-        "top5": [
-            {
-                "rank":     i + 1,
-                "speler":   b["player"],
-                "bet":      b["bet_type"],
-                "odds":     str(b["odds"]),
-                "ev_score": f"{b['ev']:+.3f}",
-                "rating":   b["rating"],
-            }
-            for i, b in enumerate(top5)
-        ],
-    }
-
-    entries = load_history()
-    entries.insert(0, entry)
-
-    # Bewaar alleen laatste 7 dagen
-    cutoff = (datetime.date.today() - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
-    entries = [e for e in entries if e.get("datum", "") >= cutoff]
-
-    try:
-        HISTORY_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass  # Op read-only filesystems: stil falen
+    db.save_to_history(enriched)
 
 
 # ─── Extractie via Claude Haiku ───────────────────────────────────────────────
@@ -781,89 +739,35 @@ def enrich_bet(bet: dict, cache: dict,
     }
 
 
-# ─── Favorieten helpers ───────────────────────────────────────────────────────
+# ─── Favorieten & Resultaten helpers (gedelegeerd aan db.py) ──────────────────
 
 def _make_fav_id(player: str, bet_type: str) -> str:
-    return hashlib.md5(f"{player.strip().lower()}|{bet_type.strip().lower()}".encode()).hexdigest()[:10]
-
+    return db.make_fav_id(player, bet_type)
 
 def load_favorieten() -> list:
-    if not FAV_FILE.exists():
-        return []
-    try:
-        return json.loads(FAV_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
+    return db.load_favorieten()
 
 def save_favorieten(favs: list) -> None:
-    try:
-        FAV_FILE.write_text(json.dumps(favs, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
+    db.save_favorieten(favs)
 
 def add_favoriet(bet: dict) -> None:
-    favs = load_favorieten()
-    fid  = _make_fav_id(bet["player"], bet["bet_type"])
-    if any(f.get("id") == fid for f in favs):
-        return
-    favs.insert(0, {
-        "id":            fid,
-        "datum":         datetime.date.today().isoformat(),
-        "speler":        bet["player"],
-        "bet":           bet["bet_type"],
-        "odds":          round(float(bet.get("odds", 0)), 2),
-        "ev_score":      round(float(bet.get("ev", 0)), 4),
-        "sport":         bet.get("sport", ""),
-        "bet365_status": bet.get("bet365", {}).get("status", "unknown"),
-    })
-    save_favorieten(favs)
-
+    fid = _make_fav_id(bet["player"], bet["bet_type"])
+    db.add_favoriet(fid, bet)
 
 def remove_favoriet(fav_id: str) -> None:
-    save_favorieten([f for f in load_favorieten() if f.get("id") != fav_id])
-
-
-# ─── Resultaten helpers ───────────────────────────────────────────────────────
+    db.remove_favoriet(fav_id)
 
 def load_resultaten() -> list:
-    if not RESULTS_FILE.exists():
-        return []
-    try:
-        return json.loads(RESULTS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
+    return db.load_resultaten()
 
 def save_resultaten(results: list) -> None:
-    try:
-        RESULTS_FILE.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
+    db.save_resultaten(results)
 
 def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> None:
-    results = [r for r in load_resultaten() if r.get("id") != fav_id]
-    odds = float(fav.get("odds", 1.0))
-    wl = round(inzet * (odds - 1), 2) if uitkomst == "gewonnen" else round(-inzet, 2)
-    results.insert(0, {
-        "id":            fav_id,
-        "datum":         fav.get("datum", datetime.date.today().isoformat()),
-        "speler":        fav.get("speler", ""),
-        "bet":           fav.get("bet", ""),
-        "odds":          odds,
-        "inzet":         round(inzet, 2),
-        "uitkomst":      uitkomst,
-        "winst_verlies": wl,
-        "sport":         fav.get("sport", ""),
-        "ev_score":      fav.get("ev_score", 0.0),
-    })
-    save_resultaten(results)
-
+    db.upsert_resultaat(fav_id, fav, uitkomst, inzet)
 
 def remove_resultaat(fav_id: str) -> None:
-    save_resultaten([r for r in load_resultaten() if r.get("id") != fav_id])
+    db.remove_resultaat(fav_id)
 
 
 # ─── Resultaten renderen ──────────────────────────────────────────────────────
@@ -944,13 +848,59 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
         if info_parts:
             st.caption(" · ".join(info_parts))
 
-        # ⭐ Favoriet knop
+        # ─── 📝 Odds aanpassen ────────────────────────────────────────────────
+        _adj_ss_key = "adj_" + _make_fav_id(bet["player"], bet["bet_type"])
+        _stored_odds = st.session_state.get(_adj_ss_key, None)
+        _display_odds = _stored_odds if _stored_odds is not None else float(bet["odds"])
+
+        with st.expander("📝 Odds aangepast op Bet365?"):
+            _inp_key = f"odds_inp_{rank}_{total}"
+            _new_odds_inp = st.number_input(
+                "Nieuwe odds",
+                min_value=1.01,
+                max_value=50.0,
+                value=_display_odds,
+                step=0.01,
+                format="%.2f",
+                key=_inp_key,
+            )
+            if st.button("Herbereken EV", key=f"recalc_{rank}_{total}"):
+                st.session_state[_adj_ss_key] = float(
+                    st.session_state.get(_inp_key, _new_odds_inp)
+                )
+                st.rerun()
+
+            # Toon EV vergelijking zodra odds afwijken
+            _eff_odds = st.session_state.get(_adj_ss_key, None)
+            if _eff_odds is not None and abs(_eff_odds - float(bet["odds"])) > 0.001:
+                _composite = bet.get("composite", 0.5)
+                _orig_ev   = bet["ev"]
+                _new_ev    = _composite * (_eff_odds - 1) - (1 - _composite)
+                _diff      = _new_ev - _orig_ev
+                _o_str     = f"+{_orig_ev:.3f}" if _orig_ev >= 0 else f"{_orig_ev:.3f}"
+                _n_str     = f"+{_new_ev:.3f}"  if _new_ev  >= 0 else f"{_new_ev:.3f}"
+                _d_str     = f"{_diff:+.3f}"
+                _reden     = "hogere" if _diff >= 0 else "lagere"
+                st.caption(f"EV: **{_o_str}** → **{_n_str}** ({_d_str} door {_reden} odds)")
+                if _new_ev < 0:
+                    st.error("❌ Weddenschap niet meer interessant bij deze odds")
+                else:
+                    st.success("✅ Nog steeds interessant")
+
+        # ─── ⭐ Favoriet knop (met aangepaste odds indien ingesteld) ──────────
         _fav_label = "⭐ Verwijder favoriet" if is_fav else "⭐ Sla op als favoriet"
         if st.button(_fav_label, key=f"fav_{rank}_{total}", use_container_width=False):
             if is_fav:
                 remove_favoriet(_make_fav_id(bet["player"], bet["bet_type"]))
             else:
-                add_favoriet(bet)
+                # Gebruik aangepaste odds als die ingesteld zijn
+                _fav_adj = st.session_state.get(_adj_ss_key, None)
+                if _fav_adj is not None and abs(_fav_adj - float(bet["odds"])) > 0.001:
+                    _composite = bet.get("composite", 0.5)
+                    _adj_ev    = _composite * (_fav_adj - 1) - (1 - _composite)
+                    add_favoriet({**bet, "odds": _fav_adj, "ev": _adj_ev})
+                else:
+                    add_favoriet(bet)
             st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
@@ -970,6 +920,22 @@ except Exception:
 if not api_key:
     st.error("❌ Geen `ANTHROPIC_API_KEY` gevonden in st.secrets.")
     st.stop()
+
+# ─── Supabase initialiseren ───────────────────────────────────────────────────
+try:
+    _sb_url = st.secrets.get("SUPABASE_URL", "")
+    _sb_key = st.secrets.get("SUPABASE_KEY", "")
+except Exception:
+    _sb_url = os.environ.get("SUPABASE_URL", "")
+    _sb_key = os.environ.get("SUPABASE_KEY", "")
+
+_db_cloud = db.init(_sb_url, _sb_key)
+if not _db_cloud:
+    st.warning(
+        "⚠️ **Lokale opslag** — Favorieten, resultaten en geschiedenis kunnen "
+        "verdwijnen na een Streamlit herstart. "
+        "Voeg `SUPABASE_URL` en `SUPABASE_KEY` toe aan je secrets voor persistente opslag."
+    )
 
 # Odds API (optioneel — voor Bet365 verificatie)
 try:

@@ -22,5 +22,8 @@ requests>=2.31
 pillow>=10.0
 pillow-heif>=0.13
 
+# Persistente cloud opslag (optioneel — fallback naar lokale JSON)
+supabase>=2.0
+
 # Flask (alleen lokaal, niet nodig op Streamlit Cloud)
 flask>=2.3
