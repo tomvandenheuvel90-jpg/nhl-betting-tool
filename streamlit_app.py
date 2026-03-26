@@ -41,6 +41,21 @@ try:
 except ImportError:
     ANTHROPIC_AVAILABLE = False
 
+# ─── PIL / HEIC support ───────────────────────────────────────────────────────
+try:
+    from PIL import Image as _PILImage
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PILImage = None
+    _PIL_AVAILABLE = False
+
+try:
+    import pillow_heif as _pillow_heif
+    _pillow_heif.register_heif_opener()
+    _HEIF_AVAILABLE = True
+except ImportError:
+    _HEIF_AVAILABLE = False
+
 # ─── Constanten ───────────────────────────────────────────────────────────────
 
 SOCCER_COMPS   = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1", "LIGUE1", "VOETBAL", "SOCCER"}
@@ -90,6 +105,9 @@ Geef een JSON object terug met twee arrays:
    - "hit_rate": percentage als decimaal: 100%→1.0, 92.3%→0.923 (number)
    - "sample": bijv. "12/13" (string)
    - "sample_n": totaal aantal wedstrijden als getal (number)
+
+   BELANGRIJK: Extraheer ALLE spelers en props die zichtbaar zijn in de afbeelding,
+   ook onderaan de lijst. Scroll mentaal door de hele afbeelding. Mis geen enkele prop.
 
 2. "matches": ALLE Flashscore wedstrijden. Elk item:
    - "home_team": naam thuisploeg (string)
@@ -303,12 +321,94 @@ def _parse_json_from_text(text: str):
     return None
 
 
+def _convert_heic_to_jpeg(path: str) -> str:
+    """
+    Converteert HEIC/HEIF naar JPEG. Geeft het nieuwe pad terug.
+    Als conversie niet mogelijk is (geen PIL/heif), geeft het originele pad terug.
+    """
+    suffix = Path(path).suffix.lower()
+    if suffix not in (".heic", ".heif"):
+        return path
+    if not _PIL_AVAILABLE:
+        return path
+    try:
+        img = _PILImage.open(path)
+        jpeg_path = path.rsplit(".", 1)[0] + "_converted.jpg"
+        img = img.convert("RGB")
+        img.save(jpeg_path, "JPEG", quality=90)
+        return jpeg_path
+    except Exception:
+        return path
+
+
+def _split_tall_image(path: str) -> list:
+    """
+    Als de afbeelding hoger is dan 1500px: splits in twee overlappende helften.
+    Geeft [top_path, bottom_path] terug, anders [path].
+    """
+    if not _PIL_AVAILABLE:
+        return [path]
+    try:
+        img = _PILImage.open(path)
+        w, h = img.size
+        if h <= 1500:
+            return [path]
+        # 10% overlap zodat props op de naad niet gemist worden
+        overlap = int(h * 0.10)
+        mid = h // 2
+
+        top  = img.crop((0, 0,            w, mid + overlap))
+        bot  = img.crop((0, mid - overlap, w, h))
+
+        top_path = path + "_top.jpg"
+        bot_path = path + "_bot.jpg"
+        top.convert("RGB").save(top_path, "JPEG", quality=90)
+        bot.convert("RGB").save(bot_path, "JPEG", quality=90)
+        return [top_path, bot_path]
+    except Exception:
+        return [path]
+
+
+def _deduplicate_bets(bets: list) -> list:
+    """Verwijder dubbele bets op basis van (player, bet_type)."""
+    seen = set()
+    result = []
+    for b in bets:
+        key = (str(b.get("player", "")).lower(), str(b.get("bet_type", "")).lower())
+        if key not in seen:
+            seen.add(key)
+            result.append(b)
+    return result
+
+
+def _deduplicate_matches(matches: list) -> list:
+    """Verwijder dubbele wedstrijden op basis van (home_team, away_team)."""
+    seen = set()
+    result = []
+    for m in matches:
+        key = (
+            str(m.get("home_team", "")).lower(),
+            str(m.get("away_team", "")).lower(),
+        )
+        if key not in seen:
+            seen.add(key)
+            result.append(m)
+    return result
+
+
 def extract_bets(client, image_paths: list):
     """
     Stuurt afbeeldingen naar Claude Haiku en extraheert bets + matches als JSON.
-    Slaat de ruwe response op in st.session_state['_dbg_raw'] voor debugging.
+    - Grote afbeeldingen (> 1500px) worden gesplitst in twee overlappende delen.
+    - Slaat de ruwe response op in st.session_state['_dbg_raw'] voor debugging.
     """
-    content = [_image_content_block(p) for p in image_paths]
+    # Verwerk elke afbeelding: splits grote afbeeldingen in overlappende helften
+    expanded_paths = []
+    for p in image_paths:
+        parts = _split_tall_image(p)
+        expanded_paths.extend(parts)
+
+    content = [_image_content_block(p) for p in expanded_paths]
     content.append({"type": "text", "text": EXTRACT_PROMPT})
 
     response = client.messages.create(
@@ -328,8 +428,10 @@ def extract_bets(client, image_paths: list):
         # JSON niet gevonden — raw response opgeslagen voor diagnose
         return [], []
     if isinstance(data, list):
-        return data, []
-    return data.get("bets", []), data.get("matches", [])
+        return _deduplicate_bets(data), []
+    bets    = _deduplicate_bets(data.get("bets", []))
+    matches = _deduplicate_matches(data.get("matches", []))
+    return bets, matches
 
 
 # ─── Flashscore analyse via Claude Haiku ──────────────────────────────────────
@@ -933,9 +1035,9 @@ with tab_analyse:
     # Uploader — key incrementeert na elke analyse om hem te resetten
     uploaded_files = st.file_uploader(
         "Upload Linemate en/of Flashscore screenshots",
-        type=["png", "jpg", "jpeg", "webp"],
+        type=["png", "jpg", "jpeg", "webp", "heic", "heif"],
         accept_multiple_files=True,
-        help="Je kunt meerdere screenshots tegelijk uploaden",
+        help="Je kunt meerdere screenshots tegelijk uploaden (ook iPhone HEIC foto's)",
         key=f"uploader_{st.session_state.uploader_key}",
     )
 
@@ -979,12 +1081,14 @@ with tab_analyse:
         _analysis_aborted = False
         try:
             for f in uploaded_files:
-                suffix = Path(f.name).suffix or ".png"
+                suffix = Path(f.name).suffix.lower() or ".png"
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
                 tmp.write(f.read())
                 tmp.flush()
                 tmp.close()   # sluit voor lezen door Claude
-                tmp_paths.append(tmp.name)
+                # Converteer HEIC/HEIF automatisch naar JPEG (iPhone foto's)
+                converted = _convert_heic_to_jpeg(tmp.name)
+                tmp_paths.append(converted)
 
             client = anthropic.Anthropic(api_key=api_key)
 

@@ -18,5 +18,9 @@ google-auth>=2.20
 pandas>=2.0
 requests>=2.31
 
+# Afbeeldingsverwerking (HEIC/HEIF conversie, image splitting)
+pillow>=10.0
+pillow-heif>=0.13
+
 # Flask (alleen lokaal, niet nodig op Streamlit Cloud)
 flask>=2.3
