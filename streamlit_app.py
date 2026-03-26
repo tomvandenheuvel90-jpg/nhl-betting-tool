@@ -25,7 +25,7 @@ except Exception:
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
-from sports import nhl, nba, mlb, soccer
+from sports import nhl, nba, mlb, soccer, odds_api
 from scorer import composite_score, ev, rating
 
 try:
@@ -598,6 +598,7 @@ def enrich_bet(bet: dict, cache: dict,
     return {
         "player":      player_name,
         "sport":       bet.get("sport", "?"),
+        "team":        team_hint,
         "bet_type":    bet_type,
         "odds":        odds,
         "sample":      bet.get("sample", "?"),
@@ -609,6 +610,7 @@ def enrich_bet(bet: dict, cache: dict,
         "opponent":    opponent_name,
         "gaa":         opponent_stats.get("goals_against_avg"),
         "source":      player_stats.get("source", ""),
+        "bet365":      {},   # wordt ingevuld na enrichment
     }
 
 
@@ -661,7 +663,11 @@ def render_bet_card(bet: dict, rank: int, total: int):
                 unsafe_allow_html=True,
             )
         st.markdown(f"#### {bet['player']}")
-        st.caption(f"{bet['bet_type']} · {bet['sport']}")
+        b365_label = bet.get("bet365", {}).get("label", "")
+        caption_line = f"{bet['bet_type']} · {bet['sport']}"
+        if b365_label:
+            caption_line += f"  ·  {b365_label}"
+        st.caption(caption_line)
 
         ev_color = "#4ade80" if bet["ev"] >= 0.05 else "#facc15"
         st.markdown(
@@ -703,6 +709,13 @@ except Exception:
 if not api_key:
     st.error("❌ Geen `ANTHROPIC_API_KEY` gevonden in st.secrets.")
     st.stop()
+
+# Odds API (optioneel — voor Bet365 verificatie)
+try:
+    _odds_key = st.secrets.get("ODDS_API_KEY", "")
+except Exception:
+    _odds_key = os.environ.get("ODDS_API_KEY", "")
+odds_api.set_api_key(_odds_key)
 
 if not ANTHROPIC_AVAILABLE:
     st.error("❌ `anthropic` pakket niet geïnstalleerd.")
@@ -828,6 +841,37 @@ with tab_analyse:
                         prog.progress((i + 1) / len(bets))
                     enriched.sort(key=lambda x: x["ev"], reverse=True)
                     st.write(f"✅ {len(enriched)} props gescoord")
+
+                    # ── Bet365 verificatie (optioneel) ──
+                    if odds_api._API_KEY:
+                        st.write("💰 Bet365 player props controleren...")
+                        b365_prog = st.progress(0)
+                        for _i, _bet in enumerate(enriched):
+                            b365 = odds_api.check_bet365_availability(
+                                player_name=_bet["player"],
+                                bet_type=_bet["bet_type"],
+                                sport=_bet["sport"],
+                                team=_bet.get("team", ""),
+                            )
+                            _bet["bet365"] = b365
+                            # Als beschikbaar: herbereken EV met Bet365 odds
+                            if b365["status"] == "available" and b365.get("bet365_odds"):
+                                _bet["odds"]   = b365["bet365_odds"]
+                                _bet["ev"]     = ev(_bet["composite"], b365["bet365_odds"])
+                                _bet["rating"] = rating(_bet["ev"], _bet["composite"])
+                            b365_prog.progress((_i + 1) / len(enriched))
+
+                        # Herrangschik met bet365 penalty
+                        def _ev_rank(b):
+                            s = b.get("bet365", {}).get("status", "unknown")
+                            if s == "unavailable":
+                                return -999.0
+                            if s == "different_line":
+                                return b["ev"] * 0.85
+                            return b["ev"]
+
+                        enriched.sort(key=_ev_rank, reverse=True)
+                        st.write("✅ Bet365 verificatie klaar")
                 else:
                     enriched = []
 
@@ -839,8 +883,13 @@ with tab_analyse:
 
                 status.update(label="✅ Analyse compleet!", state="complete")
 
-            # Top 3 berekenen
-            top3 = [b for b in enriched if b["rating"].startswith("✅")][:3]
+            # Top 3 berekenen (bet365-unavailable props uitsluiten)
+            def _is_b365_ok(b):
+                return b.get("bet365", {}).get("status", "unknown") != "unavailable"
+
+            top3 = [b for b in enriched if b["rating"].startswith("✅") and _is_b365_ok(b)][:3]
+            if not top3:
+                top3 = [b for b in enriched if _is_b365_ok(b)][:3]
             if not top3:
                 top3 = enriched[:3]
             top3_out = [{"player": b["player"], "bet_type": b["bet_type"],
