@@ -106,16 +106,23 @@ Geef een JSON object terug met twee arrays:
    BELANGRIJK: Extraheer ALLE spelers en props die zichtbaar zijn in de afbeelding,
    ook onderaan de lijst. Scroll mentaal door de hele afbeelding. Mis geen enkele prop.
 
-2. "matches": ALLE Flashscore wedstrijden. Elk item:
-   - "home_team": naam thuisploeg (string)
-   - "away_team": naam uitploeg (string)
-   - "home_form": laatste 5 resultaten thuisploeg, bijv. "WWDLW", of null
-   - "away_form": idem voor uitploeg, of null
-   - "h2h": korte H2H samenvatting indien zichtbaar, bijv. "Arsenal won 3/5", of null
-   - "competition": competitienaam (bijv. "Premier League"), of null
+2. "matches": ALLE wedstrijden zichtbaar in de screenshot. Elk item:
+   - "home_team": volledige naam thuisploeg (string), bijv. "Florida Panthers"
+   - "away_team": volledige naam uitploeg (string), bijv. "Minnesota Wild"
+   - "sport": "NHL", "NBA", "MLB", of voetbalcompetitie zoals "EPL"
+   - "competition": competitienaam indien zichtbaar (bijv. "NHL", "Premier League"), of null
+   - "time": aanvangstijd indien zichtbaar (bijv. "00:00" of "01:00"), of null
    - "date": datum indien zichtbaar (bijv. "2025-03-25"), of null
    - "status": "gepland", "bezig" of "afgelopen"
    - "score": score indien zichtbaar (bijv. "2-1"), of null
+   - "screenshot_odds": drie odds zichtbaar naast de wedstrijd als object
+       {"home": 3.20, "draw": 4.20, "away": 1.95} of null als niet zichtbaar
+   - "home_form": laatste 5 resultaten thuisploeg (bijv. "WWDLW"), of null
+   - "away_form": idem voor uitploeg, of null
+   - "h2h": korte H2H samenvatting indien zichtbaar (bijv. "Arsenal won 3/5"), of null
+
+   LET OP: Een Flashscore NHL-overzichtsscherm toont MEERDERE wedstrijden met teamlogos
+   en drie odds ernaast. Extraheer ELKE wedstrijd als apart item. Mis geen enkele wedstrijd.
 
 Als er geen Linemate screenshots zijn, geef dan een lege array voor "bets".
 Als er geen Flashscore screenshots zijn, geef dan een lege array voor "matches".
@@ -417,6 +424,190 @@ def analyze_flashscore(client, matches: list, enriched_bets: list) -> str:
         messages=[{"role": "user", "content": prompt}],
     )
     return response.content[0].text
+
+
+# ─── NHL Wedstrijd-analyse (1X2 three-way) ────────────────────────────────────
+
+import math as _math
+
+_LEAGUE_GF_AVG  = 3.05   # NHL-seizoensgemiddelde goals per team per wedstrijd
+_HOME_ICE_FACTOR = 1.08  # thuisploeg scoort ~8% meer in NHL
+_OT_BASE_RATE   = 0.235  # ~23.5% van NHL-wedstrijden gaat naar OT/SO
+
+
+def _poisson_p(k: int, lam: float) -> float:
+    """P(X = k) voor Poisson-verdeling met parameter lam."""
+    if lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    return (_math.exp(-lam) * lam ** k) / _math.factorial(k)
+
+
+def _nhl_match_probs(home_form: dict, away_form: dict) -> dict:
+    """
+    Bereken 1X2 kansen via een eenvoudig Poisson-model op basis van team stats.
+
+    Geeft terug:
+      p_home  — kans thuiswinst (regulatie)
+      p_draw  — kans OT/SO (gelijkspel na regulatie)
+      p_away  — kans uitwinst (regulatie)
+      lH, lA  — verwachte goals thuis / uit
+    """
+    # Verwachte goals per team (Dixon-Coles benadering zonder Dixon-Coles)
+    lH = home_form.get("gf_avg", _LEAGUE_GF_AVG) * \
+         (away_form.get("ga_avg", _LEAGUE_GF_AVG) / _LEAGUE_GF_AVG) * \
+         _HOME_ICE_FACTOR
+    lA = away_form.get("gf_avg", _LEAGUE_GF_AVG) * \
+         (home_form.get("ga_avg", _LEAGUE_GF_AVG) / _LEAGUE_GF_AVG)
+
+    # Begrens op realistisch bereik
+    lH = max(1.5, min(lH, 5.0))
+    lA = max(1.5, min(lA, 5.0))
+
+    p_home = p_draw = p_away = 0.0
+    for h in range(9):
+        for a in range(9):
+            p = _poisson_p(h, lH) * _poisson_p(a, lA)
+            if h > a:
+                p_home += p
+            elif h == a:
+                p_draw += p
+            else:
+                p_away += p
+
+    # Normaliseer (afrondingsfouten)
+    tot = p_home + p_draw + p_away or 1.0
+    return {
+        "p_home": round(p_home / tot, 4),
+        "p_draw": round(p_draw / tot, 4),
+        "p_away": round(p_away / tot, 4),
+        "lH":     round(lH, 2),
+        "lA":     round(lA, 2),
+    }
+
+
+def _match_ev(model_prob: float, odds: float) -> float:
+    """EV = p × (odds - 1) - (1 - p)"""
+    if not odds or odds <= 1.0:
+        return -1.0
+    return round(model_prob * (odds - 1) - (1 - model_prob), 4)
+
+
+def _match_rating(ev_val: float) -> str:
+    if ev_val >= 0.05:
+        return "✅ Waarde"
+    if ev_val >= -0.05:
+        return "⚠️ Neutraal"
+    return "❌ Vermijd"
+
+
+def analyze_nhl_matches(matches: list) -> list:
+    """
+    Analyseert een lijst van NHL-wedstrijden (geëxtraheerd uit Flashscore screenshot).
+
+    Voor elke wedstrijd:
+      1. Team form ophalen (NHL API standings)
+      2. 1X2 odds ophalen van Bet365 (via Odds API; screenshot-odds als fallback)
+      3. Poisson kansen berekenen
+      4. EV en rating per optie (thuis / OT / uit) berekenen
+
+    Geeft lijst van match-analyse dicts terug.
+    """
+    results = []
+    for m in matches:
+        sport = (m.get("sport") or m.get("competition") or "").upper()
+        if "NHL" not in sport and "HOCKEY" not in sport:
+            continue  # alleen NHL
+
+        home_name = m.get("home_team", "")
+        away_name = m.get("away_team", "")
+        if not home_name or not away_name:
+            continue
+
+        # 1. Team form (NHL API)
+        home_form = {}
+        away_form = {}
+        try:
+            home_form = nhl.get_team_form(home_name)
+        except Exception:
+            pass
+        try:
+            away_form = nhl.get_team_form(away_name)
+        except Exception:
+            pass
+
+        # 2. Odds ophalen: Bet365 API → screenshot → None
+        scr_odds   = m.get("screenshot_odds") or {}
+        b365_odds  = {}
+        odds_bron  = "screenshot"
+        try:
+            if odds_api._API_KEY and not odds_api.is_limit_reached():
+                b365_odds = odds_api.get_match_odds_h2h("NHL", home_name, away_name)
+                if b365_odds.get("source") == "bet365":
+                    odds_bron = "Bet365"
+        except Exception:
+            pass
+
+        def _odds(key_b365, key_scr):
+            v = b365_odds.get(key_b365) or scr_odds.get(key_scr)
+            return float(v) if v else None
+
+        home_odds = _odds("home_odds", "home")
+        draw_odds = _odds("draw_odds", "draw")
+        away_odds = _odds("away_odds", "away")
+
+        # 3. Poisson kansen
+        probs = {}
+        if home_form and away_form:
+            probs = _nhl_match_probs(home_form, away_form)
+        elif home_form or away_form:
+            # Één team onbekend — gebruik league-gemiddelden
+            fallback = {
+                "gf_avg": _LEAGUE_GF_AVG,
+                "ga_avg": _LEAGUE_GF_AVG,
+            }
+            probs = _nhl_match_probs(
+                home_form or fallback,
+                away_form or fallback,
+            )
+
+        # 4. EV per optie
+        def _option(prob_key, odds_val, label):
+            p = probs.get(prob_key, 0.0)
+            ev_val = _match_ev(p, odds_val) if odds_val else None
+            return {
+                "label":  label,
+                "prob":   p,
+                "odds":   odds_val,
+                "ev":     ev_val,
+                "rating": _match_rating(ev_val) if ev_val is not None else "—",
+            }
+
+        options = [
+            _option("p_home", home_odds, f"🏠 {home_name} wint"),
+            _option("p_draw", draw_odds, "🔄 OT / SO"),
+            _option("p_away", away_odds, f"✈️ {away_name} wint"),
+        ]
+
+        # Beste optie op basis van EV
+        best = max(
+            (o for o in options if o["ev"] is not None),
+            key=lambda o: o["ev"],
+            default=None,
+        )
+
+        results.append({
+            "home_team":  home_name,
+            "away_team":  away_name,
+            "time":       m.get("time"),
+            "home_form":  home_form,
+            "away_form":  away_form,
+            "probs":      probs,
+            "odds_bron":  odds_bron,
+            "options":    options,
+            "best":       best,
+        })
+
+    return results
 
 
 # ─── Scenario detectie ────────────────────────────────────────────────────────
@@ -786,6 +977,154 @@ def render_flashscore(text: str):
     st.markdown("---")
     st.markdown("### 📺 Flashscore Analyse")
     st.markdown(text)
+
+
+def render_nhl_match_cards(match_analyses: list):
+    """Toon kaartjes voor geanalyseerde NHL-wedstrijden."""
+    if not match_analyses:
+        return
+    st.markdown("---")
+    st.markdown("### 🏒 NHL Wedstrijd-analyse")
+
+    for ma in match_analyses:
+        home = ma["home_team"]
+        away = ma["away_team"]
+        time_str = ma.get("time") or ""
+        home_f   = ma.get("home_form", {})
+        away_f   = ma.get("away_form", {})
+        probs    = ma.get("probs", {})
+        best     = ma.get("best")
+        odds_src = ma.get("odds_bron", "")
+
+        with st.container():
+            st.markdown(
+                "<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+                "border-radius:12px;padding:16px;margin-bottom:14px;'>",
+                unsafe_allow_html=True,
+            )
+
+            # Header: teams + tijd
+            hcol, tcol = st.columns([4, 1])
+            with hcol:
+                st.markdown(f"#### 🏒 {home}  vs  {away}")
+            with tcol:
+                if time_str:
+                    st.markdown(f"<div style='text-align:right;color:#a0a0c0;padding-top:8px'>"
+                                f"⏰ {time_str}</div>", unsafe_allow_html=True)
+
+            # Team stats vergelijking
+            if home_f or away_f:
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    if home_f:
+                        st.metric(f"🏠 {home_f.get('abbrev', home[:3])}", "")
+                        st.caption(
+                            f"Punten: {home_f.get('points',0)} ({home_f.get('points_pct',0):.1%})  \n"
+                            f"L10: {home_f.get('last10','—')}  \n"
+                            f"Reeks: {home_f.get('streak','—')}  \n"
+                            f"Thuis: {home_f.get('home_record','—')}"
+                        )
+                with c2:
+                    if home_f and away_f:
+                        lH = probs.get("lH", 0)
+                        lA = probs.get("lA", 0)
+                        st.markdown(
+                            f"<div style='text-align:center;padding-top:12px;color:#a0a0c0;'>"
+                            f"<div>xG: {lH:.2f} – {lA:.2f}</div>"
+                            f"<div style='font-size:0.85rem;margin-top:4px'>"
+                            f"GF/GA: {home_f.get('gf_avg',0):.2f}/{home_f.get('ga_avg',0):.2f}"
+                            f" · {away_f.get('gf_avg',0):.2f}/{away_f.get('ga_avg',0):.2f}</div>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                with c3:
+                    if away_f:
+                        st.metric(f"✈️ {away_f.get('abbrev', away[:3])}", "")
+                        st.caption(
+                            f"Punten: {away_f.get('points',0)} ({away_f.get('points_pct',0):.1%})  \n"
+                            f"L10: {away_f.get('last10','—')}  \n"
+                            f"Reeks: {away_f.get('streak','—')}  \n"
+                            f"Uit: {away_f.get('road_record','—')}"
+                        )
+
+            st.markdown("---")
+
+            # Drie bet-opties als kolommen
+            opt_cols = st.columns(3)
+            for col, opt in zip(opt_cols, ma["options"]):
+                with col:
+                    prob_pct = f"{opt['prob']*100:.1f}%"
+                    odds_str = f"{opt['odds']:.2f}" if opt["odds"] else "—"
+                    ev_val   = opt["ev"]
+                    ev_str   = f"+{ev_val:.3f}" if ev_val and ev_val >= 0 else (
+                                f"{ev_val:.3f}" if ev_val is not None else "—")
+                    rat      = opt["rating"]
+                    is_best  = (best and opt["label"] == best["label"]
+                                and ev_val is not None and ev_val >= 0.0)
+
+                    border_col = "#4ade80" if "Waarde" in rat else (
+                                 "#facc15" if "Neutraal" in rat else "#f87171")
+                    bg_col     = "#0d2818" if "Waarde" in rat else (
+                                 "#1a180a" if "Neutraal" in rat else "#1a0808")
+
+                    best_badge = " ⭐ Beste" if is_best else ""
+                    st.markdown(
+                        f"<div style='background:{bg_col};border:1px solid {border_col};"
+                        f"border-radius:8px;padding:10px;text-align:center;'>"
+                        f"<div style='font-size:0.8rem;color:#a0a0c0;margin-bottom:4px'>"
+                        f"{opt['label']}{best_badge}</div>"
+                        f"<div style='font-size:1.1rem;font-weight:700;color:#fff'>"
+                        f"Odds: {odds_str}</div>"
+                        f"<div style='color:#a0a0c0;font-size:0.85rem'>Model: {prob_pct}</div>"
+                        f"<div style='font-size:1.0rem;font-weight:700;"
+                        f"color:{border_col}'>EV {ev_str}</div>"
+                        f"<div style='font-size:0.8rem;color:{border_col}'>{rat}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            # Odds bron + opslaan knop
+            st.markdown(
+                f"<div style='color:#6060a0;font-size:0.75rem;margin-top:8px;'>"
+                f"Odds bron: {odds_src}  ·  "
+                f"Model: Poisson (xG {probs.get('lH',0):.2f}–{probs.get('lA',0):.2f})</div>",
+                unsafe_allow_html=True,
+            )
+
+            # ⭐ Opslaan in favorieten (beste optie)
+            if best and best.get("odds") and best.get("ev") is not None:
+                fav_key  = f"nhl_match_{home[:3]}_{away[:3]}_{time_str}"
+                fav_bet  = {
+                    "player":   f"{home} vs {away}",
+                    "sport":    "NHL",
+                    "team":     home[:3].upper(),
+                    "bet_type": best["label"].replace("🏠 ", "").replace("✈️ ", "").replace("🔄 ", ""),
+                    "odds":     best["odds"],
+                    "ev":       best["ev"],
+                    "rating":   best["rating"],
+                    "composite": best["prob"],
+                    "linemate_hr": best["prob"],
+                    "season_hr":   best["prob"],
+                    "sample":  "NHL API",
+                    "source":  "NHL Standings",
+                }
+                _fav_ids = {f["id"] for f in load_favorieten()}
+                _fid     = _make_fav_id(fav_bet["player"], fav_bet["bet_type"])
+                _is_fav  = _fid in _fav_ids
+                _btn_lbl = "⭐ Opgeslagen" if _is_fav else "☆ Opslaan in Favorieten"
+                if not _is_fav:
+                    if st.button(_btn_lbl, key=f"fav_match_{fav_key}",
+                                 use_container_width=True):
+                        add_favoriet(fav_bet)
+                        st.rerun()
+                else:
+                    st.markdown(
+                        f"<div style='color:#4ade80;text-align:center;padding:4px'>"
+                        f"⭐ Opgeslagen in Favorieten</div>",
+                        unsafe_allow_html=True,
+                    )
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_top3(top3: list):
@@ -1168,11 +1507,29 @@ with tab_analyse:
                     else:
                         enriched = []
 
-                    flashscore_text = ""
+                    flashscore_text  = ""
+                    nhl_match_analyses = []
                     if matches:
-                        st.write("📺 Flashscore analyseren via Claude...")
-                        flashscore_text = analyze_flashscore(client, matches, enriched)
-                        st.write("✅ Flashscore analyse klaar")
+                        # Splits NHL-wedstrijden van voetbalwedstrijden
+                        nhl_matches    = [
+                            m for m in matches
+                            if "NHL" in (m.get("sport") or m.get("competition") or "").upper()
+                            or "HOCKEY" in (m.get("sport") or m.get("competition") or "").upper()
+                        ]
+                        soccer_matches = [
+                            m for m in matches
+                            if m not in nhl_matches
+                        ]
+
+                        if nhl_matches:
+                            st.write(f"🏒 {len(nhl_matches)} NHL-wedstrijd(en) analyseren...")
+                            nhl_match_analyses = analyze_nhl_matches(nhl_matches)
+                            st.write(f"✅ NHL wedstrijd-analyse klaar")
+
+                        if soccer_matches:
+                            st.write("📺 Flashscore analyseren via Claude...")
+                            flashscore_text = analyze_flashscore(client, soccer_matches, enriched)
+                            st.write("✅ Flashscore analyse klaar")
 
                     status.update(label="✅ Analyse compleet!", state="complete")
 
@@ -1195,10 +1552,11 @@ with tab_analyse:
 
                 # Resultaten opslaan in session state
                 st.session_state.last_analysis = {
-                    "enriched":       enriched,
-                    "top3":           top3_out,
-                    "flashscore":     flashscore_text,
-                    "scenario":       scenario,
+                    "enriched":          enriched,
+                    "top3":              top3_out,
+                    "flashscore":        flashscore_text,
+                    "nhl_match_analyses": nhl_match_analyses,
+                    "scenario":          scenario,
                 }
 
                 # Uploader resetten + rerun
@@ -1221,7 +1579,8 @@ with tab_analyse:
         res       = st.session_state.last_analysis
         enriched  = res["enriched"]
         top3_out  = res["top3"]
-        flashscore_text = res["flashscore"]
+        flashscore_text     = res["flashscore"]
+        nhl_match_analyses  = res.get("nhl_match_analyses", [])
         scenario  = res.get("scenario", 3)
 
         # Scenario label
@@ -1230,6 +1589,10 @@ with tab_analyse:
         # Tip bij Scenario 3: alleen Linemate, geen Flashscore
         if scenario == 3:
             st.info("⚠️ Tip: upload ook een Flashscore screenshot voor wedstrijdcontext en automatische prop-suggesties.")
+
+        # NHL wedstrijd-analyse
+        if nhl_match_analyses:
+            render_nhl_match_cards(nhl_match_analyses)
 
         if flashscore_text:
             render_flashscore(flashscore_text)

@@ -335,6 +335,90 @@ def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
     return result
 
 
+# ─── Team form (voor wedstrijd-analyse) ──────────────────────────────────────
+
+def get_team_form(team_name: str) -> dict:
+    """
+    Haalt uitgebreide teamstats op voor een NHL-team via de standings API.
+
+    team_name kan zijn:
+      - Afkorting: "FLA", "MIN", "TBL"
+      - Volledige naam: "Florida Panthers", "Minnesota Wild"
+      - Deelnaam: "Panthers", "Wild"
+
+    Geeft dict terug met:
+      abbrev, full_name, gp, wins, losses, ot_losses, points, points_pct,
+      gf_avg, ga_avg, home_record, road_record, last10, streak
+    Of leeg dict als team niet gevonden.
+    """
+    cache_key = f"nhl_form_{team_name.strip().upper()}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    standings = _nhl_get(f"{NHL_BASE}/standings/now").get("standings", [])
+    search = team_name.strip().lower()
+    result = {}
+
+    for t in standings:
+        abbrev     = t.get("teamAbbrev", {}).get("default", "")
+        common     = t.get("teamCommonName", {}).get("default", "")   # "Panthers"
+        place      = t.get("teamPlaceName", {}).get("default", "")    # "Florida"
+        full       = f"{place} {common}".strip()                      # "Florida Panthers"
+
+        if not any([
+            abbrev.lower() == search,
+            common.lower() == search,
+            full.lower()   == search,
+            search in full.lower(),
+            search in common.lower(),
+        ]):
+            continue
+
+        gp = max(t.get("gamesPlayed", 1), 1)
+
+        # Last 10 games
+        l10w  = t.get("l10Wins",      0)
+        l10l  = t.get("l10Losses",    0)
+        l10ot = t.get("l10OtLosses",  0)
+        l10pts = l10w * 2 + l10ot          # punten laatste 10
+
+        # Home / road records
+        hw  = t.get("homeWins",       0)
+        hl  = t.get("homeLosses",     0)
+        hot = t.get("homeOtLosses",   0)
+        rw  = t.get("roadWins",       0)
+        rl  = t.get("roadLosses",     0)
+        rot = t.get("roadOtLosses",   0)
+
+        gf_avg = round(t.get("goalFor",     0) / gp, 2)
+        ga_avg = round(t.get("goalAgainst", 0) / gp, 2)
+        pts    = t.get("points", 0)
+
+        result = {
+            "abbrev":      abbrev,
+            "full_name":   full or common or abbrev,
+            "gp":          gp,
+            "wins":        t.get("wins",     0),
+            "losses":      t.get("losses",   0),
+            "ot_losses":   t.get("otLosses", 0),
+            "points":      pts,
+            "points_pct":  round(pts / (gp * 2), 3),  # maximaal 1.0
+            "gf_avg":      gf_avg,
+            "ga_avg":      ga_avg,
+            "home_record": f"{hw}-{hl}-{hot}",
+            "road_record": f"{rw}-{rl}-{rot}",
+            "last10":      f"{l10w}-{l10l}-{l10ot}",
+            "last10_pts":  l10pts,
+            "streak":      t.get("streakCode", ""),
+        }
+        break
+
+    if result:
+        cache_set(cache_key, result, ttl_hours=6)
+    return result
+
+
 # ─── Auto-props helpers ───────────────────────────────────────────────────────
 
 def get_today_teams() -> list:

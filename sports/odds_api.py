@@ -425,6 +425,136 @@ def check_bet365_availability(
         }
 
 
+# ─── 1X2 / three-way wedstrijd odds ─────────────────────────────────────────
+
+def get_match_odds_h2h(sport: str, home_team: str, away_team: str) -> dict:
+    """
+    Haalt 1X2 (drie-weg: thuiswinst / gelijkspel-OT / uitwinst) odds op
+    van Bet365 voor een NHL-wedstrijd.
+
+    sport:      "NHL"
+    home_team:  volledige naam of afkorting ("Florida Panthers" of "FLA")
+    away_team:  idem
+
+    Returns dict:
+      home_odds:  float | None   — odds thuiswinst
+      draw_odds:  float | None   — odds gelijkspel / OT/SO
+      away_odds:  float | None   — odds uitwinst
+      source:     "bet365" | "not_found" | "no_api_key"
+    """
+    empty = {"home_odds": None, "draw_odds": None, "away_odds": None, "source": "not_found"}
+
+    if not _API_KEY:
+        return {**empty, "source": "no_api_key"}
+
+    sport_key = SPORT_KEYS.get(sport.upper())
+    if not sport_key:
+        return empty
+
+    # Cache per wedstrijdpaar (6 uur)
+    ck = f"h2h_{sport_key}_{_normalize_name(home_team)}_{_normalize_name(away_team)}"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+
+    # Zoek event in vandaag's schema
+    events = get_events(sport_key)
+    event  = _find_match_event(events, home_team, away_team, sport)
+    if not event:
+        return empty
+
+    # Haal h2h odds op (aparte call om prop-cache niet te vervuilen)
+    h2h_ck = f"h2h_event_{event['id']}"
+    data = cache_get(h2h_ck)
+    if data is None:
+        params = urllib.parse.urlencode({
+            "apiKey":     _API_KEY,
+            "bookmakers": "bet365",
+            "markets":    "h2h",
+            "oddsFormat": "decimal",
+        })
+        url  = f"{BASE_URL}/sports/{sport_key}/events/{event['id']}/odds?{params}"
+        data = _get(url)
+        if data:
+            cache_set(h2h_ck, data, ttl_hours=4)
+
+    if not data:
+        return empty
+
+    bookmakers = data.get("bookmakers", [])
+    bet365     = next((b for b in bookmakers if b.get("key") == "bet365"), None)
+    if not bet365:
+        return empty
+
+    h2h_mkt = next(
+        (m for m in bet365.get("markets", []) if m.get("key") == "h2h"),
+        None,
+    )
+    if not h2h_mkt:
+        return empty
+
+    # Identificeer home / draw / away uit outcomes
+    # De Odds API geeft voor hockey drie outcomes: Home, Draw, Away
+    ev_home = _normalize_name(event.get("home_team", ""))
+    ev_away = _normalize_name(event.get("away_team", ""))
+
+    # Bouw zoeksets voor beide teams (afkortingen + varianten)
+    ht_vars = _team_name_variants(home_team)
+    at_vars = _team_name_variants(away_team)
+
+    home_odds = draw_odds = away_odds = None
+
+    for outcome in h2h_mkt.get("outcomes", []):
+        nm  = _normalize_name(outcome.get("name", ""))
+        prc = float(outcome.get("price", 0) or 0)
+        if nm == "draw":
+            draw_odds = prc
+        elif any(v in nm or nm in v for v in ht_vars) or nm in ev_home or ev_home in nm:
+            home_odds = prc
+        elif any(v in nm or nm in v for v in at_vars) or nm in ev_away or ev_away in nm:
+            away_odds = prc
+
+    result = {
+        "home_odds": home_odds,
+        "draw_odds": draw_odds,
+        "away_odds": away_odds,
+        "source":    "bet365" if any([home_odds, draw_odds, away_odds]) else "not_found",
+    }
+    cache_set(ck, result, ttl_hours=4)
+    return result
+
+
+def _team_name_variants(name: str) -> set:
+    """Geeft een set van genormaliseerde zoekstrings voor een teamnaam of afkorting."""
+    variants = {_normalize_name(name)}
+    name_up  = name.strip().upper()
+    for names in _NHL_TEAM_NAMES.get(name_up, []):
+        variants.add(_normalize_name(names))
+    # Omgekeerd: als de input een volledige naam is, zoek dan de afkorting
+    name_low = _normalize_name(name)
+    for abbrev, names in _NHL_TEAM_NAMES.items():
+        if any(_normalize_name(n) == name_low or name_low in _normalize_name(n) for n in names):
+            variants.update(_normalize_name(n) for n in names)
+            variants.add(abbrev.lower())
+    return variants
+
+
+def _find_match_event(events: list, home_team: str, away_team: str, sport: str):
+    """Zoek event op in events lijst waarbij BEIDE teams overeenkomen."""
+    if not events:
+        return None
+    ht_vars = _team_name_variants(home_team)
+    at_vars = _team_name_variants(away_team)
+    for event in events:
+        ev_home = _normalize_name(event.get("home_team", ""))
+        ev_away = _normalize_name(event.get("away_team", ""))
+        ht_ok = any(v in ev_home or ev_home in v for v in ht_vars)
+        at_ok = any(v in ev_away or ev_away in v for v in at_vars)
+        if ht_ok and at_ok:
+            return event
+    return None
+
+
 # ─── Batch prefetch (Optimalisatie 3) ────────────────────────────────────────
 
 def prefetch_event_props_for_bets(bets: list) -> None:
