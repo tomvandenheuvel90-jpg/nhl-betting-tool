@@ -211,13 +211,240 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  .block-container { max-width: 720px; padding-top: 1.5rem; }
-  div[data-testid="stFileUploaderDropzone"] { background: #1a1a2e; border: 2px dashed #3a3a6a; }
-  .rating-strong { color: #4ade80; font-weight: 700; }
-  .rating-matig  { color: #facc15; font-weight: 700; }
-  .rating-vermijd { color: #f87171; font-weight: 700; }
-  .ev-positive { color: #4ade80; font-size: 1.3rem; font-weight: 800; }
-  .ev-low      { color: #facc15; font-size: 1.3rem; font-weight: 800; }
+/* ═══════════════════════════════════════════════════════
+   DARK PRO THEME — BetAnalyzer
+   Palette:
+     bg-deep:    #08081a   (main background)
+     bg-surface: #11112b   (cards / sidepanels)
+     bg-raised:  #1a1a3e   (hover / nested)
+     primary:    #7c3aed   (violet)
+     primary-lg: #9d5ff5   (hover)
+     glow:       rgba(124,58,237,0.18)
+     text:       #dde0f5   (body)
+     text-muted: #7070a0   (secondary)
+     border:     #2a2a50   (subtle border)
+     green:      #4ade80
+     yellow:     #facc15
+     red:        #f87171
+═══════════════════════════════════════════════════════ */
+
+/* ── Global background & typography ── */
+.stApp {
+  background: #08081a !important;
+  color: #dde0f5 !important;
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+}
+
+/* ── Main content container ── */
+.block-container {
+  max-width: 760px !important;
+  padding-top: 1.8rem !important;
+  padding-bottom: 3rem !important;
+}
+
+/* ── Top Streamlit header bar ── */
+[data-testid="stHeader"] {
+  background: linear-gradient(135deg, #0d0d25 0%, #12103a 100%) !important;
+  border-bottom: 1px solid #2a2a50 !important;
+}
+
+/* ── App title / h1 ── */
+h1 { color: #c4b5fd !important; letter-spacing: -0.5px; }
+h2 { color: #a78bfa !important; }
+h3 { color: #a78bfa !important; }
+h4 { color: #c4b5fd !important; }
+
+/* ── Markdown text ── */
+p, li, label { color: #dde0f5 !important; }
+.stMarkdown p { color: #dde0f5 !important; }
+
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab-list"] {
+  background: #11112b !important;
+  border-radius: 12px !important;
+  padding: 4px !important;
+  gap: 2px !important;
+  border: 1px solid #2a2a50 !important;
+}
+.stTabs [data-baseweb="tab"] {
+  background: transparent !important;
+  color: #7070a0 !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  font-size: 0.88rem !important;
+  padding: 8px 18px !important;
+  border: none !important;
+  transition: all 0.2s ease !important;
+}
+.stTabs [aria-selected="true"] {
+  background: linear-gradient(135deg, #5b21b6 0%, #7c3aed 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 12px rgba(124,58,237,0.4) !important;
+}
+.stTabs [data-baseweb="tab"]:hover:not([aria-selected="true"]) {
+  background: #1a1a3e !important;
+  color: #c4b5fd !important;
+}
+/* Remove default underline indicator */
+.stTabs [data-baseweb="tab-highlight"] { display: none !important; }
+.stTabs [data-baseweb="tab-border"]    { display: none !important; }
+
+/* ── Primary button (Analyseer) ── */
+.stButton > button[kind="primary"],
+.stButton > button[data-testid="baseButton-primary"] {
+  background: linear-gradient(135deg, #5b21b6 0%, #7c3aed 100%) !important;
+  color: #ffffff !important;
+  border: none !important;
+  border-radius: 10px !important;
+  font-weight: 700 !important;
+  font-size: 1rem !important;
+  padding: 12px 24px !important;
+  box-shadow: 0 4px 20px rgba(124,58,237,0.35) !important;
+  transition: all 0.2s ease !important;
+  letter-spacing: 0.3px;
+}
+.stButton > button[kind="primary"]:hover {
+  background: linear-gradient(135deg, #6d28d9 0%, #9d5ff5 100%) !important;
+  box-shadow: 0 6px 28px rgba(124,58,237,0.55) !important;
+  transform: translateY(-1px) !important;
+}
+.stButton > button[kind="primary"]:disabled {
+  background: #2a2a50 !important;
+  color: #4a4a70 !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* ── Secondary / normal buttons ── */
+.stButton > button[kind="secondary"],
+.stButton > button:not([kind="primary"]) {
+  background: #11112b !important;
+  color: #c4b5fd !important;
+  border: 1px solid #3a3a70 !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease !important;
+}
+.stButton > button[kind="secondary"]:hover,
+.stButton > button:not([kind="primary"]):hover {
+  background: #1a1a3e !important;
+  border-color: #7c3aed !important;
+  color: #ffffff !important;
+}
+
+/* ── File uploader ── */
+[data-testid="stFileUploaderDropzone"] {
+  background: #11112b !important;
+  border: 2px dashed #5b21b6 !important;
+  border-radius: 12px !important;
+  transition: all 0.2s ease !important;
+}
+[data-testid="stFileUploaderDropzone"]:hover {
+  border-color: #7c3aed !important;
+  background: #16163a !important;
+}
+[data-testid="stFileUploaderDropzone"] p,
+[data-testid="stFileUploaderDropzone"] span {
+  color: #8080c0 !important;
+}
+
+/* ── Text inputs & password ── */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stSelectbox > div > div {
+  background: #11112b !important;
+  border: 1px solid #2a2a50 !important;
+  border-radius: 8px !important;
+  color: #dde0f5 !important;
+}
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus {
+  border-color: #7c3aed !important;
+  box-shadow: 0 0 0 2px rgba(124,58,237,0.25) !important;
+}
+
+/* ── Metrics ── */
+[data-testid="stMetric"] {
+  background: #11112b !important;
+  border: 1px solid #2a2a50 !important;
+  border-radius: 10px !important;
+  padding: 12px 16px !important;
+}
+[data-testid="stMetricValue"] { color: #c4b5fd !important; font-weight: 700 !important; }
+[data-testid="stMetricLabel"] { color: #7070a0 !important; }
+[data-testid="stMetricDelta"]  { font-weight: 600 !important; }
+
+/* ── Success / Warning / Error alerts ── */
+[data-testid="stAlert"][kind="success"],
+.stSuccess > div {
+  background: rgba(74,222,128,0.12) !important;
+  border: 1px solid rgba(74,222,128,0.3) !important;
+  border-radius: 10px !important;
+  color: #4ade80 !important;
+}
+[data-testid="stAlert"][kind="warning"],
+.stWarning > div {
+  background: rgba(250,204,21,0.10) !important;
+  border: 1px solid rgba(250,204,21,0.25) !important;
+  border-radius: 10px !important;
+  color: #facc15 !important;
+}
+[data-testid="stAlert"][kind="error"],
+.stError > div {
+  background: rgba(248,113,113,0.10) !important;
+  border: 1px solid rgba(248,113,113,0.25) !important;
+  border-radius: 10px !important;
+  color: #f87171 !important;
+}
+
+/* ── Caption / small text ── */
+.stCaption, [data-testid="stCaptionContainer"] { color: #6060a0 !important; }
+
+/* ── Horizontal dividers ── */
+hr { border-color: #2a2a50 !important; margin: 1.5rem 0 !important; }
+
+/* ── Spinner ── */
+.stSpinner > div > div { border-top-color: #7c3aed !important; }
+
+/* ── Columns gap fix ── */
+[data-testid="column"] { gap: 0.75rem !important; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0a0a1e; }
+::-webkit-scrollbar-thumb { background: #3a3a70; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #7c3aed; }
+
+/* ── Rating & EV classes ── */
+.rating-strong  { color: #4ade80 !important; font-weight: 700; }
+.rating-matig   { color: #facc15 !important; font-weight: 700; }
+.rating-vermijd { color: #f87171 !important; font-weight: 700; }
+.ev-positive    { color: #4ade80 !important; font-size: 1.3rem; font-weight: 800; }
+.ev-low         { color: #facc15 !important; font-size: 1.3rem; font-weight: 800; }
+
+/* ── Sidebar (if ever shown) ── */
+[data-testid="stSidebar"] {
+  background: #0d0d28 !important;
+  border-right: 1px solid #2a2a50 !important;
+}
+
+/* ── Progress bar ── */
+[data-testid="stProgressBar"] > div > div {
+  background: linear-gradient(90deg, #5b21b6, #7c3aed) !important;
+}
+
+/* ── Select slider ── */
+[data-testid="stSlider"] > div > div > div > div {
+  background: #7c3aed !important;
+}
+
+/* ── Checkbox ── */
+[data-testid="stCheckbox"] > label > div[role="checkbox"] {
+  border-color: #5b21b6 !important;
+}
+
+/* ── Tooltip ── */
+[data-testid="stTooltipIcon"] { color: #7070a0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -227,9 +454,23 @@ st.markdown("""
 def _check_password() -> bool:
     if st.session_state.get("authenticated"):
         return True
-    st.markdown("## 🎯 Bet Analyzer")
-    pwd = st.text_input("Wachtwoord", type="password", key="pwd_input")
-    if st.button("Inloggen", use_container_width=True):
+    st.markdown("""
+<div style="
+  background: linear-gradient(135deg, #12103a 0%, #1a1550 100%);
+  border: 1px solid #3a2a70;
+  border-radius: 16px;
+  padding: 2rem 2.5rem 1.5rem;
+  margin-bottom: 1.5rem;
+  text-align: center;
+  box-shadow: 0 8px 32px rgba(124,58,237,0.2);
+">
+  <div style="font-size:2.8rem; margin-bottom:0.3rem;">🎯</div>
+  <div style="font-size:2rem; font-weight:800; color:#c4b5fd; letter-spacing:-0.5px;">Bet Analyzer</div>
+  <div style="color:#7070a0; font-size:0.9rem; margin-top:0.5rem;">NHL · NBA · MLB · Voetbal</div>
+</div>
+""", unsafe_allow_html=True)
+    pwd = st.text_input("Wachtwoord", type="password", key="pwd_input", label_visibility="collapsed", placeholder="🔒 Wachtwoord invoeren...")
+    if st.button("Inloggen", use_container_width=True, type="primary"):
         try:
             correct = st.secrets.get("PASSWORD", "jullie_wachtwoord")
         except Exception:
@@ -1147,7 +1388,7 @@ def render_nhl_match_cards(match_analyses: list):
 
         with st.container():
             st.markdown(
-                "<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+                "<div style='background:#11112b;border:1px solid #2a2a58;"
                 "border-radius:12px;padding:16px;margin-bottom:14px;'>",
                 unsafe_allow_html=True,
             )
@@ -1158,7 +1399,7 @@ def render_nhl_match_cards(match_analyses: list):
                 st.markdown(f"#### 🏒 {home}  vs  {away}")
             with tcol:
                 if time_str:
-                    st.markdown(f"<div style='text-align:right;color:#a0a0c0;padding-top:8px'>"
+                    st.markdown(f"<div style='text-align:right;color:#8080b0;padding-top:8px'>"
                                 f"⏰ {time_str}</div>", unsafe_allow_html=True)
 
             # Team stats vergelijking
@@ -1178,7 +1419,7 @@ def render_nhl_match_cards(match_analyses: list):
                         lH = probs.get("lH", 0)
                         lA = probs.get("lA", 0)
                         st.markdown(
-                            f"<div style='text-align:center;padding-top:12px;color:#a0a0c0;'>"
+                            f"<div style='text-align:center;padding-top:12px;color:#8080b0;'>"
                             f"<div>xG: {lH:.2f} – {lA:.2f}</div>"
                             f"<div style='font-size:0.85rem;margin-top:4px'>"
                             f"GF/GA: {home_f.get('gf_avg',0):.2f}/{home_f.get('ga_avg',0):.2f}"
@@ -1213,18 +1454,18 @@ def render_nhl_match_cards(match_analyses: list):
 
                     border_col = "#4ade80" if "Waarde" in rat else (
                                  "#facc15" if "Neutraal" in rat else "#f87171")
-                    bg_col     = "#0d2818" if "Waarde" in rat else (
-                                 "#1a180a" if "Neutraal" in rat else "#1a0808")
+                    bg_col     = "#081a10" if "Waarde" in rat else (
+                                 "#1a1500" if "Neutraal" in rat else "#1a0808")
 
                     best_badge = " ⭐ Beste" if is_best else ""
                     st.markdown(
                         f"<div style='background:{bg_col};border:1px solid {border_col};"
                         f"border-radius:8px;padding:10px;text-align:center;'>"
-                        f"<div style='font-size:0.8rem;color:#a0a0c0;margin-bottom:4px'>"
+                        f"<div style='font-size:0.8rem;color:#8080b0;margin-bottom:4px'>"
                         f"{opt['label']}{best_badge}</div>"
                         f"<div style='font-size:1.1rem;font-weight:700;color:#fff'>"
                         f"Odds: {odds_str}</div>"
-                        f"<div style='color:#a0a0c0;font-size:0.85rem'>Model: {prob_pct}</div>"
+                        f"<div style='color:#8080b0;font-size:0.85rem'>Model: {prob_pct}</div>"
                         f"<div style='font-size:1.0rem;font-weight:700;"
                         f"color:{border_col}'>EV {ev_str}</div>"
                         f"<div style='font-size:0.8rem;color:{border_col}'>{rat}</div>"
@@ -1382,15 +1623,15 @@ def _render_match_option_box(col, opt, best):
         rat     = opt["rating"]
         is_best = best and opt["label"] == best["label"] and ev_val is not None and ev_val >= 0
         bc = "#4ade80" if "Waarde" in rat else ("#facc15" if "Neutraal" in rat else "#f87171")
-        bg = "#0d2818" if "Waarde" in rat else ("#1a180a" if "Neutraal" in rat else "#1a0808")
+        bg = "#081a10" if "Waarde" in rat else ("#1a1500" if "Neutraal" in rat else "#1a0808")
         st.markdown(
             f"<div style='background:{bg};border:1px solid {bc};"
             f"border-radius:8px;padding:10px;text-align:center;'>"
-            f"<div style='font-size:0.75rem;color:#a0a0c0;margin-bottom:4px'>"
+            f"<div style='font-size:0.75rem;color:#8080b0;margin-bottom:4px'>"
             f"{opt['label']}{'  ⭐' if is_best else ''}</div>"
             f"<div style='font-size:1.1rem;font-weight:700;color:#fff'>"
             f"Odds: {'{:.2f}'.format(opt['odds']) if opt['odds'] else '—'}</div>"
-            f"<div style='color:#a0a0c0;font-size:0.85rem'>Model: {opt['prob']*100:.1f}%</div>"
+            f"<div style='color:#8080b0;font-size:0.85rem'>Model: {opt['prob']*100:.1f}%</div>"
             f"<div style='font-size:1.0rem;font-weight:700;color:{bc}'>EV {ev_str}</div>"
             f"<div style='font-size:0.8rem;color:{bc}'>{rat}</div></div>",
             unsafe_allow_html=True,
@@ -1445,17 +1686,17 @@ def render_soccer_match_cards(match_analyses: list):
         probs = ma.get("probs", {}); best = ma.get("best")
         home_f = ma.get("home_form") or {}; away_f = ma.get("away_form") or {}
         with st.container():
-            st.markdown("<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+            st.markdown("<div style='background:#11112b;border:1px solid #2a2a58;"
                         "border-radius:12px;padding:16px;margin-bottom:14px;'>", unsafe_allow_html=True)
             hcol, tcol = st.columns([4, 1])
             with hcol:
                 comp_lbl = ma.get("competition","")
                 st.markdown(f"#### ⚽ {home}  vs  {away}"
-                            + (f"  <small style='color:#808080'> {comp_lbl}</small>" if comp_lbl else ""),
+                            + (f"  <small style='color:#6060a0'> {comp_lbl}</small>" if comp_lbl else ""),
                             unsafe_allow_html=True)
             with tcol:
                 if ma.get("time"):
-                    st.markdown(f"<div style='text-align:right;color:#a0a0c0;padding-top:8px'>⏰ {ma['time']}</div>",
+                    st.markdown(f"<div style='text-align:right;color:#8080b0;padding-top:8px'>⏰ {ma['time']}</div>",
                                 unsafe_allow_html=True)
             if home_f or away_f:
                 c1, c2, c3 = st.columns(3)
@@ -1464,7 +1705,7 @@ def render_soccer_match_cards(match_analyses: list):
                         st.metric(f"🏠 {home_f.get('abbrev', home[:3])}", "")
                         st.caption(f"GF avg: {home_f.get('gf_avg',0):.2f}\nGA avg: {home_f.get('ga_avg',0):.2f}\nForm: {home_f.get('form','—')}")
                 with c2:
-                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c0;'>"
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#8080b0;'>"
                                 f"<div>xG: {probs.get('lH',0):.2f} – {probs.get('lA',0):.2f}</div></div>",
                                 unsafe_allow_html=True)
                 with c3:
@@ -1580,14 +1821,14 @@ def render_nba_match_cards(match_analyses: list):
         probs = ma.get("probs",{}); best = ma.get("best")
         home_f = ma.get("home_form") or {}; away_f = ma.get("away_form") or {}
         with st.container():
-            st.markdown("<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+            st.markdown("<div style='background:#11112b;border:1px solid #2a2a58;"
                         "border-radius:12px;padding:16px;margin-bottom:14px;'>", unsafe_allow_html=True)
             hcol, tcol = st.columns([4, 1])
             with hcol:
                 st.markdown(f"#### 🏀 {home}  vs  {away}")
             with tcol:
                 if ma.get("time"):
-                    st.markdown(f"<div style='text-align:right;color:#a0a0c0;padding-top:8px'>⏰ {ma['time']}</div>",
+                    st.markdown(f"<div style='text-align:right;color:#8080b0;padding-top:8px'>⏰ {ma['time']}</div>",
                                 unsafe_allow_html=True)
             if home_f or away_f:
                 c1, c2, c3 = st.columns(3)
@@ -1597,7 +1838,7 @@ def render_nba_match_cards(match_analyses: list):
                         st.caption(f"Record: {home_f.get('wins',0)}-{home_f.get('losses',0)}\nL10: {home_f.get('last10','—')}\nReeks: {home_f.get('streak','—')}\nThuis: {home_f.get('home_record','—')}")
                 with c2:
                     margin = probs.get("exp_margin",0)
-                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c0;'>"
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#8080b0;'>"
                                 f"<div>Verwachte marge:</div>"
                                 f"<div style='font-size:1.2rem;font-weight:700;color:#fff'>{margin:+.1f} pts</div>"
                                 f"<div style='font-size:0.85rem;margin-top:4px'>"
@@ -1743,14 +1984,14 @@ def render_mlb_match_cards(match_analyses: list):
         probs = ma.get("probs",{}); best = ma.get("best")
         home_f = ma.get("home_form") or {}; away_f = ma.get("away_form") or {}
         with st.container():
-            st.markdown("<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+            st.markdown("<div style='background:#11112b;border:1px solid #2a2a58;"
                         "border-radius:12px;padding:16px;margin-bottom:14px;'>", unsafe_allow_html=True)
             hcol, tcol = st.columns([4, 1])
             with hcol:
                 st.markdown(f"#### ⚾ {home}  vs  {away}")
             with tcol:
                 if ma.get("time"):
-                    st.markdown(f"<div style='text-align:right;color:#a0a0c0;padding-top:8px'>⏰ {ma['time']}</div>",
+                    st.markdown(f"<div style='text-align:right;color:#8080b0;padding-top:8px'>⏰ {ma['time']}</div>",
                                 unsafe_allow_html=True)
             if home_f or away_f:
                 c1, c2, c3 = st.columns(3)
@@ -1759,7 +2000,7 @@ def render_mlb_match_cards(match_analyses: list):
                         st.metric(f"🏠 {home_f.get('abbrev', home[:3])}", "")
                         st.caption(f"Record: {home_f.get('wins',0)}-{home_f.get('losses',0)}\nRuns avg: {home_f.get('runs_avg',0):.2f}\nOpp runs: {home_f.get('opp_runs_avg',0):.2f}\nThuis: {home_f.get('home_record','—')}")
                 with c2:
-                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c0;'>"
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#8080b0;'>"
                                 f"<div>xRuns: {probs.get('lH',0):.2f} – {probs.get('lA',0):.2f}</div>"
                                 f"<div style='font-size:0.85rem;margin-top:4px'>Run line: ±{ma.get('run_line',1.5):.1f}</div>"
                                 f"</div>", unsafe_allow_html=True)
@@ -1796,7 +2037,7 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
 
     with st.container():
         st.markdown(
-            f"<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+            f"<div style='background:#11112b;border:1px solid #2a2a58;"
             f"border-radius:12px;padding:16px;margin-bottom:12px;'>",
             unsafe_allow_html=True,
         )
@@ -1904,8 +2145,25 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
 
 # ─── Hoofdscherm ──────────────────────────────────────────────────────────────
 
-st.markdown("## 🎯 Bet Analyzer")
-st.caption("Linemate + Flashscore · NHL · NBA · MLB · Voetbal")
+st.markdown("""
+<div style="
+  background: linear-gradient(135deg, #12103a 0%, #1e1860 100%);
+  border: 1px solid #3a2a70;
+  border-radius: 14px;
+  padding: 1.2rem 2rem;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  box-shadow: 0 4px 24px rgba(124,58,237,0.18);
+">
+  <span style="font-size:2rem;">🎯</span>
+  <div>
+    <div style="font-size:1.5rem; font-weight:800; color:#c4b5fd; letter-spacing:-0.3px; line-height:1.2;">Bet Analyzer</div>
+    <div style="color:#6060a0; font-size:0.82rem; margin-top:2px;">Linemate + Flashscore &nbsp;·&nbsp; NHL · NBA · MLB · Voetbal</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 # API key
 try:
