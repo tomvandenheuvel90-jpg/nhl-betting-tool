@@ -524,6 +524,113 @@ def get_match_odds_h2h(sport: str, home_team: str, away_team: str) -> dict:
     return result
 
 
+def get_match_odds_spreads(sport: str, home_team: str, away_team: str) -> dict:
+    """
+    Haalt spreads/handicap odds op van Bet365 voor een wedstrijd.
+    Werkt voor NBA (point spread) en MLB (run line).
+
+    Returns dict:
+      home_spread:       float | None   — spread voor thuisploeg (bijv. -4.5)
+      home_spread_odds:  float | None   — odds bij die spread
+      away_spread:       float | None   — spread voor uitploeg (bijv. +4.5)
+      away_spread_odds:  float | None   — odds bij die spread
+      source:            "bet365" | "not_found" | "no_api_key"
+    """
+    empty = {
+        "home_spread": None, "home_spread_odds": None,
+        "away_spread": None, "away_spread_odds": None,
+        "source": "not_found",
+    }
+
+    if not _API_KEY:
+        return {**empty, "source": "no_api_key"}
+
+    sport_key = SPORT_KEYS.get(sport.upper())
+    if not sport_key:
+        return empty
+
+    ck = f"spreads_{sport_key}_{_normalize_name(home_team)}_{_normalize_name(away_team)}"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+
+    events = get_events(sport_key)
+    event  = _find_match_event(events, home_team, away_team, sport)
+    if not event:
+        return empty
+
+    sp_ck = f"spreads_event_{event['id']}"
+    data = cache_get(sp_ck)
+    if data is None:
+        params = urllib.parse.urlencode({
+            "apiKey":     _API_KEY,
+            "bookmakers": "bet365",
+            "markets":    "spreads",
+            "oddsFormat": "decimal",
+        })
+        url  = f"{BASE_URL}/sports/{sport_key}/events/{event['id']}/odds?{params}"
+        data = _get(url)
+        if data:
+            cache_set(sp_ck, data, ttl_hours=4)
+
+    if not data:
+        return empty
+
+    bookmakers = data.get("bookmakers", [])
+    bet365     = next((b for b in bookmakers if b.get("key") == "bet365"), None)
+    if not bet365:
+        return empty
+
+    sp_mkt = next(
+        (m for m in bet365.get("markets", []) if m.get("key") == "spreads"),
+        None,
+    )
+    if not sp_mkt:
+        return empty
+
+    ht_vars = _team_name_variants(home_team)
+    at_vars = _team_name_variants(away_team)
+    ev_home = _normalize_name(event.get("home_team", ""))
+    ev_away = _normalize_name(event.get("away_team", ""))
+
+    home_spread = home_spread_odds = away_spread = away_spread_odds = None
+
+    for outcome in sp_mkt.get("outcomes", []):
+        nm    = _normalize_name(outcome.get("name", ""))
+        prc   = float(outcome.get("price", 0) or 0)
+        point = outcome.get("point")
+        try:
+            point = float(point)
+        except (TypeError, ValueError):
+            point = None
+
+        is_home = (
+            any(v in nm or nm in v for v in ht_vars)
+            or nm in ev_home or ev_home in nm
+        )
+        is_away = (
+            any(v in nm or nm in v for v in at_vars)
+            or nm in ev_away or ev_away in nm
+        )
+
+        if is_home and point is not None:
+            home_spread       = point
+            home_spread_odds  = prc
+        elif is_away and point is not None:
+            away_spread       = point
+            away_spread_odds  = prc
+
+    result = {
+        "home_spread":      home_spread,
+        "home_spread_odds": home_spread_odds,
+        "away_spread":      away_spread,
+        "away_spread_odds": away_spread_odds,
+        "source": "bet365" if home_spread is not None or away_spread is not None else "not_found",
+    }
+    cache_set(ck, result, ttl_hours=4)
+    return result
+
+
 def _team_name_variants(name: str) -> set:
     """Geeft een set van genormaliseerde zoekstrings voor een teamnaam of afkorting."""
     variants = {_normalize_name(name)}

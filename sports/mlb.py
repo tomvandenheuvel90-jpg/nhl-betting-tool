@@ -186,6 +186,86 @@ def get_team_defense(team_id: int) -> dict:
     return {}
 
 
+def get_team_form_for_match(team_name: str) -> dict:
+    """
+    Zoek een MLB team op naam en geef seizoensstatistieken terug voor het wedstrijd-model.
+    Geeft dict met: abbrev, full_name, gp, runs_avg, opp_runs_avg, wins, losses,
+                    home_record, road_record, last10, streak
+    """
+    cache_key = f"mlb_team_form_{team_name.strip().lower().replace(' ', '_')}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    season = _current_season()
+    data = _get(
+        f"{BASE}/standings?leagueId=103,104&season={season}"
+        f"&standingsTypes=regularSeason&hydrate=team,record,streak,division"
+    )
+
+    search = team_name.strip().lower()
+    result = {}
+
+    for record in data.get("records", []):
+        for tr in record.get("teamRecords", []):
+            team   = tr.get("team", {})
+            name   = team.get("name", "").lower()
+            abbrev = team.get("abbreviation", "").lower()
+            if not any([search == name, search in name, search == abbrev, abbrev in search]):
+                continue
+
+            gp     = max(int(tr.get("gamesPlayed", 1) or 1), 1)
+            wins   = int(tr.get("wins", 0) or 0)
+            losses = int(tr.get("losses", 0) or 0)
+
+            # Runs for/against from leagueRecord splitting
+            runs_avg     = round(float(tr.get("runsScored",   0) or 0) / gp, 2)
+            opp_runs_avg = round(float(tr.get("runsAllowed",  0) or 0) / gp, 2)
+
+            # Fallback to league average if 0
+            if runs_avg == 0:
+                runs_avg = 4.35
+            if opp_runs_avg == 0:
+                opp_runs_avg = 4.35
+
+            home_rec  = tr.get("records", {}).get("splitRecords", [])
+            home_wins = home_loss = road_wins = road_loss = 0
+            for sr in home_rec:
+                t = sr.get("type", "")
+                w = int(sr.get("wins", 0) or 0)
+                l = int(sr.get("losses", 0) or 0)
+                if t == "home":
+                    home_wins, home_loss = w, l
+                elif t == "road":
+                    road_wins, road_loss = w, l
+
+            # Last 10
+            l10 = tr.get("records", {}).get("expectedRecords", [])
+            streak_info = tr.get("streak", {})
+            streak = str(streak_info.get("streakCode", "") or "")
+
+            result = {
+                "abbrev":       team.get("abbreviation", ""),
+                "full_name":    team.get("name", team_name),
+                "gp":           gp,
+                "wins":         wins,
+                "losses":       losses,
+                "runs_avg":     runs_avg,
+                "opp_runs_avg": opp_runs_avg,
+                "home_record":  f"{home_wins}-{home_loss}",
+                "road_record":  f"{road_wins}-{road_loss}",
+                "last10":       f"{wins}-{losses}" if gp <= 10 else "",
+                "streak":       streak,
+            }
+            break
+        if result:
+            break
+
+    if result:
+        cache_set(cache_key, result, ttl_hours=6)
+    return result
+
+
 # ─── Auto-props helpers ───────────────────────────────────────────────────────
 
 def get_today_games() -> list:

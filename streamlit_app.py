@@ -1276,6 +1276,508 @@ def render_nhl_match_cards(match_analyses: list):
             st.markdown("</div>", unsafe_allow_html=True)
 
 
+# ─── Soccer (voetbal) match analyse ─────────────────────────────────────────
+
+_SOCCER_LEAGUE_AVG   = 1.35   # gemiddelde goals per team per wedstrijd (EPL ~1.35)
+_SOCCER_HOME_FACTOR  = 1.15   # thuisvoordeel ~15%
+
+
+def _soccer_match_probs(home_form: dict, away_form: dict) -> dict:
+    """Poisson-model voor voetbal 1X2 (thuiswinst / gelijkspel / uitwinst)."""
+    lH = home_form.get("gf_avg", _SOCCER_LEAGUE_AVG) * \
+         (away_form.get("ga_avg", _SOCCER_LEAGUE_AVG) / _SOCCER_LEAGUE_AVG) * \
+         _SOCCER_HOME_FACTOR
+    lA = away_form.get("gf_avg", _SOCCER_LEAGUE_AVG) * \
+         (home_form.get("ga_avg", _SOCCER_LEAGUE_AVG) / _SOCCER_LEAGUE_AVG)
+    lH = max(0.4, min(lH, 5.0))
+    lA = max(0.4, min(lA, 5.0))
+    p_home = p_draw = p_away = 0.0
+    for h in range(8):
+        for a in range(8):
+            p = _poisson_p(h, lH) * _poisson_p(a, lA)
+            if h > a:   p_home += p
+            elif h == a: p_draw += p
+            else:        p_away += p
+    tot = p_home + p_draw + p_away or 1.0
+    return {"p_home": round(p_home/tot,4), "p_draw": round(p_draw/tot,4),
+            "p_away": round(p_away/tot,4), "lH": round(lH,2), "lA": round(lA,2)}
+
+
+def _soccer_form_from_api(team_name: str, competition: str) -> dict:
+    try:
+        comp = competition.upper() if competition else "EPL"
+        raw  = soccer.get_team_stats_for_match(team_name, comp)
+        if not raw:
+            return {}
+        return {"full_name": raw.get("name", team_name),
+                "abbrev":    raw.get("name", team_name)[:3].upper(),
+                "gf_avg":    raw.get("avg_goals_for", _SOCCER_LEAGUE_AVG),
+                "ga_avg":    raw.get("avg_goals_against", _SOCCER_LEAGUE_AVG),
+                "form":      raw.get("form", ""), "last10": raw.get("form", ""),
+                "streak": "", "home_record": "—", "road_record": "—"}
+    except Exception:
+        return {}
+
+
+def analyze_soccer_matches(matches: list) -> list:
+    soccer_sports = {"EPL", "PREMIERLEAGUE", "LALIGA", "BUNDESLIGA",
+                     "SERIEA", "LIGUE1", "VOETBAL", "SOCCER", "UCL"}
+    results = []
+    for m in matches:
+        sport = (m.get("sport") or m.get("competition") or "").upper().replace(" ", "")
+        is_soccer = any(s.replace(" ","") in sport for s in soccer_sports) or \
+                    not any(x in sport for x in ("NHL","HOCKEY","NBA","BASKETBALL","MLB","BASEBALL"))
+        if not is_soccer:
+            continue
+        home_name = m.get("home_team", "")
+        away_name = m.get("away_team", "")
+        if not home_name or not away_name:
+            continue
+        competition = m.get("competition") or m.get("sport") or "EPL"
+        home_form = _soccer_form_from_api(home_name, competition)
+        away_form = _soccer_form_from_api(away_name, competition)
+        fallback  = {"gf_avg": _SOCCER_LEAGUE_AVG, "ga_avg": _SOCCER_LEAGUE_AVG}
+        probs = _soccer_match_probs(home_form or fallback, away_form or fallback)
+        scr_odds = m.get("screenshot_odds") or {}
+        odds_bron = "screenshot"
+        b365 = {}
+        try:
+            if odds_api._API_KEY and not odds_api.is_limit_reached():
+                sp_map = {"EPL":"EPL","PREMIERLEAGUE":"EPL","LALIGA":"LALIGA",
+                          "BUNDESLIGA":"BUNDESLIGA","SERIEA":"SERIEA",
+                          "LIGUE1":"LIGUE1","UCL":"UCL"}
+                sp = sp_map.get(competition.upper().replace(" ",""), "EPL")
+                b365 = odds_api.get_match_odds_h2h(sp, home_name, away_name)
+                if b365.get("source") == "bet365":
+                    odds_bron = "Bet365"
+        except Exception:
+            pass
+        home_odds = b365.get("home_odds") if odds_bron=="Bet365" else scr_odds.get("home")
+        draw_odds = b365.get("draw_odds") if odds_bron=="Bet365" else scr_odds.get("draw")
+        away_odds = b365.get("away_odds") if odds_bron=="Bet365" else scr_odds.get("away")
+
+        def _opt(pk, ov, lbl):
+            p = probs.get(pk, 0.0)
+            ev = _match_ev(p, ov) if ov else None
+            return {"label": lbl, "prob": p, "odds": ov,
+                    "ev": ev, "rating": _match_rating(ev) if ev is not None else "—"}
+
+        options = [_opt("p_home", home_odds, f"🏠 {home_name} wint"),
+                   _opt("p_draw", draw_odds, "🤝 Gelijkspel"),
+                   _opt("p_away", away_odds, f"✈️ {away_name} wint")]
+        best = max((o for o in options if o["ev"] is not None),
+                   key=lambda o: o["ev"], default=None)
+        results.append({"home_team": home_name, "away_team": away_name,
+                        "time": m.get("time"), "competition": competition,
+                        "home_form": home_form, "away_form": away_form,
+                        "probs": probs, "odds_bron": odds_bron,
+                        "options": options, "best": best})
+    return results
+
+
+def _render_match_option_box(col, opt, best):
+    with col:
+        ev_val  = opt["ev"]
+        ev_str  = f"+{ev_val:.3f}" if ev_val and ev_val >= 0 else (f"{ev_val:.3f}" if ev_val is not None else "—")
+        rat     = opt["rating"]
+        is_best = best and opt["label"] == best["label"] and ev_val is not None and ev_val >= 0
+        bc = "#4ade80" if "Waarde" in rat else ("#facc15" if "Neutraal" in rat else "#f87171")
+        bg = "#0d2818" if "Waarde" in rat else ("#1a180a" if "Neutraal" in rat else "#1a0808")
+        st.markdown(
+            f"<div style='background:{bg};border:1px solid {bc};"
+            f"border-radius:8px;padding:10px;text-align:center;'>"
+            f"<div style='font-size:0.75rem;color:#a0a0c0;margin-bottom:4px'>"
+            f"{opt['label']}{'  ⭐' if is_best else ''}</div>"
+            f"<div style='font-size:1.1rem;font-weight:700;color:#fff'>"
+            f"Odds: {'{:.2f}'.format(opt['odds']) if opt['odds'] else '—'}</div>"
+            f"<div style='color:#a0a0c0;font-size:0.85rem'>Model: {opt['prob']*100:.1f}%</div>"
+            f"<div style='font-size:1.0rem;font-weight:700;color:{bc}'>EV {ev_str}</div>"
+            f"<div style='font-size:0.8rem;color:{bc}'>{rat}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_fav_button(ma, sport_label, bet_source):
+    best = ma.get("best")
+    if not (best and best.get("odds") and best.get("ev") is not None):
+        return
+    key   = f"{sport_label[:3]}_{ma['home_team'][:4]}_{ma['away_team'][:4]}_{ma.get('time','')}"
+    fav_bet = {
+        "player":   f"{ma['home_team']} vs {ma['away_team']}",
+        "sport":    sport_label, "team": ma["home_team"][:3].upper(),
+        "bet_type": best["label"].replace("🏠 ","").replace("✈️ ","").replace("🤝 ","").replace("🔄 ",""),
+        "odds": best["odds"], "ev": best["ev"], "rating": best["rating"],
+        "composite": best["prob"], "linemate_hr": best["prob"], "season_hr": best["prob"],
+        "sample": bet_source, "source": bet_source,
+    }
+    _fav_ids = {f["id"] for f in load_favorieten()}
+    _fid     = _make_fav_id(fav_bet["player"], fav_bet["bet_type"])
+    if _fid not in _fav_ids:
+        if st.button("☆ Opslaan in Favorieten", key=f"fav_{key}", use_container_width=True):
+            add_favoriet(fav_bet)
+            st.rerun()
+    else:
+        st.markdown("<div style='color:#4ade80;text-align:center;padding:4px'>"
+                    "⭐ Opgeslagen in Favorieten</div>", unsafe_allow_html=True)
+
+
+def render_soccer_match_cards(match_analyses: list):
+    if not match_analyses:
+        return
+    st.markdown("---")
+    st.markdown("### ⚽ Voetbal Wedstrijd-analyse")
+    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None],
+                   key=lambda ma: ma["best"]["ev"], reverse=True)[:3]
+    if _top3:
+        st.markdown("#### 🏆 Top 3 aanbevolen voetbalwedstrijden")
+        for _i, _ma in enumerate(_top3, 1):
+            _b  = _ma["best"]
+            _ev = f"+{_b['ev']:.3f}" if _b["ev"] >= 0 else f"{_b['ev']:.3f}"
+            _hf = _ma.get("home_form") or {}
+            _af = _ma.get("away_form") or {}
+            st.markdown(f"**{_i}. {_ma['home_team']} vs {_ma['away_team']}**  \n"
+                        f"Beste inzet: {_b['label']} · EV `{_ev}` · {_b['rating']}  \n"
+                        f"xG: {_ma['probs'].get('lH',0):.2f} – {_ma['probs'].get('lA',0):.2f}  \n"
+                        f"Form thuis: `{_hf.get('form','—')}` | Form uit: `{_af.get('form','—')}`")
+        st.markdown("---")
+    for ma in match_analyses:
+        home  = ma["home_team"]; away = ma["away_team"]
+        probs = ma.get("probs", {}); best = ma.get("best")
+        home_f = ma.get("home_form") or {}; away_f = ma.get("away_form") or {}
+        with st.container():
+            st.markdown("<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+                        "border-radius:12px;padding:16px;margin-bottom:14px;'>", unsafe_allow_html=True)
+            hcol, tcol = st.columns([4, 1])
+            with hcol:
+                comp_lbl = ma.get("competition","")
+                st.markdown(f"#### ⚽ {home}  vs  {away}"
+                            + (f"  <small style='color:#808080'> {comp_lbl}</small>" if comp_lbl else ""),
+                            unsafe_allow_html=True)
+            with tcol:
+                if ma.get("time"):
+                    st.markdown(f"<div style='text-align:right;color:#a0a0c0;padding-top:8px'>⏰ {ma['time']}</div>",
+                                unsafe_allow_html=True)
+            if home_f or away_f:
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    if home_f:
+                        st.metric(f"🏠 {home_f.get('abbrev', home[:3])}", "")
+                        st.caption(f"GF avg: {home_f.get('gf_avg',0):.2f}\nGA avg: {home_f.get('ga_avg',0):.2f}\nForm: {home_f.get('form','—')}")
+                with c2:
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c0;'>"
+                                f"<div>xG: {probs.get('lH',0):.2f} – {probs.get('lA',0):.2f}</div></div>",
+                                unsafe_allow_html=True)
+                with c3:
+                    if away_f:
+                        st.metric(f"✈️ {away_f.get('abbrev', away[:3])}", "")
+                        st.caption(f"GF avg: {away_f.get('gf_avg',0):.2f}\nGA avg: {away_f.get('ga_avg',0):.2f}\nForm: {away_f.get('form','—')}")
+            st.markdown("---")
+            opt_cols = st.columns(3)
+            for col, opt in zip(opt_cols, ma["options"]):
+                _render_match_option_box(col, opt, best)
+            st.markdown(f"<div style='color:#6060a0;font-size:0.75rem;margin-top:8px;'>"
+                        f"Odds bron: {ma.get('odds_bron','')}  ·  xG {probs.get('lH',0):.2f}–{probs.get('lA',0):.2f}</div>",
+                        unsafe_allow_html=True)
+            _render_fav_button(ma, "Soccer", "Football-data.org")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ─── NBA (basketbal) match analyse ──────────────────────────────────────────
+
+_NBA_LEAGUE_PTS_AVG = 112.0
+_NBA_HOME_ADV       = 3.0
+_NBA_MARGIN_STD     = 13.0
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + _math.erf(x / _math.sqrt(2.0)))
+
+
+def _nba_match_probs(home_form: dict, away_form: dict, spread: float = 0.0) -> dict:
+    pts_h = home_form.get("pts_avg", _NBA_LEAGUE_PTS_AVG)
+    opp_h = home_form.get("opp_pts_avg", _NBA_LEAGUE_PTS_AVG)
+    pts_a = away_form.get("pts_avg", _NBA_LEAGUE_PTS_AVG)
+    opp_a = away_form.get("opp_pts_avg", _NBA_LEAGUE_PTS_AVG)
+    exp_home   = (pts_h + opp_a) / 2.0 + _NBA_HOME_ADV
+    exp_away   = (pts_a + opp_h) / 2.0
+    exp_margin = exp_home - exp_away
+    p_home = _norm_cdf(exp_margin / _NBA_MARGIN_STD)
+    p_cover_home = _norm_cdf((exp_margin - spread) / _NBA_MARGIN_STD) if spread != 0.0 else p_home
+    return {"p_home": round(p_home, 4), "p_away": round(1-p_home, 4),
+            "p_cover_home": round(p_cover_home, 4), "p_cover_away": round(1-p_cover_home, 4),
+            "exp_margin": round(exp_margin, 1),
+            "exp_home_pts": round(exp_home, 1), "exp_away_pts": round(exp_away, 1)}
+
+
+def analyze_nba_matches(matches: list) -> list:
+    results = []
+    for m in matches:
+        sport = (m.get("sport") or m.get("competition") or "").upper()
+        if "NBA" not in sport and "BASKETBALL" not in sport:
+            continue
+        home_name = m.get("home_team",""); away_name = m.get("away_team","")
+        if not home_name or not away_name:
+            continue
+        home_form = nba.get_team_form_for_match(home_name)
+        away_form = nba.get_team_form_for_match(away_name)
+        fallback  = {"pts_avg": _NBA_LEAGUE_PTS_AVG, "opp_pts_avg": _NBA_LEAGUE_PTS_AVG}
+        scr_odds = m.get("screenshot_odds") or {}
+        odds_bron = "screenshot"
+        b365_h2h = {}; b365_sp = {}
+        try:
+            if odds_api._API_KEY and not odds_api.is_limit_reached():
+                b365_sp  = odds_api.get_match_odds_spreads("NBA", home_name, away_name)
+                b365_h2h = odds_api.get_match_odds_h2h("NBA", home_name, away_name)
+                if b365_sp.get("source")=="bet365" or b365_h2h.get("source")=="bet365":
+                    odds_bron = "Bet365"
+        except Exception:
+            pass
+        home_ml = b365_h2h.get("home_odds") or scr_odds.get("home")
+        away_ml = b365_h2h.get("away_odds") or scr_odds.get("away")
+        hs = b365_sp.get("home_spread"); as_ = b365_sp.get("away_spread")
+        h_sp_odds = b365_sp.get("home_spread_odds"); a_sp_odds = b365_sp.get("away_spread_odds")
+        spread_val = float(hs) if hs is not None else 0.0
+        probs = _nba_match_probs(home_form or fallback, away_form or fallback, spread=spread_val)
+
+        def _opt(pk, ov, lbl):
+            p = probs.get(pk, 0.0)
+            ev = _match_ev(p, ov) if ov else None
+            return {"label": lbl, "prob": p, "odds": ov,
+                    "ev": ev, "rating": _match_rating(ev) if ev is not None else "—"}
+
+        options = [_opt("p_home", home_ml, f"🏠 {home_name} wint"),
+                   _opt("p_away", away_ml, f"✈️ {away_name} wint")]
+        if hs is not None and h_sp_odds:
+            options.append(_opt("p_cover_home", h_sp_odds, f"🏠 {home_name} {hs:+.1f}"))
+            options.append(_opt("p_cover_away", a_sp_odds, f"✈️ {away_name} {as_:+.1f}" if as_ else f"✈️ {away_name} spread"))
+        best = max((o for o in options if o["ev"] is not None), key=lambda o: o["ev"], default=None)
+        results.append({"home_team": home_name, "away_team": away_name, "time": m.get("time"),
+                        "home_form": home_form, "away_form": away_form, "probs": probs,
+                        "odds_bron": odds_bron, "options": options, "best": best, "spread": hs})
+    return results
+
+
+def render_nba_match_cards(match_analyses: list):
+    if not match_analyses:
+        return
+    st.markdown("---")
+    st.markdown("### 🏀 NBA Wedstrijd-analyse")
+    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None],
+                   key=lambda ma: ma["best"]["ev"], reverse=True)[:3]
+    if _top3:
+        st.markdown("#### 🏆 Top 3 aanbevolen NBA wedstrijden")
+        for _i, _ma in enumerate(_top3, 1):
+            _b = _ma["best"]; _ev = f"+{_b['ev']:.3f}" if _b["ev"] >= 0 else f"{_b['ev']:.3f}"
+            _hf = _ma.get("home_form") or {}; _af = _ma.get("away_form") or {}
+            _p  = _ma.get("probs", {})
+            st.markdown(f"**{_i}. {_ma['home_team']} vs {_ma['away_team']}**  \n"
+                        f"Beste inzet: {_b['label']} · EV `{_ev}` · {_b['rating']}  \n"
+                        f"Verwachte marge: {_p.get('exp_margin',0):+.1f} punten  \n"
+                        f"L10 thuis: `{_hf.get('last10','—')}` | L10 uit: `{_af.get('last10','—')}`")
+        st.markdown("---")
+    for ma in match_analyses:
+        home = ma["home_team"]; away = ma["away_team"]
+        probs = ma.get("probs",{}); best = ma.get("best")
+        home_f = ma.get("home_form") or {}; away_f = ma.get("away_form") or {}
+        with st.container():
+            st.markdown("<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+                        "border-radius:12px;padding:16px;margin-bottom:14px;'>", unsafe_allow_html=True)
+            hcol, tcol = st.columns([4, 1])
+            with hcol:
+                st.markdown(f"#### 🏀 {home}  vs  {away}")
+            with tcol:
+                if ma.get("time"):
+                    st.markdown(f"<div style='text-align:right;color:#a0a0c0;padding-top:8px'>⏰ {ma['time']}</div>",
+                                unsafe_allow_html=True)
+            if home_f or away_f:
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    if home_f:
+                        st.metric(f"🏠 {home_f.get('abbrev', home[:3])}", "")
+                        st.caption(f"Record: {home_f.get('wins',0)}-{home_f.get('losses',0)}\nL10: {home_f.get('last10','—')}\nReeks: {home_f.get('streak','—')}\nThuis: {home_f.get('home_record','—')}")
+                with c2:
+                    margin = probs.get("exp_margin",0)
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c0;'>"
+                                f"<div>Verwachte marge:</div>"
+                                f"<div style='font-size:1.2rem;font-weight:700;color:#fff'>{margin:+.1f} pts</div>"
+                                f"<div style='font-size:0.85rem;margin-top:4px'>"
+                                f"{probs.get('exp_home_pts',0):.0f} – {probs.get('exp_away_pts',0):.0f}</div>"
+                                f"</div>", unsafe_allow_html=True)
+                with c3:
+                    if away_f:
+                        st.metric(f"✈️ {away_f.get('abbrev', away[:3])}", "")
+                        st.caption(f"Record: {away_f.get('wins',0)}-{away_f.get('losses',0)}\nL10: {away_f.get('last10','—')}\nReeks: {away_f.get('streak','—')}\nUit: {away_f.get('road_record','—')}")
+            st.markdown("---")
+            opt_cols = st.columns(min(len(ma["options"]), 4))
+            for col, opt in zip(opt_cols, ma["options"]):
+                _render_match_option_box(col, opt, best)
+            st.markdown(f"<div style='color:#6060a0;font-size:0.75rem;margin-top:8px;'>"
+                        f"Odds bron: {ma.get('odds_bron','')}  ·  Marge model: {probs.get('exp_margin',0):+.1f} punten</div>",
+                        unsafe_allow_html=True)
+            _render_fav_button(ma, "NBA", "NBA API")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+# ─── MLB (honkbal) match analyse ────────────────────────────────────────────
+
+_MLB_LEAGUE_RUNS_AVG = 4.35
+_MLB_HOME_FACTOR     = 1.05
+_MLB_RUN_LINE        = 1.5
+
+
+def _mlb_match_probs(home_form: dict, away_form: dict) -> dict:
+    lH = home_form.get("runs_avg", _MLB_LEAGUE_RUNS_AVG) * \
+         (away_form.get("opp_runs_avg", _MLB_LEAGUE_RUNS_AVG) / _MLB_LEAGUE_RUNS_AVG) * \
+         _MLB_HOME_FACTOR
+    lA = away_form.get("runs_avg", _MLB_LEAGUE_RUNS_AVG) * \
+         (home_form.get("opp_runs_avg", _MLB_LEAGUE_RUNS_AVG) / _MLB_LEAGUE_RUNS_AVG)
+    lH = max(1.5, min(lH, 9.0)); lA = max(1.5, min(lA, 9.0))
+    p_home = p_away = p_home_rl = p_away_rl = 0.0
+    for h in range(20):
+        for a in range(20):
+            p = _poisson_p(h, lH) * _poisson_p(a, lA)
+            if h > a:
+                p_home += p
+                if h - a >= 2: p_home_rl += p
+            elif h < a:
+                p_away += p; p_away_rl += p
+    tot    = p_home + p_away or 1.0
+    rl_tot = p_home_rl + p_away_rl or 1.0
+    return {"p_home": round(p_home/tot, 4), "p_away": round(p_away/tot, 4),
+            "p_home_rl": round(p_home_rl/rl_tot, 4), "p_away_rl": round(p_away_rl/rl_tot, 4),
+            "lH": round(lH, 2), "lA": round(lA, 2)}
+
+
+def analyze_mlb_matches(matches: list) -> list:
+    results = []
+    for m in matches:
+        sport = (m.get("sport") or m.get("competition") or "").upper()
+        if not any(x in sport for x in ("MLB","BASEBALL","HONKBAL")):
+            continue
+        home_name = m.get("home_team",""); away_name = m.get("away_team","")
+        if not home_name or not away_name:
+            continue
+        home_form = mlb.get_team_form_for_match(home_name)
+        away_form = mlb.get_team_form_for_match(away_name)
+        fallback  = {"runs_avg": _MLB_LEAGUE_RUNS_AVG, "opp_runs_avg": _MLB_LEAGUE_RUNS_AVG}
+        probs = _mlb_match_probs(home_form or fallback, away_form or fallback)
+        scr_odds = m.get("screenshot_odds") or {}
+        odds_bron = "screenshot"
+        b365_h2h = {}; b365_sp = {}
+        try:
+            if odds_api._API_KEY and not odds_api.is_limit_reached():
+                b365_h2h = odds_api.get_match_odds_h2h("MLB", home_name, away_name)
+                b365_sp  = odds_api.get_match_odds_spreads("MLB", home_name, away_name)
+                if b365_h2h.get("source")=="bet365" or b365_sp.get("source")=="bet365":
+                    odds_bron = "Bet365"
+        except Exception:
+            pass
+        home_ml = b365_h2h.get("home_odds") or scr_odds.get("home")
+        away_ml = b365_h2h.get("away_odds") or scr_odds.get("away")
+        hs = b365_sp.get("home_spread"); rl_val = abs(float(hs)) if hs is not None else _MLB_RUN_LINE
+        h_rl_odds = b365_sp.get("home_spread_odds"); a_rl_odds = b365_sp.get("away_spread_odds")
+
+        # Bereken kansen voor meerdere run lines (-1.5 en -2.5)
+        def _p_home_rl_n(n):
+            """P(home wint met n+ runs verschil) via Poisson model."""
+            lH = probs.get("lH", _MLB_LEAGUE_RUNS_AVG)
+            lA = probs.get("lA", _MLB_LEAGUE_RUNS_AVG)
+            p = sum(_poisson_p(h, lH) * _poisson_p(a, lA)
+                    for h in range(20) for a in range(20) if h - a >= int(n))
+            rl_tot = sum(_poisson_p(h, lH) * _poisson_p(a, lA)
+                         for h in range(20) for a in range(20) if h != a)
+            return round(p / rl_tot, 4) if rl_tot > 0 else 0.0
+
+        def _p_away_rl_n(n):
+            lH = probs.get("lH", _MLB_LEAGUE_RUNS_AVG)
+            lA = probs.get("lA", _MLB_LEAGUE_RUNS_AVG)
+            p = sum(_poisson_p(h, lH) * _poisson_p(a, lA)
+                    for h in range(20) for a in range(20) if a - h >= 0)
+            rl_tot = sum(_poisson_p(h, lH) * _poisson_p(a, lA)
+                         for h in range(20) for a in range(20) if h != a)
+            return round(p / rl_tot, 4) if rl_tot > 0 else 0.0
+
+        def _opt_raw(p_val, ov, lbl):
+            ev = _match_ev(p_val, ov) if ov else None
+            return {"label": lbl, "prob": p_val, "odds": ov,
+                    "ev": ev, "rating": _match_rating(ev) if ev is not None else "—"}
+
+        p_h_rl15 = probs.get("p_home_rl", 0.0)
+        p_a_rl15 = probs.get("p_away_rl", 0.0)
+        p_h_rl25 = _p_home_rl_n(3)   # home wint met 3+ = -2.5 gedekt
+        p_a_rl25 = _p_away_rl_n(0)   # away wint of gelijk = +2.5 gedekt
+
+        options = [
+            _opt_raw(probs.get("p_home", 0.0), home_ml,   f"🏠 {home_name} wint"),
+            _opt_raw(probs.get("p_away", 0.0), away_ml,   f"✈️ {away_name} wint"),
+            _opt_raw(p_h_rl15, h_rl_odds, f"🏠 {home_name} -{rl_val:.1f} RL"),
+            _opt_raw(p_a_rl15, a_rl_odds, f"✈️ {away_name} +{rl_val:.1f} RL"),
+            _opt_raw(p_h_rl25, None,       f"🏠 {home_name} -2.5 RL"),
+            _opt_raw(p_a_rl25, None,       f"✈️ {away_name} +2.5 RL"),
+        ]
+        best = max((o for o in options if o["ev"] is not None), key=lambda o: o["ev"], default=None)
+        results.append({"home_team": home_name, "away_team": away_name, "time": m.get("time"),
+                        "home_form": home_form, "away_form": away_form, "probs": probs,
+                        "odds_bron": odds_bron, "options": options, "best": best, "run_line": rl_val})
+    return results
+
+
+def render_mlb_match_cards(match_analyses: list):
+    if not match_analyses:
+        return
+    st.markdown("---")
+    st.markdown("### ⚾ MLB Wedstrijd-analyse")
+    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None],
+                   key=lambda ma: ma["best"]["ev"], reverse=True)[:3]
+    if _top3:
+        st.markdown("#### 🏆 Top 3 aanbevolen MLB wedstrijden")
+        for _i, _ma in enumerate(_top3, 1):
+            _b = _ma["best"]; _ev = f"+{_b['ev']:.3f}" if _b["ev"] >= 0 else f"{_b['ev']:.3f}"
+            _p = _ma.get("probs",{})
+            st.markdown(f"**{_i}. {_ma['home_team']} vs {_ma['away_team']}**  \n"
+                        f"Beste inzet: {_b['label']} · EV `{_ev}` · {_b['rating']}  \n"
+                        f"xRuns: {_p.get('lH',0):.2f} – {_p.get('lA',0):.2f}")
+        st.markdown("---")
+    for ma in match_analyses:
+        home = ma["home_team"]; away = ma["away_team"]
+        probs = ma.get("probs",{}); best = ma.get("best")
+        home_f = ma.get("home_form") or {}; away_f = ma.get("away_form") or {}
+        with st.container():
+            st.markdown("<div style='background:#1a1a2e;border:1px solid #2a2a4a;"
+                        "border-radius:12px;padding:16px;margin-bottom:14px;'>", unsafe_allow_html=True)
+            hcol, tcol = st.columns([4, 1])
+            with hcol:
+                st.markdown(f"#### ⚾ {home}  vs  {away}")
+            with tcol:
+                if ma.get("time"):
+                    st.markdown(f"<div style='text-align:right;color:#a0a0c0;padding-top:8px'>⏰ {ma['time']}</div>",
+                                unsafe_allow_html=True)
+            if home_f or away_f:
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    if home_f:
+                        st.metric(f"🏠 {home_f.get('abbrev', home[:3])}", "")
+                        st.caption(f"Record: {home_f.get('wins',0)}-{home_f.get('losses',0)}\nRuns avg: {home_f.get('runs_avg',0):.2f}\nOpp runs: {home_f.get('opp_runs_avg',0):.2f}\nThuis: {home_f.get('home_record','—')}")
+                with c2:
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c0;'>"
+                                f"<div>xRuns: {probs.get('lH',0):.2f} – {probs.get('lA',0):.2f}</div>"
+                                f"<div style='font-size:0.85rem;margin-top:4px'>Run line: ±{ma.get('run_line',1.5):.1f}</div>"
+                                f"</div>", unsafe_allow_html=True)
+                with c3:
+                    if away_f:
+                        st.metric(f"✈️ {away_f.get('abbrev', away[:3])}", "")
+                        st.caption(f"Record: {away_f.get('wins',0)}-{away_f.get('losses',0)}\nRuns avg: {away_f.get('runs_avg',0):.2f}\nOpp runs: {away_f.get('opp_runs_avg',0):.2f}\nUit: {away_f.get('road_record','—')}")
+            st.markdown("---")
+            opt_cols = st.columns(min(len(ma["options"]), 4))
+            for col, opt in zip(opt_cols, ma["options"]):
+                _render_match_option_box(col, opt, best)
+            st.markdown(f"<div style='color:#6060a0;font-size:0.75rem;margin-top:8px;'>"
+                        f"Odds bron: {ma.get('odds_bron','')}  ·  xRuns {probs.get('lH',0):.2f}–{probs.get('lA',0):.2f}</div>",
+                        unsafe_allow_html=True)
+            _render_fav_button(ma, "MLB", "MLB API")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_top3(top3: list):
     st.markdown("### 🏆 Top prop aanbevelingen")
     for i, b in enumerate(top3, 1):
@@ -1662,27 +2164,50 @@ with tab_analyse:
                     else:
                         enriched = []
 
-                    flashscore_text  = ""
-                    nhl_match_analyses = []
+                    flashscore_text       = ""
+                    nhl_match_analyses    = []
+                    soccer_match_analyses = []
+                    nba_match_analyses    = []
+                    mlb_match_analyses    = []
                     if matches:
-                        # Splits NHL-wedstrijden van voetbalwedstrijden
+                        def _is_nba_match(m):
+                            s = (m.get("sport") or m.get("competition") or "").upper()
+                            return "NBA" in s or "BASKETBALL" in s
+                        def _is_mlb_match(m):
+                            s = (m.get("sport") or m.get("competition") or "").upper()
+                            return any(x in s for x in ("MLB","BASEBALL","HONKBAL"))
+
                         nhl_matches    = [m for m in matches if _is_nhl_match(m)]
-                        soccer_matches = [
-                            m for m in matches
-                            if m not in nhl_matches
-                        ]
+                        nba_matches    = [m for m in matches if _is_nba_match(m)]
+                        mlb_matches    = [m for m in matches if _is_mlb_match(m)]
+                        soccer_matches = [m for m in matches
+                                          if m not in nhl_matches
+                                          and m not in nba_matches
+                                          and m not in mlb_matches]
 
                         if nhl_matches:
                             st.write(f"🏒 {len(nhl_matches)} NHL-wedstrijd(en) analyseren...")
                             nhl_match_analyses = analyze_nhl_matches(nhl_matches)
-                            st.write(f"✅ NHL wedstrijd-analyse klaar")
+                            st.write("✅ NHL wedstrijd-analyse klaar")
+
+                        if nba_matches:
+                            st.write(f"🏀 {len(nba_matches)} NBA-wedstrijd(en) analyseren...")
+                            nba_match_analyses = analyze_nba_matches(nba_matches)
+                            st.write("✅ NBA wedstrijd-analyse klaar")
+
+                        if mlb_matches:
+                            st.write(f"⚾ {len(mlb_matches)} MLB-wedstrijd(en) analyseren...")
+                            mlb_match_analyses = analyze_mlb_matches(mlb_matches)
+                            st.write("✅ MLB wedstrijd-analyse klaar")
 
                         if soccer_matches:
+                            st.write(f"⚽ {len(soccer_matches)} voetbalwedstrijd(en) analyseren...")
+                            soccer_match_analyses = analyze_soccer_matches(soccer_matches)
                             st.write("📺 Teamvorm ophalen via Football-Data API...")
                             soccer_matches = _enrich_soccer_matches_form(soccer_matches)
                             st.write("📺 Flashscore analyseren via Claude...")
                             flashscore_text = analyze_flashscore(client, soccer_matches, enriched)
-                            st.write("✅ Flashscore analyse klaar")
+                            st.write("✅ Voetbal analyse klaar")
 
                     status.update(label="✅ Analyse compleet!", state="complete")
 
@@ -1705,11 +2230,14 @@ with tab_analyse:
 
                 # Resultaten opslaan in session state
                 st.session_state.last_analysis = {
-                    "enriched":          enriched,
-                    "top3":              top3_out,
-                    "flashscore":        flashscore_text,
-                    "nhl_match_analyses": nhl_match_analyses,
-                    "scenario":          scenario,
+                    "enriched":              enriched,
+                    "top3":                  top3_out,
+                    "flashscore":            flashscore_text,
+                    "nhl_match_analyses":    nhl_match_analyses,
+                    "soccer_match_analyses": soccer_match_analyses,
+                    "nba_match_analyses":    nba_match_analyses,
+                    "mlb_match_analyses":    mlb_match_analyses,
+                    "scenario":              scenario,
                 }
 
                 # Uploader resetten + rerun
@@ -1732,8 +2260,11 @@ with tab_analyse:
         res       = st.session_state.last_analysis
         enriched  = res["enriched"]
         top3_out  = res["top3"]
-        flashscore_text     = res["flashscore"]
-        nhl_match_analyses  = res.get("nhl_match_analyses", [])
+        flashscore_text       = res["flashscore"]
+        nhl_match_analyses    = res.get("nhl_match_analyses", [])
+        soccer_match_analyses = res.get("soccer_match_analyses", [])
+        nba_match_analyses    = res.get("nba_match_analyses", [])
+        mlb_match_analyses    = res.get("mlb_match_analyses", [])
         scenario  = res.get("scenario", 3)
 
         # Scenario label
@@ -1743,9 +2274,15 @@ with tab_analyse:
         if scenario == 3:
             st.info("⚠️ Tip: upload ook een Flashscore screenshot voor wedstrijdcontext en automatische prop-suggesties.")
 
-        # NHL wedstrijd-analyse
+        # Wedstrijd-analyses (NHL, NBA, MLB, voetbal)
         if nhl_match_analyses:
             render_nhl_match_cards(nhl_match_analyses)
+        if nba_match_analyses:
+            render_nba_match_cards(nba_match_analyses)
+        if mlb_match_analyses:
+            render_mlb_match_cards(mlb_match_analyses)
+        if soccer_match_analyses:
+            render_soccer_match_cards(soccer_match_analyses)
 
         if flashscore_text:
             render_flashscore(flashscore_text)

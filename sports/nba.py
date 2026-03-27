@@ -207,6 +207,84 @@ def get_team_players(team_id: int, n: int = 5) -> list:
         return []
 
 
+def get_team_form_for_match(team_name: str) -> dict:
+    """
+    Zoek een NBA team op naam en geef seizoensstatistieken terug voor het wedstrijd-model.
+    Geeft dict met: abbrev, full_name, gp, pts_avg, opp_pts_avg, wins, losses,
+                    home_record, road_record, last10, streak
+    """
+    if not NBA_API_AVAILABLE:
+        return {}
+
+    cache_key = f"nba_team_form_{team_name.strip().lower().replace(' ', '_')}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        from nba_api.stats.endpoints import leaguestandingsv3
+        nba_limiter.wait()
+        season = _current_season()
+        standings = leaguestandingsv3.LeagueStandingsV3(
+            season=season,
+            season_type="Regular Season",
+            timeout=30,
+        )
+        df = standings.get_data_frames()[0]
+    except Exception as e:
+        print(f"  ⚠️  NBA standings fout: {e}")
+        return {}
+
+    search = team_name.strip().lower()
+    result = {}
+    for _, row in df.iterrows():
+        team_city    = str(row.get("TeamCity", "")).lower()
+        team_nm      = str(row.get("TeamName", "")).lower()
+        team_slug    = str(row.get("TeamSlug", "")).lower()
+        full         = f"{team_city} {team_nm}"
+        if not any([
+            search == full,
+            search == team_nm,
+            search in full,
+            search in team_slug,
+        ]):
+            continue
+
+        gp    = max(int(row.get("WINS", 0)) + int(row.get("LOSSES", 0)), 1)
+        wins  = int(row.get("WINS", 0))
+        loss  = int(row.get("LOSSES", 0))
+
+        pts_avg     = round(float(row.get("PointsPerGame", 110.0) or 110.0), 1)
+        opp_pts_avg = round(float(row.get("OppPointsPerGame", 110.0) or 110.0), 1)
+
+        hw  = int(row.get("HOME_WINS",   0) or 0)
+        hl  = int(row.get("HOME_LOSSES", 0) or 0)
+        rw  = int(row.get("ROAD_WINS",   0) or 0)
+        rl  = int(row.get("ROAD_LOSSES", 0) or 0)
+
+        l10w = int(row.get("L10_WINS",   0) or 0)
+        l10l = int(row.get("L10_LOSSES", 0) or 0)
+
+        result = {
+            "abbrev":       str(row.get("TeamAbbreviation", "")),
+            "full_name":    f"{row.get('TeamCity', '')} {row.get('TeamName', '')}".strip(),
+            "gp":           gp,
+            "wins":         wins,
+            "losses":       loss,
+            "pts_avg":      pts_avg,
+            "opp_pts_avg":  opp_pts_avg,
+            "home_record":  f"{hw}-{hl}",
+            "road_record":  f"{rw}-{rl}",
+            "last10":       f"{l10w}-{l10l}",
+            "streak":       str(row.get("strCurrentStreak", "") or ""),
+        }
+        break
+
+    if result:
+        cache_set(cache_key, result, ttl_hours=6)
+    return result
+
+
 def get_today_games() -> list:
     """Geeft vandaag's NBA wedstrijden: [{home_team_id, away_team_id}]."""
     if not NBA_API_AVAILABLE:
