@@ -41,6 +41,12 @@ try:
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
+try:
+    import injuries as _injuries_mod
+    _INJURIES_AVAILABLE = True
+except ImportError:
+    _INJURIES_AVAILABLE = False
+
 
 # ─── PIL / HEIC support ───────────────────────────────────────────────────────
 try:
@@ -2019,6 +2025,79 @@ def render_mlb_match_cards(match_analyses: list):
             st.markdown("</div>", unsafe_allow_html=True)
 
 
+
+# ─── Props filtering en ranking ────────────────────────────────────────────────
+
+def _filter_and_rank_props(enriched: list) -> list:
+    """
+    Filter en rank props voor de top N weergave.
+    - unavailable → volledig uitsluiten
+    - different_line → 15% EV penalty, tonen met waarschuwing
+    - available → normaal ranken
+    - negatieve EV → altijd uitsluiten
+    """
+    import logging as _logging
+    result = []
+    for bet in enriched:
+        b365_status = (bet.get("bet365") or {}).get("status", "")
+        ev = float(bet.get("ev") or -999)
+        
+        if b365_status == "unavailable":
+            _logging.debug(f"[TOP5 SKIP] {bet.get('player')} | EV={ev:.3f} | status=unavailable")
+            continue
+        
+        if b365_status == "different_line":
+            penalized_ev = ev * 0.85
+            bet = dict(bet)
+            bet["ev"] = penalized_ev
+            bet["_ev_penalty_note"] = "⚠️ Andere lijn op Bet365 (−15% EV penalty)"
+            _logging.debug(f"[TOP5 PENALTY] {bet.get('player')} | EV={ev:.3f}→{penalized_ev:.3f} | status=different_line")
+            ev = penalized_ev
+        
+        if ev <= 0:
+            _logging.debug(f"[TOP5 SKIP] {bet.get('player')} | EV={ev:.3f} | negatief")
+            continue
+        
+        _logging.debug(f"[TOP5 OK] {bet.get('player')} | EV={ev:.3f} | status={b365_status or 'n/a'}")
+        result.append(bet)
+    
+    result.sort(key=lambda b: float(b.get("ev") or 0), reverse=True)
+    return result
+
+
+def generate_parlay_suggestions(bets: list, max_parlays: int = 3) -> list:
+    """Genereer top parlay combinaties uit beschikbare, positieve-EV props."""
+    import itertools
+    eligible = [
+        b for b in bets
+        if ((b.get("bet365") or {}).get("status", "") in ("available", "different_line", "")
+            and float(b.get("ev") or -1) > 0
+            and b.get("injury_status", "fit") != "injured")
+    ]
+    if len(eligible) < 2:
+        return []
+    candidates = []
+    for n in (2, 3):
+        for combo in itertools.combinations(eligible[:15], n):
+            teams = [b.get("team", "") for b in combo]
+            if len(set(t for t in teams if t)) < len([t for t in teams if t]):
+                continue
+            comb_odds = 1.0
+            hit_ch    = 1.0
+            for b in combo:
+                comb_odds *= float(b.get("odds") or 1.5)
+                hit_ch    *= float(b.get("composite") or b.get("linemate_hr") or 0.5)
+            p_ev = hit_ch * (comb_odds - 1) - (1 - hit_ch)
+            candidates.append({
+                "props": list(combo),
+                "gecombineerde_odds": round(comb_odds, 3),
+                "hit_kans":          round(hit_ch, 4),
+                "parlay_ev":         round(p_ev, 4),
+            })
+    candidates.sort(key=lambda x: x["parlay_ev"], reverse=True)
+    return candidates[:max_parlays]
+
+
 def render_top3(top3: list):
     st.markdown("### 🏆 Top prop aanbevelingen")
     for i, b in enumerate(top3, 1):
@@ -2050,6 +2129,13 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
                 unsafe_allow_html=True,
             )
         st.markdown(f"#### {bet['player']}")
+        _inj = bet.get("injury_status", "unknown")
+        if _inj == "injured":
+            st.error("❌ Geblesseerd — speler waarschijnlijk niet beschikbaar")
+        elif _inj == "questionable":
+            st.warning("⚠️ Twijfelachtig voor deze wedstrijd")
+        if bet.get("_ev_penalty_note"):
+            st.warning(bet["_ev_penalty_note"])
         b365_label = bet.get("bet365", {}).get("label", "")
         caption_line = f"{bet['bet_type']} · {bet['sport']}"
         if b365_label:
@@ -2237,8 +2323,8 @@ if "last_analysis" not in st.session_state:
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-tab_analyse, tab_favorieten, tab_bankroll, tab_history = st.tabs(
-    ["🔍 Analyse", "⭐ Favorieten", "📊 Bankroll", "📋 Geschiedenis"]
+tab_analyse, tab_favorieten, tab_bankroll, tab_parlay, tab_history = st.tabs(
+    ["🔍 Analyse", "⭐ Favorieten", "📊 Bankroll", "🎯 Parlay Builder", "📋 Geschiedenis"]
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2655,7 +2741,42 @@ with tab_favorieten:
 with tab_bankroll:
     st.markdown("### 📊 Bankroll Tracker")
 
+    # ── Filters ──────────────────────────────────────────────────────────────
+    st.markdown("#### 🔎 Filters")
+    _bkf1, _bkf2, _bkf3, _bkf4 = st.columns(4)
+    _bk_sport  = _bkf1.selectbox("Sport",   ["Alles","NHL","NBA","MLB","Voetbal"], key="bk_sport")
+    _bk_btype  = _bkf2.selectbox("Bet type",
+        ["Alles","Goals","Assists","Shots on Goal","Blocked Shots",
+         "Hits","Points","Home Runs","Strikeouts","Over/Under"], key="bk_btype")
+    _bk_period = _bkf3.selectbox("Periode", ["Alles","Laatste 7 dagen","Laatste 30 dagen"], key="bk_period")
+    _bk_kind   = _bkf4.selectbox("Type",    ["Alles","Singles","Parlays"], key="bk_kind")
+    st.markdown("---")
+
     _alle_res = load_resultaten()
+
+    import datetime as _dt_bk2
+    _today_bk2 = _dt_bk2.date.today()
+
+    def _bk_filter(r: dict) -> bool:
+        if _bk_sport != "Alles" and _bk_sport.lower() not in (r.get("sport","") or "").lower():
+            return False
+        if _bk_btype != "Alles" and _bk_btype.lower() not in (r.get("bet_type","") or "").lower():
+            return False
+        if _bk_period != "Alles":
+            try:
+                rd = _dt_bk2.date.fromisoformat((r.get("datum") or "")[:10])
+                days = 7 if "7" in _bk_period else 30
+                if (_today_bk2 - rd).days > days:
+                    return False
+            except Exception:
+                pass
+        if _bk_kind == "Singles" and r.get("is_parlay"):
+            return False
+        if _bk_kind == "Parlays" and not r.get("is_parlay"):
+            return False
+        return True
+
+    _alle_res = [r for r in _alle_res if _bk_filter(r)]
     _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren")]
 
     if not _gedaan:
@@ -2783,8 +2904,194 @@ with tab_bankroll:
 # TAB 4 — GESCHIEDENIS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB — PARLAY BUILDER
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_parlay:
+    st.markdown("### 🎯 Parlay Builder")
+    st.caption("Combineer props tot een parlay en bereken de gecombineerde EV")
+
+    if "parlay_legs" not in st.session_state:
+        st.session_state.parlay_legs = []
+
+    all_props_parlay = st.session_state.get("last_analysis") or []
+    if all_props_parlay:
+        zoek = st.text_input("🔍 Zoek speler of sport", key="parlay_search",
+                             placeholder="Bijv. McDavid, NHL, Goals...")
+        zoek_l = zoek.lower() if zoek else ""
+        filtered_p = [b for b in all_props_parlay
+                      if not zoek_l
+                      or zoek_l in (b.get("player") or "").lower()
+                      or zoek_l in (b.get("sport") or "").lower()
+                      or zoek_l in (b.get("bet_type") or "").lower()]
+        if filtered_p:
+            st.markdown("**Beschikbare props uit laatste analyse:**")
+            for b in filtered_p[:25]:
+                pc1, pc2, pc3 = st.columns([3, 1, 1])
+                pc1.write(f"{b.get('player','?')} — {b.get('bet_type','?')}")
+                pc2.write(f"Odds: {b.get('odds','—')}")
+                _already = any(
+                    l.get("player") == b.get("player") and l.get("bet_type") == b.get("bet_type")
+                    for l in st.session_state.parlay_legs
+                )
+                if not _already:
+                    if pc3.button("+ Voeg toe", key=f"addleg_{b.get('player','')}_{b.get('bet_type','')}"):
+                        st.session_state.parlay_legs.append({
+                            "player":   b.get("player", ""),
+                            "sport":    b.get("sport", ""),
+                            "bet_type": b.get("bet_type", ""),
+                            "odds":     float(b.get("odds") or 1.5),
+                            "hit_rate": float(b.get("composite") or b.get("linemate_hr") or 0.5),
+                        })
+                        st.rerun()
+                else:
+                    pc3.caption("✅ Toegevoegd")
+    else:
+        st.info("Voer eerst een analyse uit om props te kunnen toevoegen aan de parlay.")
+
+    st.markdown("---")
+
+    if st.session_state.parlay_legs:
+        st.markdown("#### 🧩 Jouw Parlay")
+        legs_to_remove = []
+        for _li, _leg in enumerate(st.session_state.parlay_legs):
+            lc1, lc2, lc3, lc4 = st.columns([3, 1, 1, 0.5])
+            lc1.write(f"**{_leg.get('player','')}** — {_leg.get('bet_type','')}")
+            _new_odds = lc2.number_input(
+                "Odds", min_value=1.01, max_value=50.0,
+                value=float(_leg.get("odds", 1.5)), step=0.05, format="%.2f",
+                key=f"pleg_odds_{_li}",
+            )
+            st.session_state.parlay_legs[_li]["odds"] = _new_odds
+            lc3.caption(f"HR: {_leg.get('hit_rate', 0)*100:.0f}%")
+            if lc4.button("🗑️", key=f"rmleg_{_li}"):
+                legs_to_remove.append(_li)
+        for _idx in sorted(legs_to_remove, reverse=True):
+            st.session_state.parlay_legs.pop(_idx)
+        if legs_to_remove:
+            st.rerun()
+
+        _legs = st.session_state.parlay_legs
+        _comb_odds = 1.0
+        _hit_ch    = 1.0
+        for _leg in _legs:
+            _comb_odds *= float(_leg.get("odds", 1.5))
+            _hit_ch    *= float(_leg.get("hit_rate", 0.5))
+        _p_ev = _hit_ch * (_comb_odds - 1) - (1 - _hit_ch)
+
+        _inzet = st.number_input("💰 Inzet (€)", min_value=1.0, max_value=10000.0,
+                                 value=10.0, step=1.0, key="parlay_inzet")
+        _winst = _inzet * _comb_odds - _inzet
+
+        _mc1, _mc2, _mc3, _mc4 = st.columns(4)
+        _mc1.metric("Gecombineerde Odds", f"{_comb_odds:.2f}")
+        _mc2.metric("Hit Kans", f"{_hit_ch*100:.1f}%")
+        _ev_s2 = f"+{_p_ev:.3f}" if _p_ev >= 0 else f"{_p_ev:.3f}"
+        _mc3.metric("Parlay EV", _ev_s2)
+        _mc4.metric(f"Winst bij €{_inzet:.0f}", f"€{_winst:.2f}")
+
+        if _p_ev < 0:
+            st.warning(f"⚠️ Negatieve EV ({_ev_s2}) — verliesgevend op lange termijn.")
+        else:
+            st.success(f"✅ Positieve EV ({_ev_s2})")
+
+        _pb_col1, _pb_col2 = st.columns(2)
+        if _pb_col1.button("⭐ Sla parlay op", use_container_width=True, type="primary"):
+            import uuid as _puuid, datetime as _pdt
+            _parlay_obj = {
+                "id":                 str(_puuid.uuid4())[:8],
+                "datum":              _pdt.datetime.now().isoformat(),
+                "props_json":         list(_legs),
+                "gecombineerde_odds": round(_comb_odds, 4),
+                "hit_kans":           round(_hit_ch, 6),
+                "ev_score":           round(_p_ev, 6),
+                "inzet":              float(_inzet),
+                "uitkomst":           "open",
+                "winst_verlies":      0.0,
+                "legs_json":          {
+                    l.get("player","") + "_" + l.get("bet_type",""): "open"
+                    for l in _legs
+                },
+            }
+            db.save_parlay(_parlay_obj)
+            st.session_state.parlay_legs = []
+            st.success("✅ Parlay opgeslagen!")
+            st.rerun()
+        if _pb_col2.button("🗑️ Wis parlay", use_container_width=True):
+            st.session_state.parlay_legs = []
+            st.rerun()
+    else:
+        st.info("Voeg props toe om een parlay te bouwen.")
+
+    _saved_parlays = db.load_parlays()
+    if _saved_parlays:
+        st.markdown("---")
+        st.markdown("#### 📋 Opgeslagen Parlays")
+        for _prl in _saved_parlays:
+            _prl_legs = _prl.get("props_json") or []
+            _prl_lj   = _prl.get("legs_json") or {}
+            if isinstance(_prl_lj, str):
+                try:
+                    _prl_lj = __import__("json").loads(_prl_lj)
+                except Exception:
+                    _prl_lj = {}
+            _prl_ev_s = f"+{_prl.get('ev_score',0):.3f}" if (_prl.get('ev_score') or 0) >= 0 else f"{_prl.get('ev_score',0):.3f}"
+            with st.expander(
+                f"🎯 {len(_prl_legs)} legs · Odds {_prl.get('gecombineerde_odds',0):.2f}"
+                f" · EV {_prl_ev_s} · {(_prl.get('uitkomst') or 'open').upper()}"
+            ):
+                _upd_legs = dict(_prl_lj)
+                _changed  = False
+                for _pleg in _prl_legs:
+                    _lk  = str(_pleg.get("player","")) + "_" + str(_pleg.get("bet_type",""))
+                    _lst = _upd_legs.get(_lk, "open")
+                    _plc1, _plc2 = st.columns([3, 2])
+                    _plc1.write(f"**{_pleg.get('player','')}** — {_pleg.get('bet_type','')} @ {_pleg.get('odds','—')}")
+                    _nst = _plc2.selectbox(
+                        "Status",
+                        options=["open", "geraakt", "gemist"],
+                        index=["open","geraakt","gemist"].index(_lst) if _lst in ["open","geraakt","gemist"] else 0,
+                        key=f"legst_{_prl.get('id','')}_{_lk}",
+                        label_visibility="collapsed",
+                    )
+                    if _nst != _lst:
+                        _upd_legs[_lk] = _nst
+                        _changed = True
+                if _changed:
+                    db.update_parlay(_prl.get("id",""), {"legs_json": _upd_legs})
+                    st.rerun()
+
+                _oc1, _oc2, _oc3 = st.columns(3)
+                if (_prl.get("uitkomst") or "open") == "open":
+                    if _oc1.button("✅ Gewonnen", key=f"pwon_{_prl.get('id','')}"):
+                        _pw = _prl.get("inzet",10) * _prl.get("gecombineerde_odds",1) - _prl.get("inzet",10)
+                        db.update_parlay(_prl.get("id",""), {"uitkomst":"gewonnen","winst_verlies":round(_pw,2)})
+                        st.rerun()
+                    if _oc2.button("❌ Verloren", key=f"plost_{_prl.get('id','')}"):
+                        db.update_parlay(_prl.get("id",""), {"uitkomst":"verloren","winst_verlies":-_prl.get("inzet",10)})
+                        st.rerun()
+                else:
+                    _wv = _prl.get("winst_verlies", 0) or 0
+                    _kl = "#4ade80" if _wv >= 0 else "#f87171"
+                    st.markdown(f"<span style='color:{_kl};font-weight:700'>Uitkomst: {(_prl.get('uitkomst') or '').upper()} · W/V: €{_wv:.2f}</span>",
+                                unsafe_allow_html=True)
+                if _oc3.button("🗑️ Verwijder", key=f"pdel_{_prl.get('id','')}"):
+                    db.delete_parlay(_prl.get("id",""))
+                    st.rerun()
+
+
 with tab_history:
     st.markdown("### 📋 Analysegeschiedenis (laatste 7 dagen)")
+
+    # ── Filters ──────────────────────────────────────────────────────────────
+    _hf1, _hf2 = st.columns(2)
+    _hist_sport = _hf1.selectbox("Filter sport",
+        ["Alles","NHL","NBA","MLB","Voetbal"], key="hist_sport_flt")
+    _hist_btype = _hf2.selectbox("Filter bet type",
+        ["Alles","Goals","Assists","Shots","Points","Hits","Home Runs","Strikeouts"],
+        key="hist_btype_flt")
+    st.markdown("---")
 
     history = load_history()
 
