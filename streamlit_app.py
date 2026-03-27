@@ -61,6 +61,37 @@ except ImportError:
 
 SOCCER_COMPS = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1", "LIGUE1", "VOETBAL", "SOCCER"}
 
+# NHL-teamnamen en afkortingen voor fallback-detectie
+_NHL_TEAM_KEYWORDS = {
+    # Volledige namen
+    "maple leafs", "bruins", "canadiens", "senators", "sabres", "red wings",
+    "panthers", "lightning", "hurricanes", "capitals", "rangers", "islanders",
+    "devils", "flyers", "penguins", "blue jackets", "blackhawks", "predators",
+    "blues", "wild", "jets", "oilers", "flames", "canucks", "ducks", "kings",
+    "sharks", "golden knights", "kraken", "avalanche", "stars", "coyotes",
+    "canes", "caps", "leafs", "habs",
+    # Afkortingen
+    "tor", "bos", "mtl", "ott", "buf", "det", "fla", "tbl", "car", "wsh",
+    "nyr", "nyi", "njd", "phi", "pit", "cbj", "chi", "nsh", "stl", "min",
+    "wpg", "edm", "cgy", "van", "ana", "lak", "sjs", "vgk", "sea", "col",
+    "dal", "ari", "uta",
+}
+
+
+def _is_nhl_match(m: dict) -> bool:
+    """Detecteer of een Flashscore-wedstrijd NHL is, ook als competitie-veld ontbreekt."""
+    sport_comp = (m.get("sport") or m.get("competition") or "").lower()
+    if "nhl" in sport_comp or "hockey" in sport_comp:
+        return True
+    # Fallback: controleer of teamnamen overeenkomen met bekende NHL-teams
+    home = (m.get("home_team") or "").lower()
+    away = (m.get("away_team") or "").lower()
+    return (
+        any(kw in home for kw in _NHL_TEAM_KEYWORDS) or
+        any(kw in away for kw in _NHL_TEAM_KEYWORDS)
+    )
+
+
 # Referentie-odds voor auto-gegenereerde props (geen Linemate)
 _REF_ODDS = {
     "shots":       1.85,
@@ -132,11 +163,18 @@ Geef ALLEEN het JSON object terug, geen andere tekst.
 FLASHSCORE_PROMPT = """
 Je bent een expert sportsbetting analist. Analyseer de volgende wedstrijden en props in het Nederlands.
 
-## WEDSTRIJDEN (Flashscore)
+## WEDSTRIJDEN (Flashscore — verrijkt met API-data waar beschikbaar)
 {matches_json}
 
 ## PROPS (Linemate — al gescoord)
 {bets_json}
+
+## INSTRUCTIES
+- Als "home_form" of "away_form" gevuld zijn (bijv. "WWDLL"): gebruik deze data.
+- Als form data null is maar je wel teamnamen hebt: geef aan "Beperkte data beschikbaar"
+  en analyseer op basis van competitiecontext en bekende teamprestaties.
+- Schrijf NOOIT "GEEN DATA" — altijd een redenering geven, ook bij beperkte data.
+- Wees specifiek: noem altijd beide teamnamen en competitie.
 
 ## STAP 2 — FLASHSCORE ANALYSE
 Geef een scoretabel voor de wedstrijden:
@@ -144,6 +182,7 @@ Geef een scoretabel voor de wedstrijden:
 |---|---|---|---|---|
 
 Daarna: **Top 3 wedstrijden** om op te focussen, met 1-zin uitleg per wedstrijd.
+Bij beperkte data: markeer met ⚠️ en geef een contextuele redenering.
 
 {combo_section}
 
@@ -396,7 +435,76 @@ def extract_bets(client, image_paths: list):
         return _deduplicate_bets(data), []
     bets    = _deduplicate_bets(data.get("bets", []))
     matches = _deduplicate_matches(data.get("matches", []))
+
+    # Debug: log hit_rate per prop voor diagnosedoeleinden
+    st.session_state["_dbg_hit_rates"] = [
+        {
+            "player":   b.get("player", "?"),
+            "bet_type": b.get("bet_type", "?"),
+            "hit_rate": b.get("hit_rate"),   # None = niet gevonden
+            "odds":     b.get("linemate_odds"),
+            "sample":   b.get("sample"),
+        }
+        for b in bets
+    ]
+
     return bets, matches
+
+
+# ─── Soccer wedstrijd-verrijking met vorm-data ────────────────────────────────
+
+def _enrich_soccer_matches_form(matches: list) -> list:
+    """
+    Probeert thuis- en uitploeg vorm-data op te halen via de Football-Data API.
+    Als de API-key niet beschikbaar is of een team niet gevonden wordt,
+    worden de wedstrijden ongewijzigd teruggegeven.
+    """
+    if not getattr(soccer, "API_KEY", ""):
+        return matches
+
+    enriched = []
+    for m in matches:
+        m = dict(m)   # werkkopie
+
+        # Al verrijkt? Sla over.
+        if m.get("home_form") and m.get("away_form"):
+            enriched.append(m)
+            continue
+
+        home_name = m.get("home_team", "")
+        away_name = m.get("away_team", "")
+        comp_raw  = (m.get("competition") or "").strip()
+        # Gebruik beste gok voor competitie als die ontbreekt
+        comp = comp_raw if comp_raw else "EPL"
+
+        # Thuisploeg
+        if not m.get("home_form") and home_name:
+            try:
+                stats = soccer.get_team_stats_for_match(home_name, comp)
+                if stats.get("form"):
+                    m["home_form"]       = stats["form"]
+                if stats.get("avg_goals_for"):
+                    m["home_gf_avg"]     = stats["avg_goals_for"]
+                if stats.get("avg_goals_against"):
+                    m["home_ga_avg"]     = stats["avg_goals_against"]
+            except Exception:
+                pass
+
+        # Uitploeg
+        if not m.get("away_form") and away_name:
+            try:
+                stats = soccer.get_team_stats_for_match(away_name, comp)
+                if stats.get("form"):
+                    m["away_form"]       = stats["form"]
+                if stats.get("avg_goals_for"):
+                    m["away_gf_avg"]     = stats["avg_goals_for"]
+                if stats.get("avg_goals_against"):
+                    m["away_ga_avg"]     = stats["avg_goals_against"]
+            except Exception:
+                pass
+
+        enriched.append(m)
+    return enriched
 
 
 # ─── Flashscore analyse via Claude Haiku ──────────────────────────────────────
@@ -688,7 +796,7 @@ def _nhl_auto_props(progress_cb=None) -> list:
                         "team":          team_abbrev,
                         "bet_type":      f"Over {line} Shots on Goal",
                         "linemate_odds": _REF_ODDS["shots"],
-                        "hit_rate":      0.0,
+                        "hit_rate":      None,
                         "sample":        "auto",
                         "sample_n":      games_n,
                     })
@@ -701,7 +809,7 @@ def _nhl_auto_props(progress_cb=None) -> list:
                     "team":          team_abbrev,
                     "bet_type":      "Anytime Goal Scorer",
                     "linemate_odds": _REF_ODDS["anytime"],
-                    "hit_rate":      0.0,
+                    "hit_rate":      None,
                     "sample":        "auto",
                     "sample_n":      games_n,
                 })
@@ -748,7 +856,7 @@ def _nba_auto_props(progress_cb=None) -> list:
                     props.append({
                         "player": p["name"], "sport": "NBA", "team": str(tid),
                         "bet_type": f"Over {line:.1f} Points",
-                        "linemate_odds": _REF_ODDS["points"], "hit_rate": 0.0,
+                        "linemate_odds": _REF_ODDS["points"], "hit_rate": None,
                         "sample": "auto", "sample_n": games_n,
                     })
                 if avg_reb >= 6:
@@ -756,7 +864,7 @@ def _nba_auto_props(progress_cb=None) -> list:
                     props.append({
                         "player": p["name"], "sport": "NBA", "team": str(tid),
                         "bet_type": f"Over {line:.1f} Rebounds",
-                        "linemate_odds": _REF_ODDS["rebounds"], "hit_rate": 0.0,
+                        "linemate_odds": _REF_ODDS["rebounds"], "hit_rate": None,
                         "sample": "auto", "sample_n": games_n,
                     })
     return props
@@ -799,14 +907,14 @@ def _mlb_auto_props(progress_cb=None) -> list:
                     props.append({
                         "player": p["name"], "sport": "MLB", "team": str(tid),
                         "bet_type": "Over 0.5 Hits",
-                        "linemate_odds": _REF_ODDS["hits"], "hit_rate": 0.0,
+                        "linemate_odds": _REF_ODDS["hits"], "hit_rate": None,
                         "sample": "auto", "sample_n": games_n,
                     })
                 if avg_tb >= 1.4:
                     props.append({
                         "player": p["name"], "sport": "MLB", "team": str(tid),
                         "bet_type": "Over 1.5 Total Bases",
-                        "linemate_odds": _REF_ODDS["total_bases"], "hit_rate": 0.0,
+                        "linemate_odds": _REF_ODDS["total_bases"], "hit_rate": None,
                         "sample": "auto", "sample_n": games_n,
                     })
     return props
@@ -897,36 +1005,44 @@ def enrich_bet(bet: dict, cache: dict,
             "opponent_stats": opponent_stats,
         }
 
+    # Hit rate — None = niet geëxtraheerd uit screenshot (auto-prop of Haiku miste het)
+    _raw_hr   = bet.get("hit_rate")   # None als ontbrekend, 0.0 als expliciet 0%
+    _hr_ok    = _raw_hr is not None   # True als Claude Haiku een waarde teruggaf
+    _lm_hr    = float(_raw_hr) if _hr_ok else 0.0
+    # Als hit_rate ontbreekt: zet linemate_weight op 0 zodat het EV niet beïnvloedt
+    _eff_lm_w = linemate_weight if _hr_ok else 0.0
+
     odds  = bet.get("linemate_odds", 1.0)
     score = composite_score(
-        linemate_hit_rate=bet.get("hit_rate", 0.5),
+        linemate_hit_rate=_lm_hr,
         sample_size=sample_n,
         bet_type=bet_type,
         player_stats=player_stats,
         opponent_stats=opponent_stats,
         sport=sport,
-        linemate_weight=linemate_weight,
+        linemate_weight=_eff_lm_w,
         season_weight=season_weight,
     )
     ev_score = ev(score["composite"], odds)
     rat      = rating(ev_score, score["composite"])
 
     return {
-        "player":      player_name,
-        "sport":       bet.get("sport", "?"),
-        "team":        team_hint,
-        "bet_type":    bet_type,
-        "odds":        odds,
-        "sample":      bet.get("sample", "?"),
-        "linemate_hr": score["linemate_hr"],
-        "season_hr":   score["season_hr"],
-        "composite":   score["composite"],
-        "ev":          ev_score,
-        "rating":      rat,
-        "opponent":    opponent_name,
-        "gaa":         opponent_stats.get("goals_against_avg"),
-        "source":      player_stats.get("source", ""),
-        "bet365":      {},   # wordt ingevuld na enrichment
+        "player":         player_name,
+        "sport":          bet.get("sport", "?"),
+        "team":           team_hint,
+        "bet_type":       bet_type,
+        "odds":           odds,
+        "sample":         bet.get("sample", "?"),
+        "linemate_hr":    score["linemate_hr"],
+        "season_hr":      score["season_hr"],
+        "composite":      score["composite"],
+        "ev":             ev_score,
+        "rating":         rat,
+        "opponent":       opponent_name,
+        "gaa":            opponent_stats.get("goals_against_avg"),
+        "source":         player_stats.get("source", ""),
+        "bet365":         {},   # wordt ingevuld na enrichment
+        "no_linemate_hr": not _hr_ok,  # True als geen hit_rate uit screenshot
     }
 
 
@@ -985,6 +1101,39 @@ def render_nhl_match_cards(match_analyses: list):
         return
     st.markdown("---")
     st.markdown("### 🏒 NHL Wedstrijd-analyse")
+
+    # Top 3 aanbevolen wedstrijden (gesorteerd op beste EV)
+    _top3 = sorted(
+        [ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None],
+        key=lambda ma: ma["best"]["ev"],
+        reverse=True,
+    )[:3]
+
+    if _top3:
+        st.markdown("#### 🏆 Top 3 aanbevolen NHL wedstrijden")
+        for _i, _ma in enumerate(_top3, 1):
+            _hf  = _ma.get("home_form", {})
+            _af  = _ma.get("away_form", {})
+            _b   = _ma["best"]
+            _ev_s = f"+{_b['ev']:.3f}" if _b["ev"] >= 0 else f"{_b['ev']:.3f}"
+            _h_l10 = _hf.get("last10", "—") if _hf else "—"
+            _a_l10 = _af.get("last10", "—") if _af else "—"
+            _h_gf  = _hf.get("gf_avg", 0) if _hf else 0
+            _a_gf  = _af.get("gf_avg", 0) if _af else 0
+            _h_rec = _hf.get("home_record", "—") if _hf else "—"
+            _a_rec = _af.get("road_record", "—") if _af else "—"
+            _streak_h = _hf.get("streak", "") if _hf else ""
+            _streak_a = _af.get("streak", "") if _af else ""
+            st.markdown(
+                f"**{_i}. {_ma['home_team']} vs {_ma['away_team']}**  \n"
+                f"Beste inzet: {_b['label']} \u00a0·\u00a0 EV `{_ev_s}` \u00a0·\u00a0 {_b['rating']}  \n"
+                f"Thuis L10: `{_h_l10}` | Uit L10: `{_a_l10}`  \n"
+                f"Thuisrecord: {_h_rec} | Uitrecord: {_a_rec}  \n"
+                f"Gem. goals: {_h_gf:.2f} \u2013 {_a_gf:.2f}"
+                + (f"  \nReeks: {_ma['home_team']} {_streak_h} | {_ma['away_team']} {_streak_a}"
+                   if _streak_h or _streak_a else "")
+            )
+        st.markdown("---")
 
     for ma in match_analyses:
         home = ma["home_team"]
@@ -1176,6 +1325,12 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
         c4.metric("Sample", bet["sample"])
 
         st.progress(bet["composite"], text=f"Composite: {composite_pct}%")
+
+        if bet.get("no_linemate_hr"):
+            st.warning(
+                "⚠️ **Onvoldoende data** — Linemate hit rate niet gevonden in screenshot. "
+                "EV is uitsluitend gebaseerd op historische statistieken."
+            )
 
         info_parts = []
         if bet.get("opponent"):
@@ -1511,11 +1666,7 @@ with tab_analyse:
                     nhl_match_analyses = []
                     if matches:
                         # Splits NHL-wedstrijden van voetbalwedstrijden
-                        nhl_matches    = [
-                            m for m in matches
-                            if "NHL" in (m.get("sport") or m.get("competition") or "").upper()
-                            or "HOCKEY" in (m.get("sport") or m.get("competition") or "").upper()
-                        ]
+                        nhl_matches    = [m for m in matches if _is_nhl_match(m)]
                         soccer_matches = [
                             m for m in matches
                             if m not in nhl_matches
@@ -1527,6 +1678,8 @@ with tab_analyse:
                             st.write(f"✅ NHL wedstrijd-analyse klaar")
 
                         if soccer_matches:
+                            st.write("📺 Teamvorm ophalen via Football-Data API...")
+                            soccer_matches = _enrich_soccer_matches_form(soccer_matches)
                             st.write("📺 Flashscore analyseren via Claude...")
                             flashscore_text = analyze_flashscore(client, soccer_matches, enriched)
                             st.write("✅ Flashscore analyse klaar")
@@ -1598,6 +1751,24 @@ with tab_analyse:
             render_flashscore(flashscore_text)
 
         if enriched:
+            # Debug: hit_rates per prop (collapsed)
+            _hit_rates_dbg = st.session_state.get("_dbg_hit_rates", [])
+            if _hit_rates_dbg:
+                with st.expander("🔧 Debug — Hit rates per prop (Claude Haiku extractie)", expanded=False):
+                    _missing = [r for r in _hit_rates_dbg if r["hit_rate"] is None]
+                    _found   = [r for r in _hit_rates_dbg if r["hit_rate"] is not None]
+                    st.caption(
+                        f"{len(_found)}/{len(_hit_rates_dbg)} props met hit_rate · "
+                        f"{len(_missing)} ontbrekend"
+                    )
+                    for r in _hit_rates_dbg:
+                        hr = r["hit_rate"]
+                        hr_str = f"{hr*100:.1f}%" if hr is not None else "⚠️ Niet gevonden"
+                        st.write(
+                            f"- **{r['player']}** · {r['bet_type']} "
+                            f"@ {r['odds']} → HR: `{hr_str}`"
+                        )
+
             st.markdown("---")
             render_top3(top3_out)
             st.markdown("---")

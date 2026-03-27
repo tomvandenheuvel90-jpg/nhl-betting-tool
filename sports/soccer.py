@@ -225,6 +225,78 @@ def get_team_defense(team_id: int) -> dict:
     return result
 
 
+def get_team_form(team_id: int, n: int = 5) -> str:
+    """
+    Geeft laatste n match-resultaten als W/D/L string (bijv. 'WWDLL').
+    Meest recente wedstrijd staat rechts.
+    """
+    cache_key = f"soccer_team_form_{team_id}_{n}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    data    = _get(f"/teams/{team_id}/matches?status=FINISHED&limit={n * 2}")
+    matches = data.get("matches", [])[-n:]
+
+    form = []
+    for m in matches:
+        home_id = m.get("homeTeam", {}).get("id")
+        score   = m.get("score", {}).get("fullTime", {})
+        hg      = int(score.get("home") or 0)
+        ag      = int(score.get("away") or 0)
+        if home_id == team_id:
+            form.append("W" if hg > ag else ("D" if hg == ag else "L"))
+        else:
+            form.append("W" if ag > hg else ("D" if hg == ag else "L"))
+
+    result = "".join(form) if form else ""
+    cache_set(cache_key, result, ttl_hours=3)
+    return result
+
+
+def get_team_stats_for_match(team_name: str, competition: str) -> dict:
+    """
+    Probeer een team op te zoeken en basis statistieken terug te geven.
+    Geeft dict met: team_id, name, form (string), avg_goals_for, avg_goals_against.
+    Of leeg dict als niet gevonden.
+    """
+    if not API_KEY:
+        return {}
+    try:
+        team = find_team_by_name(team_name, competition)
+        if not team:
+            return {}
+        team_id = team.get("id")
+        if not team_id:
+            return {}
+
+        form = get_team_form(team_id, n=5)
+        defense = get_team_defense(team_id)
+
+        # Goals for: fetch recent matches
+        data    = _get(f"/teams/{team_id}/matches?status=FINISHED&limit=10")
+        matches = data.get("matches", [])[-5:]
+        goals_for = []
+        for m in matches:
+            home_id = m.get("homeTeam", {}).get("id")
+            s       = m.get("score", {}).get("fullTime", {})
+            if home_id == team_id:
+                goals_for.append(float(s.get("home") or 0))
+            else:
+                goals_for.append(float(s.get("away") or 0))
+        avg_gf = round(sum(goals_for) / len(goals_for), 2) if goals_for else 1.3
+
+        return {
+            "team_id":          team_id,
+            "name":             team.get("name", team_name),
+            "form":             form,
+            "avg_goals_for":    avg_gf,
+            "avg_goals_against": defense.get("goals_against_avg", 1.3),
+        }
+    except Exception:
+        return {}
+
+
 def _current_season() -> int:
     today = datetime.date.today()
     # Voetbalseizoen aug–mei: voor augustus gebruiken we vorig jaar
