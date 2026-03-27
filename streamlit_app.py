@@ -498,8 +498,8 @@ if not _check_password():
 def load_history() -> list:
     return db.load_history()
 
-def save_to_history(enriched: list):
-    db.save_to_history(enriched)
+def save_to_history(enriched: list, alle_props: list | None = None, parlay_suggesties: list | None = None):
+    db.save_to_history(enriched, alle_props=alle_props, parlay_suggesties=parlay_suggesties)
 
 
 # ─── Extractie via Claude Haiku ───────────────────────────────────────────────
