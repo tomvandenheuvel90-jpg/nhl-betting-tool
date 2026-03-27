@@ -2556,25 +2556,45 @@ with tab_analyse:
                     status.update(label="✅ Analyse compleet!", state="complete")
 
             if not _analysis_aborted:
-                # Top 3 berekenen (bet365-unavailable props uitsluiten)
+                # Blessure status toevoegen (alleen bij positieve EV props, API-quota sparen)
+                if _INJURIES_AVAILABLE and enriched:
+                    try:
+                        _injuries_mod.enrich_with_injury_status(enriched)
+                    except Exception:
+                        pass
+
+                # Filter en rank met verbeterde logica (penalty voor different_line, uitsluiten unavailable)
+                enriched_ranked = _filter_and_rank_props(enriched)
+
+                # Parlay suggesties genereren op basis van gerankte props
+                _auto_parlays = generate_parlay_suggestions(enriched_ranked)
+                st.session_state["auto_parlay_suggestions"] = _auto_parlays
+
+                # Top 3 berekenen uit gerankte props
                 def _is_b365_ok(b):
                     return b.get("bet365", {}).get("status", "unknown") != "unavailable"
 
-                top3 = [b for b in enriched if b["rating"].startswith("✅") and _is_b365_ok(b)][:3]
+                top3 = [b for b in enriched_ranked if b["rating"].startswith("✅")][:3]
                 if not top3:
+                    top3 = enriched_ranked[:3]
+                if not top3:
+                    # fallback op volledige enriched lijst
                     top3 = [b for b in enriched if _is_b365_ok(b)][:3]
-                if not top3:
-                    top3 = enriched[:3]
                 top3_out = [{"player": b["player"], "bet_type": b["bet_type"],
                              "odds": b["odds"], "ev": b["ev"]} for b in top3]
 
-                # Opslaan in geschiedenis
+                # Opslaan in geschiedenis (met alle positieve-EV props + parlay suggesties)
                 if enriched:
-                    save_to_history(enriched)
+                    save_to_history(
+                        enriched,
+                        alle_props=enriched_ranked,
+                        parlay_suggesties=_auto_parlays,
+                    )
 
                 # Resultaten opslaan in session state
                 st.session_state.last_analysis = {
                     "enriched":              enriched,
+                    "enriched_ranked":       enriched_ranked,
                     "top3":                  top3_out,
                     "flashscore":            flashscore_text,
                     "nhl_match_analyses":    nhl_match_analyses,
@@ -2582,6 +2602,7 @@ with tab_analyse:
                     "nba_match_analyses":    nba_match_analyses,
                     "mlb_match_analyses":    mlb_match_analyses,
                     "scenario":              scenario,
+                    "auto_parlays":          _auto_parlays,
                 }
 
                 # Uploader resetten + rerun
@@ -2652,6 +2673,45 @@ with tab_analyse:
 
             st.markdown("---")
             render_top3(top3_out)
+
+            # ── Automatische parlay suggesties ────────────────────────────────
+            _aps = res.get("auto_parlays") or st.session_state.get("auto_parlay_suggestions", [])
+            if _aps:
+                st.markdown("---")
+                st.markdown("### 🎯 Automatische Parlay Suggesties")
+                st.caption("Top combinaties op basis van beschikbare props")
+                for _api, _apc in enumerate(_aps, 1):
+                    _aps_ev   = _apc.get("parlay_ev", 0)
+                    _aps_ev_s = f"+{_aps_ev:.3f}" if _aps_ev >= 0 else f"{_aps_ev:.3f}"
+                    _legs_str = " + ".join(
+                        f"{b.get('player','')} ({b.get('bet_type','')})"
+                        for b in _apc.get("props", [])
+                    )
+                    _asc1, _asc2, _asc3, _asc4, _asc5 = st.columns([4, 1, 1, 1, 1])
+                    _asc1.write(f"**{_api}.** {_legs_str}")
+                    _asc2.write(f"Odds: {_apc.get('gecombineerde_odds', 0):.2f}")
+                    _asc3.write(f"Hit: {_apc.get('hit_kans', 0)*100:.1f}%")
+                    _asc4.write(f"EV: {_aps_ev_s}")
+                    if _asc5.button("⭐ Sla op", key=f"autopar_{_api}"):
+                        import uuid as _apuuid, datetime as _apdt
+                        db.save_parlay({
+                            "id":                 str(_apuuid.uuid4())[:8],
+                            "datum":              _apdt.datetime.now().isoformat(),
+                            "props_json":         _apc.get("props", []),
+                            "gecombineerde_odds": _apc.get("gecombineerde_odds", 1.0),
+                            "hit_kans":           _apc.get("hit_kans", 0.0),
+                            "ev_score":           _aps_ev,
+                            "inzet":              10.0,
+                            "uitkomst":           "open",
+                            "winst_verlies":      0.0,
+                            "legs_json":          {
+                                b.get("player","")+"_"+b.get("bet_type",""):"open"
+                                for b in _apc.get("props",[])
+                            },
+                        })
+                        st.success(f"✅ Parlay {_api} opgeslagen!")
+                        st.rerun()
+
             st.markdown("---")
             st.markdown("### 📊 Alle props")
             _fav_ids_set = {f["id"] for f in load_favorieten()}
@@ -2899,6 +2959,56 @@ with tab_bankroll:
         elif _gedaan:
             st.caption("Minimaal 3 afgeronde weddenschappen per sport nodig voor EV analyse.")
 
+        # ── Statistieken per bet type ─────────────────────────────────────────
+        if _gedaan:
+            st.markdown("---")
+            st.markdown("#### 📊 Per bet type")
+            _bt_agg: dict = {}
+            for _r in _gedaan:
+                _bt = (_r.get("bet") or _r.get("bet_type") or "Onbekend").split(" ")[0]
+                if _bt not in _bt_agg:
+                    _bt_agg[_bt] = {"n": 0, "won": 0, "ev": 0.0, "wv": 0.0}
+                _bt_agg[_bt]["n"]  += 1
+                if (_r.get("uitkomst") or "") == "gewonnen":
+                    _bt_agg[_bt]["won"] += 1
+                _bt_agg[_bt]["ev"] += float(_r.get("ev_score") or 0)
+                _bt_agg[_bt]["wv"] += float(_r.get("winst_verlies") or 0)
+            _bt_rows2 = []
+            for _bt, _s in sorted(_bt_agg.items(), key=lambda x: x[1]["n"], reverse=True):
+                _wp  = _s["won"] / _s["n"] * 100 if _s["n"] else 0
+                _roi = _s["wv"] / (_s["n"] * 10) * 100 if _s["n"] else 0
+                _aev = _s["ev"] / _s["n"] if _s["n"] else 0
+                _bt_rows2.append({
+                    "Bet Type": _bt,
+                    "N":        _s["n"],
+                    "Win %":    f"{_wp:.0f}%",
+                    "ROI":      f"{_roi:.0f}%",
+                    "Gem. EV":  f"{_aev:.3f}",
+                })
+            if _bt_rows2:
+                try:
+                    import pandas as _pd_bt
+                    st.dataframe(_pd_bt.DataFrame(_bt_rows2), use_container_width=True, hide_index=True)
+                except ImportError:
+                    for _row in _bt_rows2:
+                        st.write(_row)
+
+        # ── Parlays in bankroll ───────────────────────────────────────────────
+        _all_parlays_bk = db.load_parlays()
+        if _all_parlays_bk:
+            st.markdown("---")
+            st.markdown("#### 🎯 Parlay ROI")
+            _p_n    = len(_all_parlays_bk)
+            _p_won  = sum(1 for p in _all_parlays_bk if (p.get("uitkomst") or "") == "gewonnen")
+            _p_inzet = sum(float(p.get("inzet") or 10) for p in _all_parlays_bk)
+            _p_wv   = sum(float(p.get("winst_verlies") or 0) for p in _all_parlays_bk)
+            _p_roi  = _p_wv / _p_inzet * 100 if _p_inzet else 0
+            _pc1, _pc2, _pc3, _pc4 = st.columns(4)
+            _pc1.metric("Parlays gespeeld", _p_n)
+            _pc2.metric("Gewonnen",         f"{_p_won}/{_p_n}")
+            _pc3.metric("Totaal W/V",       f"€{_p_wv:.2f}")
+            _pc4.metric("Parlay ROI",       f"{_p_roi:.1f}%")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — GESCHIEDENIS
@@ -2915,7 +3025,8 @@ with tab_parlay:
     if "parlay_legs" not in st.session_state:
         st.session_state.parlay_legs = []
 
-    all_props_parlay = st.session_state.get("last_analysis") or []
+    _la = st.session_state.get("last_analysis") or {}
+    all_props_parlay = _la.get("enriched_ranked") or _la.get("enriched") or []
     if all_props_parlay:
         zoek = st.text_input("🔍 Zoek speler of sport", key="parlay_search",
                              placeholder="Bijv. McDavid, NHL, Goals...")
@@ -3093,34 +3204,71 @@ with tab_history:
         key="hist_btype_flt")
     st.markdown("---")
 
-    history = load_history()
+    _all_hist = load_history()
 
-    if not history:
+    if not _all_hist:
         st.info("Nog geen analyses opgeslagen. Voer een analyse uit om de geschiedenis te vullen.")
     else:
-        for entry in history:
+        for entry in _all_hist:
             datum = entry.get("datum", "")
             tijd  = entry.get("tijd", "")
             top5  = entry.get("top5", [])
 
-            with st.expander(f"📅 {datum} om {tijd}  —  {len(top5)} aanbevelingen", expanded=False):
-                if not top5:
-                    st.caption("Geen props in deze analyse.")
-                    continue
+            # Gebruik alle_props_json als die beschikbaar is, anders top5
+            _alle_p = entry.get("alle_props_json") or []
+            if isinstance(_alle_p, str):
+                try:
+                    import json as _jh
+                    _alle_p = _jh.loads(_alle_p)
+                except Exception:
+                    _alle_p = []
 
-                import pandas as pd
-                rows = []
-                for b in top5:
-                    rows.append({
-                        "#":       b.get("rank", ""),
-                        "Speler":  b.get("speler", ""),
-                        "Bet":     b.get("bet", ""),
-                        "Odds":    b.get("odds", ""),
-                        "EV":      b.get("ev_score", ""),
-                        "Rating":  b.get("rating", ""),
-                    })
-                st.dataframe(
-                    pd.DataFrame(rows),
-                    hide_index=True,
-                    use_container_width=True,
-                )
+            # Gebruik top5 als alle_props_json leeg is (oudere analyses)
+            if not _alle_p:
+                _alle_p = [
+                    {
+                        "player":   b.get("speler", b.get("player", "")),
+                        "sport":    b.get("sport", ""),
+                        "bet_type": b.get("bet", b.get("bet_type", "")),
+                        "odds":     b.get("odds", ""),
+                        "ev":       float((b.get("ev_score") or "0").replace("+","")) if isinstance(b.get("ev_score"), str) else float(b.get("ev") or 0),
+                        "composite": 0,
+                        "rating":   b.get("rating", ""),
+                    }
+                    for b in top5
+                ]
+
+            # Filters toepassen
+            _filt_p = _alle_p
+            if _hist_sport != "Alles":
+                _filt_p = [p for p in _filt_p if _hist_sport.lower() in (p.get("sport") or "").lower()]
+            if _hist_btype != "Alles":
+                _filt_p = [p for p in _filt_p if _hist_btype.lower() in (p.get("bet_type") or "").lower()]
+
+            if not _filt_p:
+                continue
+
+            with st.expander(f"📅 {datum} om {tijd}  —  {len(_filt_p)} props", expanded=False):
+                for _hp in _filt_p:
+                    _hpc1, _hpc2, _hpc3, _hpc4 = st.columns([3, 1, 1, 1])
+                    _hpc1.write(
+                        f"**{_hp.get('player', _hp.get('speler',''))}** — "
+                        f"{_hp.get('bet_type', _hp.get('bet',''))}"
+                    )
+                    _hpc2.write(f"@ {_hp.get('odds','—')}")
+                    _hev   = float(_hp.get("ev") or 0)
+                    _hev_s = f"+{_hev:.3f}" if _hev >= 0 else f"{_hev:.3f}"
+                    _hpc3.write(f"EV: {_hev_s}")
+
+                    _hpk = f"hpar_{datum}_{_hp.get('player',_hp.get('speler',''))}_{_hp.get('bet_type',_hp.get('bet',''))}"
+                    if _hpc4.button("🎯 Parlay", key=_hpk[:60]):
+                        if "parlay_legs" not in st.session_state:
+                            st.session_state.parlay_legs = []
+                        st.session_state.parlay_legs.append({
+                            "player":   _hp.get("player", _hp.get("speler", "")),
+                            "sport":    _hp.get("sport", ""),
+                            "bet_type": _hp.get("bet_type", _hp.get("bet", "")),
+                            "odds":     float(_hp.get("odds") or 1.5),
+                            "hit_rate": float(_hp.get("composite") or 0.5),
+                        })
+                        st.rerun()

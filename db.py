@@ -116,10 +116,14 @@ def load_history() -> list:
             )
             result = []
             for r in (resp.data or []):
+                _ap = r.get("alle_props_json", "[]") or "[]"
+                _ps = r.get("parlay_suggesties_json", "[]") or "[]"
                 result.append({
-                    "datum": r.get("datum", ""),
-                    "tijd":  r.get("tijd", ""),
-                    "top5": json.loads(r.get("top5_json", "[]")),
+                    "datum":           r.get("datum", ""),
+                    "tijd":            r.get("tijd", ""),
+                    "top5":            json.loads(r.get("top5_json", "[]")),
+                    "alle_props_json": json.loads(_ap),
+                    "parlay_suggesties": json.loads(_ps),
                 })
             return result
         except Exception:
@@ -134,7 +138,11 @@ def load_history() -> list:
         return []
 
 
-def save_to_history(enriched: list) -> None:
+def save_to_history(
+    enriched: list,
+    alle_props: list | None = None,
+    parlay_suggesties: list | None = None,
+) -> None:
     now   = datetime.datetime.now()
     datum = now.strftime("%Y-%m-%d")
     tijd  = now.strftime("%H:%M")
@@ -147,24 +155,54 @@ def save_to_history(enriched: list) -> None:
             "odds":     str(b["odds"]),
             "ev_score": f"{b['ev']:+.3f}",
             "rating":   b["rating"],
+            # extra velden voor geschiedenis-tab filtering
+            "sport":    b.get("sport", ""),
+            "composite": b.get("composite", 0),
+            "player":   b.get("player", ""),
         }
         for i, b in enumerate(top5)
+    ]
+
+    # Alle positieve-EV props bewaren voor de geschiedenis-tab
+    _alle = alle_props if alle_props is not None else [
+        b for b in enriched if float(b.get("ev") or 0) > 0
+    ]
+    # Vereenvoudigd formaat zodat het niet te groot wordt
+    _alle_compact = [
+        {
+            "player":    b.get("player", ""),
+            "sport":     b.get("sport", ""),
+            "bet_type":  b.get("bet_type", ""),
+            "odds":      b.get("odds", ""),
+            "ev":        round(float(b.get("ev") or 0), 4),
+            "composite": round(float(b.get("composite") or 0), 4),
+            "rating":    b.get("rating", ""),
+        }
+        for b in _alle
     ]
 
     if _using_supabase:
         try:
             entry_id = f"{datum}_{tijd}_{uuid.uuid4().hex[:6]}"
             _supabase.table("geschiedenis").insert({
-                "id":        entry_id,
-                "datum":     datum,
-                "tijd":      tijd,
-                "top5_json": json.dumps(top5_data, ensure_ascii=False),
+                "id":                    entry_id,
+                "datum":                 datum,
+                "tijd":                  tijd,
+                "top5_json":             json.dumps(top5_data, ensure_ascii=False),
+                "alle_props_json":       json.dumps(_alle_compact, ensure_ascii=False),
+                "parlay_suggesties_json": json.dumps(parlay_suggesties or [], ensure_ascii=False),
             }).execute()
             return
         except Exception:
             pass  # fallback naar JSON
 
-    entry   = {"datum": datum, "tijd": tijd, "top5": top5_data}
+    entry   = {
+        "datum":              datum,
+        "tijd":               tijd,
+        "top5":               top5_data,
+        "alle_props_json":    _alle_compact,
+        "parlay_suggesties":  parlay_suggesties or [],
+    }
     entries = load_history()
     entries.insert(0, entry)
     cutoff  = _cutoff_date()
