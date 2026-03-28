@@ -22,9 +22,33 @@ from moneypuck_local import career_averages, playoff_averages
 
 NHL_BASE            = "https://api-web.nhle.com/v1"
 _TEAM_PLAYERS_CACHE: dict = {}   # team_abbrev → [{name, id, team, position}]
-MP_GAMELOG_URL = "https://moneypuck.com/moneypuck/playerData/careers/gameByGame/2024/regular/skaters.csv"
-MP_SEASON_URL  = "https://moneypuck.com/moneypuck/playerData/seasonSummary/2024/regular/skaters.csv"
-SEASON         = "20242025"
+
+
+def _mp_year() -> int:
+    """
+    Moneypuck gebruikt het EINDJAAR van het seizoen als mapnaam.
+    2025-26 seizoen (okt 2025 – jun 2026) → jaar 2026.
+    Formule: als maand >= 7 dan huidigjaar+1, anders huidigjaar.
+    """
+    today = datetime.date.today()
+    return today.year + 1 if today.month >= 7 else today.year
+
+
+def _nhl_season() -> str:
+    """NHL API seizoensformat: '20252026' voor het 2025-26 seizoen."""
+    y = _mp_year()
+    return f"{y - 1}{y}"
+
+
+MP_GAMELOG_URL = (
+    "https://moneypuck.com/moneypuck/playerData/careers/gameByGame"
+    f"/{_mp_year()}/regular/skaters.csv"
+)
+MP_SEASON_URL = (
+    "https://moneypuck.com/moneypuck/playerData/seasonSummary"
+    f"/{_mp_year()}/regular/skaters.csv"
+)
+SEASON = _nhl_season()
 
 _HEADERS = {
     "User-Agent": (
@@ -188,7 +212,19 @@ def get_player_stats(player_id: int, n_games: int = 20) -> dict:
     if cached is not None:
         return cached
 
-    rows = _mp_download_csv(MP_GAMELOG_URL, "mp_gamelog_2024", ttl_hours=6)
+    mp_year = _mp_year()
+    rows = _mp_download_csv(MP_GAMELOG_URL, f"mp_gamelog_{mp_year}", ttl_hours=6)
+
+    # Als huidig seizoen nog niet beschikbaar is op MoneyPuck, gebruik vorig jaar
+    if not rows:
+        prev_year = mp_year - 1
+        fallback_url = (
+            "https://moneypuck.com/moneypuck/playerData/careers/gameByGame"
+            f"/{prev_year}/regular/skaters.csv"
+        )
+        print(f"  ↩️  MoneyPuck {mp_year} niet beschikbaar → probeer {prev_year}")
+        rows = _mp_download_csv(fallback_url, f"mp_gamelog_{prev_year}", ttl_hours=6)
+
     pid_str = str(player_id)
 
     player_games = [
@@ -272,7 +308,15 @@ def _build_stats_from_mp(recent: list, player_id: int) -> dict:
     }
 
     # Seizoenscontext uit MoneyPuck season summary
-    season_rows = _mp_download_csv(MP_SEASON_URL, "mp_season_2024", ttl_hours=6)
+    mp_year = _mp_year()
+    season_rows = _mp_download_csv(MP_SEASON_URL, f"mp_season_{mp_year}", ttl_hours=6)
+    if not season_rows:
+        prev_year = mp_year - 1
+        fallback_url = (
+            "https://moneypuck.com/moneypuck/playerData/seasonSummary"
+            f"/{prev_year}/regular/skaters.csv"
+        )
+        season_rows = _mp_download_csv(fallback_url, f"mp_season_{prev_year}", ttl_hours=6)
     pid_str = str(player_id)
     for row in season_rows:
         if row.get("playerId") == pid_str or row.get("player_id") == pid_str:
@@ -318,7 +362,7 @@ def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
 
     result = {
         "games_sampled": len(shots),
-        "source": "NHL API (fallback — geen hits/blocks)",
+        "source": "NHL API (fallback — geen hits/blocks/xGoals)",
         "raw_shots":   shots,
         "raw_blocks":  [],
         "raw_goals":   goals,
@@ -329,6 +373,9 @@ def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
         "avg_goals":   avg(goals),
         "avg_assists": avg(assists),
         "avg_points":  avg(points),
+        # xGoals niet beschikbaar via NHL API — gebruik historische waarden hieronder
+        "avg_xgoals":     0.0,
+        "avg_hd_xgoals":  0.0,
     }
     result.update(career_averages(player_id))
     result.update(playoff_averages(player_id))

@@ -13,6 +13,7 @@ import base64
 import tempfile
 import datetime
 from pathlib import Path
+from typing import Optional, List, Dict
 
 # ─── Secrets injecteren vóór import van sports modules ────────────────────────
 try:
@@ -498,7 +499,7 @@ if not _check_password():
 def load_history() -> list:
     return db.load_history()
 
-def save_to_history(enriched: list, alle_props: list | None = None, parlay_suggesties: list | None = None):
+def save_to_history(enriched: list, alle_props: Optional[list] = None, parlay_suggesties: Optional[list] = None):
     db.save_to_history(enriched, alle_props=alle_props, parlay_suggesties=parlay_suggesties)
 
 
@@ -2578,8 +2579,11 @@ with tab_analyse:
                 if not top3:
                     top3 = enriched_ranked[:3]
                 if not top3:
-                    # fallback op volledige enriched lijst
-                    top3 = [b for b in enriched if _is_b365_ok(b)][:3]
+                    # fallback op volledige enriched lijst — ALLEEN positieve EV
+                    top3 = [
+                        b for b in enriched
+                        if _is_b365_ok(b) and float(b.get("ev") or -1) > 0
+                    ][:3]
                 top3_out = [{"player": b["player"], "bet_type": b["bet_type"],
                              "odds": b["odds"], "ev": b["ev"]} for b in top3]
 

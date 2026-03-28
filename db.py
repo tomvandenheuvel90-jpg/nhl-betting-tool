@@ -44,6 +44,7 @@ import hashlib
 import datetime
 import uuid
 from pathlib import Path
+from typing import Optional, List, Dict
 
 # ─── Paden voor lokale JSON fallback ──────────────────────────────────────────
 
@@ -140,8 +141,8 @@ def load_history() -> list:
 
 def save_to_history(
     enriched: list,
-    alle_props: list | None = None,
-    parlay_suggesties: list | None = None,
+    alle_props: Optional[list] = None,
+    parlay_suggesties: Optional[list] = None,
 ) -> None:
     now   = datetime.datetime.now()
     datum = now.strftime("%Y-%m-%d")

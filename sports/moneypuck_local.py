@@ -25,7 +25,17 @@ RAW_DIR      = BASE_DIR / "moneypuck_data" / "raw"
 FILTERED_DIR = BASE_DIR / "moneypuck_data" / "filtered"
 FILE_IDS     = BASE_DIR / "gdrive_file_ids.json"
 TMP_DIR      = Path("/tmp") / "moneypuck"
-SEASONS      = list(range(2021, 2026))
+
+
+def _current_mp_year() -> int:
+    """Eindjaar van het lopende NHL-seizoen (okt start → jun eind)."""
+    import datetime
+    today = datetime.date.today()
+    return today.year + 1 if today.month >= 7 else today.year
+
+
+# Seizoenen om te doorzoeken: 2021 t/m huidig jaar inclusief
+SEASONS = list(range(2021, _current_mp_year() + 1))
 
 # Module-level cache: key = "year/type" → list[dict]
 _CACHE: dict = {}

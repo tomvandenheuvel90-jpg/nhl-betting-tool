@@ -6,6 +6,7 @@ Ondersteunde bet types:
   points, assists, rebounds, 3-pointers made, blocks, steals
 """
 
+import csv
 import datetime
 from pathlib import Path
 import sys
@@ -21,6 +22,8 @@ try:
 except ImportError:
     NBA_API_AVAILABLE = False
     print("⚠️  nba_api niet gevonden. Installeer met: pip install nba_api")
+
+_NBA_DATA_DIR = Path(__file__).parent.parent / "nba_data"
 
 
 def _current_season() -> str:
@@ -78,21 +81,84 @@ def find_player(name: str):
     return None
 
 
+# ─── CSV fallback (uit lokale nba_data/ bestanden) ────────────────────────────
+
+def _stats_from_csv(player_id: int) -> dict:
+    """
+    Fallback: lees seizoensgemiddelden uit lokale nba_data/{jaar}/players.csv.
+    Geeft Poisson-geschikte gemiddelden terug (geen raw per-game waarden).
+    Probeert nieuwste seizoen eerst.
+    """
+    today = datetime.date.today()
+    current_year = today.year if today.month >= 7 else today.year - 1
+    years_to_try = [current_year + 1, current_year, current_year - 1]
+
+    pid_str = str(player_id)
+    for year in years_to_try:
+        csv_path = _NBA_DATA_DIR / str(year) / "players.csv"
+        if not csv_path.exists():
+            continue
+        try:
+            with open(csv_path, newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    if str(row.get("player_id", "")).strip() == pid_str:
+                        def _f(val):
+                            try: return float(val)
+                            except (TypeError, ValueError): return 0.0
+                        pts = _f(row.get("pts", 0))
+                        ast = _f(row.get("ast", 0))
+                        reb = _f(row.get("reb", 0))
+                        fg3m = _f(row.get("fg3m", 0))
+                        blk  = _f(row.get("blk", 0))
+                        stl  = _f(row.get("stl", 0))
+                        gp   = max(int(_f(row.get("games_played", 1))), 1)
+                        print(f"  📋  NBA CSV fallback: {row.get('name','?')} ({year}, {gp} games)")
+                        return {
+                            "games_sampled": gp,
+                            "source": f"NBA CSV lokaal ({year})",
+                            # Geen raw per-game lijsten — scorer gebruikt avg_ als Poisson lam
+                            "raw_pts":    [], "raw_ast": [], "raw_reb":    [],
+                            "raw_threes": [], "raw_blk": [], "raw_stl":    [],
+                            "raw_tov":    [],
+                            "avg_points":   pts,
+                            "avg_assists":  ast,
+                            "avg_rebounds": reb,
+                            "avg_threes":   fg3m,
+                            "avg_blocks":   blk,
+                            "avg_steals":   stl,
+                            "avg_turnovers": 0.0,
+                            # Poisson lambda hints voor scorer
+                            "hist_pts_avg":    pts,
+                            "hist_ast_avg":    ast,
+                            "hist_reb_avg":    reb,
+                            "hist_threes_avg": fg3m,
+                            "hist_blk_avg":    blk,
+                            "hist_stl_avg":    stl,
+                        }
+        except Exception as e:
+            print(f"  ⚠️  NBA CSV leesfout ({csv_path}): {e}")
+    return {}
+
+
 # ─── Spelerstats via game log ─────────────────────────────────────────────────
 
 def get_player_stats(player_id: int, n_games: int = 20) -> dict:
     """
     Per-game stats voor de huidige NBA seizoen via nba_api.
     Geeft raw waarden + gemiddelden voor dynamische hit rate berekening.
+    Fallback: lokale nba_data/ CSV als nba_api faalt of rate-limited is.
     """
-    if not NBA_API_AVAILABLE:
-        return {"games_sampled": 0, "source": "nba_api niet geïnstalleerd"}
-
     season    = _current_season()
     cache_key = f"nba_gamelog_{player_id}_{season}"
     cached    = cache_get(cache_key)
     if cached is not None:
         return cached
+
+    if not NBA_API_AVAILABLE:
+        result = _stats_from_csv(player_id)
+        if result:
+            return result
+        return {"games_sampled": 0, "source": "nba_api niet geïnstalleerd"}
 
     nba_limiter.wait()
     try:
@@ -104,10 +170,18 @@ def get_player_stats(player_id: int, n_games: int = 20) -> dict:
         )
         df = log.get_data_frames()[0]
     except Exception as e:
-        print(f"  ⚠️  NBA game log fout (speler {player_id}): {e}")
-        return {"games_sampled": 0, "source": "nba_api fout"}
+        print(f"  ⚠️  NBA game log fout (speler {player_id}): {type(e).__name__}: {e}")
+        # Fallback op lokale CSV seizoensgemiddelden
+        result = _stats_from_csv(player_id)
+        if result:
+            cache_set(cache_key, result, ttl_hours=1)
+            return result
+        return {"games_sampled": 0, "source": f"nba_api fout ({type(e).__name__})"}
 
     if df is None or df.empty:
+        result = _stats_from_csv(player_id)
+        if result:
+            return result
         return {"games_sampled": 0, "source": "nba_api (geen data)"}
 
     recent = df.head(n_games)
@@ -124,7 +198,6 @@ def get_player_stats(player_id: int, n_games: int = 20) -> dict:
     blk   = col("BLK")
     stl   = col("STL")
     tov   = col("TOV")
-    min_  = col("MIN") if "MIN" in recent.columns else []
 
     def avg(lst):
         return round(sum(lst) / len(lst), 2) if lst else 0.0
