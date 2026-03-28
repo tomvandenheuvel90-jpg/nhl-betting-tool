@@ -214,21 +214,32 @@ def composite_score(
     opp_factor   = _opponent_factor(bet_type, opponent_stats, sport)
     reliability  = _sample_reliability(sample_size)
 
+    # Als er geen seizoensdata en geen historische data beschikbaar is:
+    # gebruik alleen Linemate hit rate (redistribute season_weight naar linemate)
+    no_season_data = (games_sampled == 0 and hist_lam == 0)
+    if no_season_data:
+        eff_lm_weight     = linemate_weight + season_weight
+        eff_season_weight = 0.0
+    else:
+        eff_lm_weight     = linemate_weight
+        eff_season_weight = season_weight
+
     composite = (
-        linemate_weight * linemate_hit_rate
-        + season_weight  * season_hr
-        + 0.20           * opp_factor
-        + 0.10           * reliability
+        eff_lm_weight    * linemate_hit_rate
+        + eff_season_weight * season_hr
+        + 0.20              * opp_factor
+        + 0.10              * reliability
     )
     composite = min(max(composite, 0.0), 1.0)
 
     return {
-        "composite":     round(composite, 4),
-        "linemate_hr":   round(linemate_hit_rate, 4),
-        "season_hr":     round(season_hr, 4),
-        "opp_factor":    round(opp_factor, 4),
-        "reliability":   round(reliability, 4),
-        "games_sampled": games_sampled,
+        "composite":      round(composite, 4),
+        "linemate_hr":    round(linemate_hit_rate, 4),
+        "season_hr":      round(season_hr, 4),
+        "opp_factor":     round(opp_factor, 4),
+        "reliability":    round(reliability, 4),
+        "games_sampled":  games_sampled,
+        "no_season_data": no_season_data,
     }
 
 

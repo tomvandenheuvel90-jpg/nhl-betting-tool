@@ -523,34 +523,52 @@ def _image_content_block(path: str) -> dict:
 
 def _parse_json_from_text(text: str):
     """
-    Probeert op 4 manieren een JSON-object uit de tekst te extraheren:
+    Probeert op 5 manieren een JSON-object uit de tekst te extraheren:
+      0. Expliciete strip van ```json … ``` of ``` … ``` wrappers (re.fullmatch)
       1. Directe json.loads()
-      2. Extraheer uit ```json … ``` blok
-      3. Extraheer uit ``` … ``` blok
+      2. Extraheer uit ```json … ``` blok (re.search)
+      3. Extraheer uit ``` … ``` blok (re.search)
       4. Zoek het eerste volledige { … } object in de tekst
+      5. Zoek het eerste volledige [ … ] array in de tekst
     Geeft None terug als niets werkt.
     """
+    import logging as _log
+
+    if not text or not text.strip():
+        _log.warning("[JSON] Lege response van Claude")
+        return None
+
+    # Strategie 0: expliciete strip van ```json...``` of ```...``` (hele tekst is één blok)
+    stripped = text.strip()
+    for fence_pat in (r"^```json\s*([\s\S]*?)\s*```\s*$", r"^```\s*([\s\S]*?)\s*```\s*$"):
+        fm = re.fullmatch(fence_pat, stripped)
+        if fm:
+            try:
+                return json.loads(fm.group(1))
+            except json.JSONDecodeError as _e:
+                _log.warning(f"[JSON] Strategie 0 mislukt: {_e} | extract: {fm.group(1)[:200]!r}")
+
     # Strategie 1: directe parse
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as _e1:
+        _log.debug(f"[JSON] Strategie 1 mislukt: {_e1}")
 
     # Strategie 2: ```json ... ```
     m = re.search(r"```json\s*([\s\S]*?)\s*```", text)
     if m:
         try:
             return json.loads(m.group(1))
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as _e2:
+            _log.warning(f"[JSON] Strategie 2 mislukt: {_e2} | extract: {m.group(1)[:200]!r}")
 
     # Strategie 3: ``` ... ```
     m = re.search(r"```\s*([\s\S]*?)\s*```", text)
     if m:
         try:
             return json.loads(m.group(1))
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as _e3:
+            _log.warning(f"[JSON] Strategie 3 mislukt: {_e3} | extract: {m.group(1)[:200]!r}")
 
     # Strategie 4: zoek eerste volledig JSON-object { ... }
     start = text.find("{")
@@ -567,9 +585,28 @@ def _parse_json_from_text(text: str):
         if end != -1:
             try:
                 return json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as _e4:
+                _log.warning(f"[JSON] Strategie 4 mislukt: {_e4}")
 
+    # Strategie 5: zoek eerste volledig JSON-array [ ... ]
+    start = text.find("[")
+    if start != -1:
+        depth, end = 0, -1
+        for i, ch in enumerate(text[start:], start):
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end != -1:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError as _e5:
+                _log.warning(f"[JSON] Strategie 5 mislukt: {_e5}")
+
+    _log.error(f"[JSON] Alle strategieën mislukt. Eerste 500 tekens: {text[:500]!r}")
     return None
 
 
@@ -677,12 +714,16 @@ def extract_bets(client, image_paths: list):
 
     data = _parse_json_from_text(raw)
     if data is None:
-        # JSON niet gevonden — raw response opgeslagen voor diagnose
+        # JSON niet gevonden — sla parse-fout op voor debug
+        st.session_state["_dbg_parse_error"] = (
+            f"JSON parsing mislukt. Response lengte: {len(raw)} tekens. "
+            f"Eerste 300 tekens: {raw[:300]!r}"
+        )
         return [], []
     if isinstance(data, list):
         return _deduplicate_bets(data), []
-    bets    = _deduplicate_bets(data.get("bets", []))
-    matches = _deduplicate_matches(data.get("matches", []))
+    bets    = _deduplicate_bets(data.get("bets", []) or [])
+    matches = _deduplicate_matches(data.get("matches", []) or [])
 
     # Debug: log hit_rate per prop voor diagnosedoeleinden
     st.session_state["_dbg_hit_rates"] = [
@@ -1350,9 +1391,9 @@ def render_nhl_match_cards(match_analyses: list):
     st.markdown("---")
     st.markdown("### 🏒 NHL Wedstrijd-analyse")
 
-    # Top 3 aanbevolen wedstrijden (gesorteerd op beste EV)
+    # Top 3 aanbevolen wedstrijden (gesorteerd op beste EV, alleen positieve EV)
     _top3 = sorted(
-        [ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None],
+        [ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None and ma["best"]["ev"] > 0],
         key=lambda ma: ma["best"]["ev"],
         reverse=True,
     )[:3]
@@ -1674,7 +1715,7 @@ def render_soccer_match_cards(match_analyses: list):
         return
     st.markdown("---")
     st.markdown("### ⚽ Voetbal Wedstrijd-analyse")
-    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None],
+    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None and ma["best"]["ev"] > 0],
                    key=lambda ma: ma["best"]["ev"], reverse=True)[:3]
     if _top3:
         st.markdown("#### 🏆 Top 3 aanbevolen voetbalwedstrijden")
@@ -1810,7 +1851,7 @@ def render_nba_match_cards(match_analyses: list):
         return
     st.markdown("---")
     st.markdown("### 🏀 NBA Wedstrijd-analyse")
-    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None],
+    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None and ma["best"]["ev"] > 0],
                    key=lambda ma: ma["best"]["ev"], reverse=True)[:3]
     if _top3:
         st.markdown("#### 🏆 Top 3 aanbevolen NBA wedstrijden")
@@ -1975,7 +2016,7 @@ def render_mlb_match_cards(match_analyses: list):
         return
     st.markdown("---")
     st.markdown("### ⚾ MLB Wedstrijd-analyse")
-    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None],
+    _top3 = sorted([ma for ma in match_analyses if ma.get("best") and ma["best"].get("ev") is not None and ma["best"]["ev"] > 0],
                    key=lambda ma: ma["best"]["ev"], reverse=True)[:3]
     if _top3:
         st.markdown("#### 🏆 Top 3 aanbevolen MLB wedstrijden")
@@ -2410,8 +2451,11 @@ with tab_analyse:
                     # ── Debug: toon wat Claude werkelijk antwoordde ──
                     _dbg       = st.session_state.get("_dbg_raw", "")
                     _dbg_model = st.session_state.get("_dbg_model", _EXTRACT_MODEL)
+                    _parse_err = st.session_state.get("_dbg_parse_error", "")
                     with st.expander("🔧 Debug — Claude's ruwe response", expanded=True):
                         st.caption(f"Model: `{_dbg_model}` · {len(_dbg)} tekens teruggegeven")
+                        if _parse_err:
+                            st.error(f"**Parse fout:** {_parse_err}")
                         st.code(_dbg[:3000] if _dbg else "(leeg — API-call mislukt?)", language="text")
 
                     # ── Auto-test: beschrijf de eerste afbeelding ──

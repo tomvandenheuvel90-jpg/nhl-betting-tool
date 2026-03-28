@@ -245,6 +245,10 @@ def get_player_stats(player_id: int, n_games: int = 20) -> dict:
     result.update(career_averages(player_id))
     result.update(playoff_averages(player_id))
 
+    # Gebruik historische xGoals als fallback als realtime data ontbreekt
+    if not result.get("avg_xgoals") and result.get("hist_xgoals_avg", 0) > 0:
+        result["avg_xgoals"] = result["hist_xgoals_avg"]
+
     cache_set(cache_key, result, ttl_hours=6)
     return result
 
@@ -379,6 +383,9 @@ def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
     }
     result.update(career_averages(player_id))
     result.update(playoff_averages(player_id))
+    # Gebruik historische xGoals als fallback (NHL API geeft geen xGoals)
+    if result.get("hist_xgoals_avg", 0) > 0:
+        result["avg_xgoals"] = result["hist_xgoals_avg"]
     return result
 
 
