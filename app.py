@@ -8,6 +8,7 @@ Open op telefoon: http://<mac-ip>:5001
 import os
 import sys
 import json
+import re
 import base64
 import datetime
 import tempfile
@@ -388,6 +389,55 @@ def _save_cache(players_dict):
     CACHE_FILE.write_text(json.dumps(data))
 
 
+# ─── JSON parsing helper ──────────────────────────────────────────────────────
+
+def parse_claude_json(response_text: str):
+    """
+    Parse JSON uit een Claude response die mogelijk ```json ... ``` markers bevat.
+    Probeert meerdere strategieën:
+      1. Strip markdown code-fence wrappers
+      2. Directe json.loads()
+      3. Zoek eerste { ... } object in de tekst
+    Geeft None terug als niets werkt.
+    """
+    text = response_text.strip()
+
+    # Strategie 1: strip markdown fences
+    stripped = re.sub(r'^```json\s*', '', text)
+    stripped = re.sub(r'^```\s*', '', stripped)
+    stripped = re.sub(r'\s*```$', '', stripped).strip()
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Strategie 2: directe parse van originele tekst
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Strategie 3: zoek eerste volledig { ... } object
+    start = text.find("{")
+    if start != -1:
+        depth, end = 0, -1
+        for i, ch in enumerate(text[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end != -1:
+            try:
+                return json.loads(text[start:end + 1])
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    return None
+
+
 # ─── Extractie ────────────────────────────────────────────────────────────────
 
 def extract_bets(client, image_paths):
@@ -409,18 +459,12 @@ def extract_bets(client, image_paths):
         messages=[{"role": "user", "content": content}]
     )
     raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    raw = raw.strip().strip("```")
-    try:
-        data = json.loads(raw)
-        if isinstance(data, list):
-            return data, []
-        return data.get("bets", []), data.get("matches", [])
-    except Exception:
+    data = parse_claude_json(raw)
+    if data is None:
         return [], []
+    if isinstance(data, list):
+        return data, []
+    return data.get("bets", []) or [], data.get("matches", []) or []
 
 
 # ─── Flashscore analyse ───────────────────────────────────────────────────────
