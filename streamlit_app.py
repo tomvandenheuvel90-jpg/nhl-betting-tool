@@ -42,11 +42,6 @@ try:
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
-try:
-    import injuries as _injuries_mod
-    _INJURIES_AVAILABLE = True
-except ImportError:
-    _INJURIES_AVAILABLE = False
 
 
 # ─── PIL / HEIC support ───────────────────────────────────────────────────────
@@ -2113,8 +2108,7 @@ def generate_parlay_suggestions(bets: list, max_parlays: int = 3) -> list:
     eligible = [
         b for b in bets
         if ((b.get("bet365") or {}).get("status", "") in ("available", "different_line", "")
-            and float(b.get("ev") or -1) > 0
-            and b.get("injury_status", "fit") != "injured")
+            and float(b.get("ev") or -1) > 0)
     ]
     if len(eligible) < 2:
         return []
@@ -2171,11 +2165,6 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
                 unsafe_allow_html=True,
             )
         st.markdown(f"#### {bet['player']}")
-        _inj = bet.get("injury_status", "unknown")
-        if _inj == "injured":
-            st.error("❌ Geblesseerd — speler waarschijnlijk niet beschikbaar")
-        elif _inj == "questionable":
-            st.warning("⚠️ Twijfelachtig voor deze wedstrijd")
         if bet.get("_ev_penalty_note"):
             st.warning(bet["_ev_penalty_note"])
         b365_label = bet.get("bet365", {}).get("label", "")
@@ -2601,13 +2590,6 @@ with tab_analyse:
                     status.update(label="✅ Analyse compleet!", state="complete")
 
             if not _analysis_aborted:
-                # Blessure status toevoegen (alleen bij positieve EV props, API-quota sparen)
-                if _INJURIES_AVAILABLE and enriched:
-                    try:
-                        _injuries_mod.enrich_with_injury_status(enriched)
-                    except Exception:
-                        pass
-
                 # Filter en rank met verbeterde logica (penalty voor different_line, uitsluiten unavailable)
                 enriched_ranked = _filter_and_rank_props(enriched)
 
