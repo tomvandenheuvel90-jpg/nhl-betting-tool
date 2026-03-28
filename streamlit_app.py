@@ -2476,6 +2476,15 @@ if "uploader_key" not in st.session_state:
 if "last_analysis" not in st.session_state:
     st.session_state.last_analysis = None
 
+# ─── Banner ───────────────────────────────────────────────────────────────────
+
+try:
+    with open("assets/banner.svg", "r") as _f:
+        _svg = _f.read()
+    st.markdown(_svg, unsafe_allow_html=True)
+except FileNotFoundError:
+    pass
+
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 
 tab_analyse, tab_favorieten, tab_bankroll, tab_parlay, tab_history = st.tabs(
