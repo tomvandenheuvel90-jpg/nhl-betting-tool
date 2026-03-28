@@ -593,6 +593,54 @@ def _parse_json_from_text(text: str):
     return None
 
 
+def _repair_truncated_json(text: str) -> str:
+    """
+    Probeer afgekapt JSON te repareren door de laatste complete bet te vinden
+    en het object correct af te sluiten met ]} of }.
+    """
+    # Strip markdown fences eerst
+    clean = re.sub(r'^```json\s*', '', text, flags=re.MULTILINE)
+    clean = re.sub(r'^```\s*', '', clean, flags=re.MULTILINE)
+    clean = re.sub(r'```\s*$', '', clean, flags=re.MULTILINE).strip()
+
+    # Vind de laatste afgeronde bet: },
+    last_comma = clean.rfind('},')
+    if last_comma > 0:
+        return clean[:last_comma + 1] + '\n  ]\n}'
+    # Fallback: vind de laatste } en sluit daarna af
+    last_brace = clean.rfind('}')
+    if last_brace > 0:
+        return clean[:last_brace + 1] + '\n  ]\n}'
+    return clean
+
+
+def _split_image_halves(path: str) -> list:
+    """
+    Splits een afbeelding altijd in twee helften (boven en onder).
+    Wordt gebruikt als fallback wanneer Claude's JSON-response afgekapt is.
+    """
+    if not _PIL_AVAILABLE:
+        return [path]
+    try:
+        img = _PILImage.open(path)
+        w, h = img.size
+        if h < 200:
+            return [path]
+        overlap = int(h * 0.05)  # 5% overlap op de naad
+        mid = h // 2
+
+        top = img.crop((0, 0, w, mid + overlap))
+        bot = img.crop((0, mid - overlap, w, h))
+
+        top_path = path + "_half_top.jpg"
+        bot_path = path + "_half_bot.jpg"
+        top.convert("RGB").save(top_path, "JPEG", quality=90)
+        bot.convert("RGB").save(bot_path, "JPEG", quality=90)
+        return [top_path, bot_path]
+    except Exception:
+        return [path]
+
+
 def _convert_heic_to_jpeg(path: str) -> str:
     """
     Converteert HEIC/HEIF naar JPEG. Geeft het nieuwe pad terug.
@@ -696,10 +744,10 @@ def extract_bets(client, image_paths: list):
         _steps.append(f"  → {len(content)} content blokken (incl. prompt)")
 
         # Stap 3: Claude API aanroepen
-        _steps.append(f"Stap 3: Claude {_EXTRACT_MODEL} aanroepen (max_tokens=4096)")
+        _steps.append(f"Stap 3: Claude {_EXTRACT_MODEL} aanroepen (max_tokens=8000)")
         response = client.messages.create(
             model=_EXTRACT_MODEL,
-            max_tokens=4096,
+            max_tokens=8000,
             temperature=0,
             messages=[{"role": "user", "content": content}],
         )
@@ -709,19 +757,72 @@ def extract_bets(client, image_paths: list):
         _steps.append(f"  → Response: {len(raw)} tekens, begint met: {raw[:80]!r}")
         _log.info(f"[extract_bets] Claude response ({len(raw)} tekens): {raw[:200]!r}")
 
-        # Stap 4: JSON parsen
+        # Stap 4: JSON parsen (met repair + split-fallback voor afgekapte responses)
         _steps.append("Stap 4: JSON parsen")
         data = _parse_json_from_text(raw)
+
+        # Fallback 1: probeer repair als directe parse mislukt (afgekapt JSON)
         if data is None:
-            _err = (
-                f"JSON parsing mislukt na alle strategieën.\n"
-                f"Response lengte: {len(raw)} tekens\n"
-                f"Eerste 500 tekens:\n{raw[:500]}"
-            )
-            st.session_state["_dbg_parse_error"] = _err
-            _steps.append(f"  ✗ JSON parsing mislukt (zie parse-fout hieronder)")
-            _log.error(f"[extract_bets] {_err}")
-            return [], []
+            _steps.append("  → Directe parse mislukt, probeer repair_truncated_json")
+            repaired = _repair_truncated_json(raw)
+            data = _parse_json_from_text(repaired)
+            if data is not None:
+                _steps.append("  → repair_truncated_json geslaagd")
+
+        # Fallback 2: splits elke afbeelding in twee helften en analyseer apart
+        if data is None:
+            _steps.append("  → Repair mislukt, splits afbeeldingen in helften voor heranalyse")
+            _all_bets: list = []
+            _all_matches: list = []
+            for _orig in image_paths:
+                _halves = _split_image_halves(_orig)
+                for _half in _halves:
+                    _steps.append(f"    → Analyseer helft: {Path(_half).name}")
+                    _hc = [
+                        _image_content_block(_half),
+                        {"type": "text", "text": EXTRACT_PROMPT},
+                    ]
+                    _hr = client.messages.create(
+                        model=_EXTRACT_MODEL,
+                        max_tokens=8000,
+                        temperature=0,
+                        messages=[{"role": "user", "content": _hc}],
+                    )
+                    _hraw = _hr.content[0].text.strip()
+                    _hdata = _parse_json_from_text(_hraw)
+                    if _hdata is None:
+                        _hdata = _parse_json_from_text(_repair_truncated_json(_hraw))
+                    if _hdata:
+                        if isinstance(_hdata, list):
+                            _all_bets.extend(_hdata)
+                        else:
+                            _all_bets.extend(_hdata.get("bets", []) or [])
+                            _all_matches.extend(_hdata.get("matches", []) or [])
+            bets    = _deduplicate_bets(_all_bets)
+            matches = _deduplicate_matches(_all_matches)
+            _steps.append(f"  → Split-fallback resultaat: {len(bets)} bets, {len(matches)} matches")
+            st.session_state["_dbg_hit_rates"] = [
+                {
+                    "player":   b.get("player", "?"),
+                    "bet_type": b.get("bet_type", "?"),
+                    "hit_rate": b.get("hit_rate"),
+                    "odds":     b.get("linemate_odds"),
+                    "sample":   b.get("sample"),
+                }
+                for b in bets
+            ]
+            if not bets and not matches:
+                _err = (
+                    f"JSON parsing mislukt na alle pogingen (repair + split).\n"
+                    f"Response lengte: {len(raw)} tekens\n"
+                    f"Eerste 500 tekens:\n{raw[:500]}"
+                )
+                st.session_state["_dbg_parse_error"] = _err
+                _steps.append("  ✗ Alle fallbacks mislukt")
+                _log.error(f"[extract_bets] {_err}")
+                return [], []
+            return bets, matches
+
         _steps.append(f"  → Geparsed als: {type(data).__name__}")
 
         # Stap 5: bets en matches extraheren
