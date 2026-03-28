@@ -402,10 +402,10 @@ def parse_claude_json(response_text: str):
     """
     text = response_text.strip()
 
-    # Strategie 1: strip markdown fences
-    stripped = re.sub(r'^```json\s*', '', text)
-    stripped = re.sub(r'^```\s*', '', stripped)
-    stripped = re.sub(r'\s*```$', '', stripped).strip()
+    # Strategie 1: strip markdown fences (re.MULTILINE = ook mid-tekst)
+    stripped = re.sub(r'^```json\s*', '', text, flags=re.MULTILINE)
+    stripped = re.sub(r'^```\s*', '', stripped, flags=re.MULTILINE)
+    stripped = re.sub(r'```\s*$', '', stripped, flags=re.MULTILINE).strip()
     try:
         return json.loads(stripped)
     except (json.JSONDecodeError, ValueError):

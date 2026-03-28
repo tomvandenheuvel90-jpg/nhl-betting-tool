@@ -518,13 +518,13 @@ def _image_content_block(path: str) -> dict:
 
 def _parse_json_from_text(text: str):
     """
-    Probeert op 5 manieren een JSON-object uit de tekst te extraheren:
-      0. Expliciete strip van ```json … ``` of ``` … ``` wrappers (re.fullmatch)
-      1. Directe json.loads()
-      2. Extraheer uit ```json … ``` blok (re.search)
-      3. Extraheer uit ``` … ``` blok (re.search)
-      4. Zoek het eerste volledige { … } object in de tekst
-      5. Zoek het eerste volledige [ … ] array in de tekst
+    Parse JSON uit een Claude response die mogelijk ```json ... ``` markers bevat.
+
+    Strategie A (primair): strip markdown code-fence markers met re.MULTILINE,
+      dan directe json.loads() op het resultaat.
+    Strategie B (fallback): zoek eerste volledig { ... } object in de tekst.
+    Strategie C (fallback): zoek eerste volledig [ ... ] array in de tekst.
+
     Geeft None terug als niets werkt.
     """
     import logging as _log
@@ -533,39 +533,18 @@ def _parse_json_from_text(text: str):
         _log.warning("[JSON] Lege response van Claude")
         return None
 
-    # Strategie 0: expliciete strip van ```json...``` of ```...``` (hele tekst is één blok)
-    stripped = text.strip()
-    for fence_pat in (r"^```json\s*([\s\S]*?)\s*```\s*$", r"^```\s*([\s\S]*?)\s*```\s*$"):
-        fm = re.fullmatch(fence_pat, stripped)
-        if fm:
-            try:
-                return json.loads(fm.group(1))
-            except json.JSONDecodeError as _e:
-                _log.warning(f"[JSON] Strategie 0 mislukt: {_e} | extract: {fm.group(1)[:200]!r}")
-
-    # Strategie 1: directe parse
+    # Strategie A: strip ```json en ``` markers (re.MULTILINE = ook mid-tekst)
+    clean = text.strip()
+    clean = re.sub(r'^```json\s*', '', clean, flags=re.MULTILINE)
+    clean = re.sub(r'^```\s*', '', clean, flags=re.MULTILINE)
+    clean = re.sub(r'```\s*$', '', clean, flags=re.MULTILINE)
+    clean = clean.strip()
     try:
-        return json.loads(text)
-    except json.JSONDecodeError as _e1:
-        _log.debug(f"[JSON] Strategie 1 mislukt: {_e1}")
+        return json.loads(clean)
+    except (json.JSONDecodeError, ValueError) as _eA:
+        _log.debug(f"[JSON] Strategie A mislukt: {_eA} | clean[:200]={clean[:200]!r}")
 
-    # Strategie 2: ```json ... ```
-    m = re.search(r"```json\s*([\s\S]*?)\s*```", text)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except json.JSONDecodeError as _e2:
-            _log.warning(f"[JSON] Strategie 2 mislukt: {_e2} | extract: {m.group(1)[:200]!r}")
-
-    # Strategie 3: ``` ... ```
-    m = re.search(r"```\s*([\s\S]*?)\s*```", text)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except json.JSONDecodeError as _e3:
-            _log.warning(f"[JSON] Strategie 3 mislukt: {_e3} | extract: {m.group(1)[:200]!r}")
-
-    # Strategie 4: zoek eerste volledig JSON-object { ... }
+    # Strategie B: zoek eerste volledig { ... } object
     start = text.find("{")
     if start != -1:
         depth, end = 0, -1
@@ -580,10 +559,10 @@ def _parse_json_from_text(text: str):
         if end != -1:
             try:
                 return json.loads(text[start : end + 1])
-            except json.JSONDecodeError as _e4:
-                _log.warning(f"[JSON] Strategie 4 mislukt: {_e4}")
+            except (json.JSONDecodeError, ValueError) as _eB:
+                _log.warning(f"[JSON] Strategie B mislukt: {_eB}")
 
-    # Strategie 5: zoek eerste volledig JSON-array [ ... ]
+    # Strategie C: zoek eerste volledig [ ... ] array
     start = text.find("[")
     if start != -1:
         depth, end = 0, -1
@@ -598,8 +577,8 @@ def _parse_json_from_text(text: str):
         if end != -1:
             try:
                 return json.loads(text[start : end + 1])
-            except json.JSONDecodeError as _e5:
-                _log.warning(f"[JSON] Strategie 5 mislukt: {_e5}")
+            except (json.JSONDecodeError, ValueError) as _eC:
+                _log.warning(f"[JSON] Strategie C mislukt: {_eC}")
 
     _log.error(f"[JSON] Alle strategieën mislukt. Eerste 500 tekens: {text[:500]!r}")
     return None
