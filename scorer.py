@@ -140,7 +140,21 @@ def _get_hist_lam(bet_type: str, player_stats: dict) -> float:
     if "point" in bt and "3" not in bt and "three" not in bt:
         return player_stats.get("hist_points_avg", 0.0)
     if "hit" in bt and "base" not in bt:
-        return player_stats.get("hist_hits_avg", 0.0)
+        # NHL: hist_hits_avg  |  MLB: hist_mlb_hits_avg
+        return player_stats.get("hist_mlb_hits_avg") or player_stats.get("hist_hits_avg", 0.0)
+
+    # ── MLB ──
+    if "home run" in bt or "homer" in bt:
+        return player_stats.get("hist_mlb_home_runs_avg", 0.0)
+    if "total base" in bt:
+        return player_stats.get("hist_mlb_total_bases_avg", 0.0)
+    if "rbi" in bt or "run batted" in bt:
+        return player_stats.get("hist_mlb_rbi_avg", 0.0)
+    if "run" in bt and "home" not in bt:
+        return player_stats.get("hist_mlb_runs_avg", 0.0)
+    if "strikeout" in bt or " k " in bt or bt.endswith(" k"):
+        return player_stats.get("hist_mlb_strikeouts_avg", 0.0)
+
     return 0.0
 
 
@@ -203,13 +217,17 @@ def composite_score(
     season_hr    = _hit_rate(raw_values, threshold, gte=use_gte)
     games_sampled = len(raw_values)
 
-    # Blend met historische Poisson-schatting uit lokale Moneypuck data (2021–2025)
+    # Blend met historische/CSV Poisson-schatting
     hist_lam = _get_hist_lam(bet_type, player_stats)
     if hist_lam > 0:
         hist_hr = _poisson_hr(hist_lam, threshold, gte=use_gte)
-        # Groter gewicht op historie bij weinig recente games (bijv. vroeg in seizoen)
-        hist_weight = 0.45 if games_sampled < 10 else 0.25
-        season_hr = round((1 - hist_weight) * season_hr + hist_weight * hist_hr, 4)
+        if games_sampled == 0:
+            # Geen raw data: gebruik puur Poisson-schatting (geen vervuiling met 0.5 default)
+            season_hr = hist_hr
+        else:
+            # Groter gewicht op historie bij weinig recente games (bijv. vroeg in seizoen)
+            hist_weight = 0.45 if games_sampled < 10 else 0.25
+            season_hr = round((1 - hist_weight) * season_hr + hist_weight * hist_hr, 4)
 
     opp_factor   = _opponent_factor(bet_type, opponent_stats, sport)
     reliability  = _sample_reliability(sample_size)

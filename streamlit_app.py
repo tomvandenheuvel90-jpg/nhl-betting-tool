@@ -1441,6 +1441,8 @@ def enrich_bet(bet: dict, cache: dict,
         "bet_type":       bet_type,
         "odds":           odds,
         "sample":         bet.get("sample", "?"),
+        "sample_n":       sample_n,
+        "games_sampled":  score.get("games_sampled", 0),
         "linemate_hr":    score["linemate_hr"],
         "season_hr":      score["season_hr"],
         "composite":      score["composite"],
@@ -2192,37 +2194,66 @@ def render_mlb_match_cards(match_analyses: list):
 def _filter_and_rank_props(enriched: list) -> list:
     """
     Filter en rank props voor de top N weergave.
+
+    Filters:
     - unavailable → volledig uitsluiten
-    - different_line → 15% EV penalty, tonen met waarschuwing
-    - available → normaal ranken
-    - negatieve EV → altijd uitsluiten
+    - negatieve EV → uitsluiten
+    - sample_n < 3 → uitsluiten (te onbetrouwbaar)
+
+    Penalties (cumulatief):
+    - different_line → −15% EV
+    - sample_n < 5  → −40% EV (kleine sample penalty)
+
+    Sortering: gewogen_ev = ev_na_penalties × min(sample_n, 20) / 20
+    Zo krijgen props met klein sample altijd lagere ranking, ongeacht EV.
     """
     import logging as _logging
     result = []
     for bet in enriched:
+        bet       = dict(bet)   # niet het origineel muteren
         b365_status = (bet.get("bet365") or {}).get("status", "")
-        ev = float(bet.get("ev") or -999)
-        
+        ev_val    = float(bet.get("ev") or -999)
+        sample_n  = int(bet.get("sample_n") or 0)
+
+        # ── Harde uitsluitingen ────────────────────────────────────────────
         if b365_status == "unavailable":
-            _logging.debug(f"[TOP5 SKIP] {bet.get('player')} | EV={ev:.3f} | status=unavailable")
+            _logging.debug(f"[RANK SKIP] {bet.get('player')} | status=unavailable")
             continue
-        
+
+        if ev_val <= 0:
+            _logging.debug(f"[RANK SKIP] {bet.get('player')} | EV={ev_val:.3f} | negatief")
+            continue
+
+        if sample_n > 0 and sample_n < 3:
+            _logging.debug(f"[RANK SKIP] {bet.get('player')} | sample_n={sample_n} < 3")
+            continue
+
+        # ── Penalties ─────────────────────────────────────────────────────
         if b365_status == "different_line":
-            penalized_ev = ev * 0.85
-            bet = dict(bet)
-            bet["ev"] = penalized_ev
+            ev_val = ev_val * 0.85
+            bet["ev"] = ev_val
             bet["_ev_penalty_note"] = "⚠️ Andere lijn op Bet365 (−15% EV penalty)"
-            _logging.debug(f"[TOP5 PENALTY] {bet.get('player')} | EV={ev:.3f}→{penalized_ev:.3f} | status=different_line")
-            ev = penalized_ev
-        
-        if ev <= 0:
-            _logging.debug(f"[TOP5 SKIP] {bet.get('player')} | EV={ev:.3f} | negatief")
-            continue
-        
-        _logging.debug(f"[TOP5 OK] {bet.get('player')} | EV={ev:.3f} | status={b365_status or 'n/a'}")
+            _logging.debug(f"[RANK PENALTY] {bet.get('player')} | different_line −15%")
+
+        if sample_n > 0 and sample_n < 5:
+            ev_val = ev_val * 0.60
+            bet["ev"] = ev_val
+            warn = f"⚠️ Klein sample ({sample_n} wedstrijden)"
+            bet["_sample_warning"] = warn
+            _logging.debug(f"[RANK PENALTY] {bet.get('player')} | sample_n={sample_n} < 5 → −40%")
+
+        # ── Gewogen EV voor sortering: min(sample_n, 20) / 20 ─────────────
+        eff_n = sample_n if sample_n > 0 else 20   # geen sample_n = treat as voldoende
+        weighted_ev = ev_val * min(eff_n, 20) / 20
+        bet["_weighted_ev"] = weighted_ev
+
+        _logging.debug(
+            f"[RANK OK] {bet.get('player')} | EV={ev_val:.3f} | "
+            f"sample_n={sample_n} | weighted={weighted_ev:.3f}"
+        )
         result.append(bet)
-    
-    result.sort(key=lambda b: float(b.get("ev") or 0), reverse=True)
+
+    result.sort(key=lambda b: float(b.get("_weighted_ev") or 0), reverse=True)
     return result
 
 
@@ -2291,6 +2322,8 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
         st.markdown(f"#### {bet['player']}")
         if bet.get("_ev_penalty_note"):
             st.warning(bet["_ev_penalty_note"])
+        if bet.get("_sample_warning"):
+            st.warning(bet["_sample_warning"])
         b365_label = bet.get("bet365", {}).get("label", "")
         caption_line = f"{bet['bet_type']} · {bet['sport']}"
         if b365_label:

@@ -10,6 +10,8 @@ Ondersteunde bet types:
 import urllib.request
 import json
 import datetime
+import csv
+import logging
 from pathlib import Path
 import sys
 
@@ -19,6 +21,11 @@ from rate_limiter import mlb_limiter
 
 BASE    = "https://statsapi.mlb.com/api/v1"
 HEADERS = {"User-Agent": "Mozilla/5.0 BetAnalyzer/1.0"}
+
+_log = logging.getLogger(__name__)
+
+# MLB CSV data directory (mlb_data/ naast de project root)
+_CSV_DIR = Path(__file__).parent.parent / "mlb_data"
 
 
 # ─── HTTP helper ──────────────────────────────────────────────────────────────
@@ -30,7 +37,8 @@ def _get(url: str) -> dict:
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.loads(r.read())
     except Exception as e:
-        print(f"  ⚠️  MLB API fout: {e}")
+        _log.warning(f"[MLB] API fout voor {url}: {type(e).__name__}: {e}")
+        print(f"  ⚠️  MLB API fout ({type(e).__name__}): {e}")
         return {}
 
 
@@ -69,8 +77,73 @@ def find_player(name: str):
 
 def _current_season() -> int:
     today = datetime.date.today()
-    # MLB seizoen loopt april–oktober; vóór april gebruiken we vorig jaar
-    return today.year if today.month >= 3 else today.year - 1
+    # MLB seizoen start laat maart; vóór 15 april gebruiken we vorig jaar
+    # zodat we genoeg data hebben (seizoen net begonnen = weinig splits)
+    if today.month < 4 or (today.month == 4 and today.day < 15):
+        return today.year - 1
+    return today.year
+
+
+# ─── CSV fallback ─────────────────────────────────────────────────────────────
+
+def _stats_from_csv(player_id: int, season: int, position_type: str) -> dict:
+    """
+    Laad geaggregeerde seizoensdata uit lokale CSV als API-fallback.
+    Geeft dict met hist_mlb_* gemiddelden per game (voor Poisson blending).
+    """
+    fname  = "pitchers.csv" if position_type == "pitching" else "hitters.csv"
+    csv_path = _CSV_DIR / str(season) / fname
+    if not csv_path.exists():
+        _log.debug(f"[MLB] CSV niet gevonden: {csv_path}")
+        return {}
+
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if str(row.get("playerId", "")) != str(player_id):
+                    continue
+                gp = max(int(row.get("gamesPlayed", 1) or 1), 1)
+
+                def _f(k):
+                    try:
+                        return float(row.get(k, 0) or 0)
+                    except (TypeError, ValueError):
+                        return 0.0
+
+                if position_type != "pitching":
+                    hits = _f("hits")
+                    avg  = _f("avg") or 1e-9  # voorkom /0
+                    slg  = _f("slg")
+                    # total_bases = hits × (slg / avg)
+                    tb = hits * (slg / avg) if avg > 0 else hits
+
+                    result = {
+                        "games_sampled":          0,   # geen per-game log
+                        "source":                 f"MLB CSV (batting) — {season}",
+                        "position_type":          "hitting",
+                        "hist_mlb_hits_avg":      round(hits     / gp, 4),
+                        "hist_mlb_home_runs_avg": round(_f("homeRuns") / gp, 4),
+                        "hist_mlb_rbi_avg":       round(_f("rbi")      / gp, 4),
+                        "hist_mlb_runs_avg":      round(_f("runs")     / gp, 4),
+                        "hist_mlb_total_bases_avg": round(tb / gp, 4),
+                        "hist_mlb_strikeouts_avg": round(_f("strikeOuts") / gp, 4),
+                    }
+                    _log.info(f"[MLB] CSV fallback {player_id} season={season}: {result}")
+                    return result
+                else:
+                    result = {
+                        "games_sampled":            0,
+                        "source":                   f"MLB CSV (pitching) — {season}",
+                        "position_type":            "pitching",
+                        "hist_mlb_strikeouts_avg":  round(_f("strikeOuts") / gp, 4),
+                    }
+                    _log.info(f"[MLB] CSV fallback {player_id} season={season}: {result}")
+                    return result
+    except Exception as e:
+        _log.warning(f"[MLB] CSV leesfout {csv_path}: {e}")
+
+    return {}
 
 
 def get_player_stats(player_id: int, position_type: str = "hitting", n_games: int = 20) -> dict:
@@ -79,6 +152,7 @@ def get_player_stats(player_id: int, position_type: str = "hitting", n_games: in
     position_type: "hitting" of "pitching"
 
     Geeft raw waarden + gemiddelden voor dynamische hit rate berekening.
+    Fallback volgorde: API huidig seizoen → API vorig seizoen → lokale CSV
     """
     season    = _current_season()
     cache_key = f"mlb_stats_{player_id}_{position_type}_{season}"
@@ -87,14 +161,35 @@ def get_player_stats(player_id: int, position_type: str = "hitting", n_games: in
         return cached
 
     group = "pitching" if position_type == "pitching" else "hitting"
-    data  = _get(
-        f"{BASE}/people/{player_id}/stats"
-        f"?stats=gameLog&season={season}&group={group}&sportId=1"
-    )
-    splits = data.get("stats", [{}])[0].get("splits", [])
+
+    def _fetch_splits(s):
+        data = _get(
+            f"{BASE}/people/{player_id}/stats"
+            f"?stats=gameLog&season={s}&group={group}&sportId=1"
+        )
+        return data.get("stats", [{}])[0].get("splits", [])
+
+    splits = _fetch_splits(season)
+
+    # Fallback: probeer vorig seizoen als huidig seizoen nog geen data heeft
+    if not splits:
+        prev = season - 1
+        _log.info(f"[MLB] Geen splits voor {player_id} in {season}, probeer {prev}")
+        splits = _fetch_splits(prev)
+        if splits:
+            _log.info(f"[MLB] Vorig seizoen ({prev}) gebruikt voor speler {player_id}")
 
     if not splits:
-        return {"games_sampled": 0, "source": f"MLB API ({group})"}
+        # Laatste fallback: lokale CSV
+        _log.info(f"[MLB] Geen API-data voor {player_id}, probeer CSV (season={season})")
+        csv_result = _stats_from_csv(player_id, season, position_type)
+        if not csv_result:
+            csv_result = _stats_from_csv(player_id, season - 1, position_type)
+        if csv_result:
+            cache_set(cache_key, csv_result, ttl_hours=6)
+            return csv_result
+        _log.warning(f"[MLB] Geen data gevonden voor speler {player_id}")
+        return {"games_sampled": 0, "source": f"MLB API ({group}) — geen data"}
 
     # Nieuwste games eerst
     splits = list(reversed(splits))[:n_games]
