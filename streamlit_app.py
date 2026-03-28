@@ -12,8 +12,17 @@ import hashlib
 import base64
 import tempfile
 import datetime
+import traceback
+import logging as _logging
 from pathlib import Path
 from typing import Optional, List, Dict
+
+# Logging configuratie: schrijf naar stdout zodat Streamlit Cloud logs het oppikt
+_logging.basicConfig(
+    level=_logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+_log = _logging.getLogger(__name__)
 
 # ─── Secrets injecteren vóór import van sports modules ────────────────────────
 try:
@@ -665,39 +674,74 @@ def extract_bets(client, image_paths: list):
     - Grote afbeeldingen (> 1500px) worden gesplitst in twee overlappende delen.
     - Slaat de ruwe response op in st.session_state['_dbg_raw'] voor debugging.
     """
-    # Verwerk elke afbeelding: splits grote afbeeldingen in overlappende helften
-    expanded_paths = []
-    for p in image_paths:
-        parts = _split_tall_image(p)
-        expanded_paths.extend(parts)
+    # Reset debug state
+    for _k in ("_dbg_raw", "_dbg_model", "_dbg_parse_error", "_dbg_traceback", "_dbg_steps"):
+        st.session_state.pop(_k, None)
+    _steps: list[str] = []
+    st.session_state["_dbg_steps"] = _steps
 
-    content = [_image_content_block(p) for p in expanded_paths]
-    content.append({"type": "text", "text": EXTRACT_PROMPT})
+    try:
+        # Stap 1: afbeeldingen splitsen
+        _steps.append(f"Stap 1: {len(image_paths)} afbeelding(en) verwerken")
+        expanded_paths = []
+        for p in image_paths:
+            parts = _split_tall_image(p)
+            expanded_paths.extend(parts)
+        _steps.append(f"  → {len(expanded_paths)} blokken na splitsing")
 
-    response = client.messages.create(
-        model=_EXTRACT_MODEL,
-        max_tokens=4096,
-        temperature=0,
-        messages=[{"role": "user", "content": content}],
-    )
-    raw = response.content[0].text.strip()
+        # Stap 2: content blokken bouwen
+        _steps.append("Stap 2: content blokken bouwen")
+        content = [_image_content_block(p) for p in expanded_paths]
+        content.append({"type": "text", "text": EXTRACT_PROMPT})
+        _steps.append(f"  → {len(content)} content blokken (incl. prompt)")
 
-    # Sla ruwe response op zodat we kunnen debuggen als parsing mislukt
-    st.session_state["_dbg_raw"]   = raw
-    st.session_state["_dbg_model"] = _EXTRACT_MODEL
-
-    data = _parse_json_from_text(raw)
-    if data is None:
-        # JSON niet gevonden — sla parse-fout op voor debug
-        st.session_state["_dbg_parse_error"] = (
-            f"JSON parsing mislukt. Response lengte: {len(raw)} tekens. "
-            f"Eerste 300 tekens: {raw[:300]!r}"
+        # Stap 3: Claude API aanroepen
+        _steps.append(f"Stap 3: Claude {_EXTRACT_MODEL} aanroepen (max_tokens=4096)")
+        response = client.messages.create(
+            model=_EXTRACT_MODEL,
+            max_tokens=4096,
+            temperature=0,
+            messages=[{"role": "user", "content": content}],
         )
-        return [], []
-    if isinstance(data, list):
-        return _deduplicate_bets(data), []
-    bets    = _deduplicate_bets(data.get("bets", []) or [])
-    matches = _deduplicate_matches(data.get("matches", []) or [])
+        raw = response.content[0].text.strip()
+        st.session_state["_dbg_raw"]   = raw
+        st.session_state["_dbg_model"] = _EXTRACT_MODEL
+        _steps.append(f"  → Response: {len(raw)} tekens, begint met: {raw[:80]!r}")
+        _log.info(f"[extract_bets] Claude response ({len(raw)} tekens): {raw[:200]!r}")
+
+        # Stap 4: JSON parsen
+        _steps.append("Stap 4: JSON parsen")
+        data = _parse_json_from_text(raw)
+        if data is None:
+            _err = (
+                f"JSON parsing mislukt na alle strategieën.\n"
+                f"Response lengte: {len(raw)} tekens\n"
+                f"Eerste 500 tekens:\n{raw[:500]}"
+            )
+            st.session_state["_dbg_parse_error"] = _err
+            _steps.append(f"  ✗ JSON parsing mislukt (zie parse-fout hieronder)")
+            _log.error(f"[extract_bets] {_err}")
+            return [], []
+        _steps.append(f"  → Geparsed als: {type(data).__name__}")
+
+        # Stap 5: bets en matches extraheren
+        _steps.append("Stap 5: bets en matches extraheren")
+        if isinstance(data, list):
+            bets = _deduplicate_bets(data)
+            matches = []
+        else:
+            bets    = _deduplicate_bets(data.get("bets", []) or [])
+            matches = _deduplicate_matches(data.get("matches", []) or [])
+        _steps.append(f"  → {len(bets)} bets, {len(matches)} matches gevonden")
+        _log.info(f"[extract_bets] {len(bets)} bets, {len(matches)} matches")
+
+    except Exception as _exc:
+        _tb = traceback.format_exc()
+        st.session_state["_dbg_traceback"] = _tb
+        st.session_state.setdefault("_dbg_steps", _steps)
+        _steps.append(f"  ✗ EXCEPTION: {type(_exc).__name__}: {_exc}")
+        _log.error(f"[extract_bets] Exception:\n{_tb}")
+        raise
 
     # Debug: log hit_rate per prop voor diagnosedoeleinden
     st.session_state["_dbg_hit_rates"] = [
@@ -2414,17 +2458,50 @@ with tab_analyse:
 
                 if not bets and not matches:
                     _analysis_aborted = True
-                    st.error("Geen bets of wedstrijden gevonden in de afbeeldingen.")
 
-                    # ── Debug: toon wat Claude werkelijk antwoordde ──
-                    _dbg       = st.session_state.get("_dbg_raw", "")
-                    _dbg_model = st.session_state.get("_dbg_model", _EXTRACT_MODEL)
-                    _parse_err = st.session_state.get("_dbg_parse_error", "")
-                    with st.expander("🔧 Debug — Claude's ruwe response", expanded=True):
-                        st.caption(f"Model: `{_dbg_model}` · {len(_dbg)} tekens teruggegeven")
+                    # ── Bepaal echte reden ──
+                    _dbg_raw    = st.session_state.get("_dbg_raw", "")
+                    _dbg_model  = st.session_state.get("_dbg_model", _EXTRACT_MODEL)
+                    _parse_err  = st.session_state.get("_dbg_parse_error", "")
+                    _dbg_tb     = st.session_state.get("_dbg_traceback", "")
+                    _dbg_steps  = st.session_state.get("_dbg_steps", [])
+
+                    if _dbg_tb:
+                        _reason = f"Exception tijdens extract_bets()"
+                    elif _parse_err:
+                        _reason = "JSON parsing mislukt"
+                    elif not _dbg_raw:
+                        _reason = "Claude gaf geen response terug (API-fout?)"
+                    else:
+                        _reason = f"Claude gaf response maar geen bets/matches gevonden ({len(_dbg_raw)} tekens)"
+
+                    st.error(f"❌ Analyse mislukt: **{_reason}**")
+
+                    # ── Debug expander met alle details ──
+                    with st.expander("🔧 Debug — volledige diagnostiek", expanded=True):
+                        st.caption(f"Model: `{_dbg_model}` · response: {len(_dbg_raw)} tekens")
+
+                        # Stap-log
+                        if _dbg_steps:
+                            st.markdown("**Stap-log:**")
+                            st.code("\n".join(_dbg_steps), language="text")
+
+                        # Parse fout
                         if _parse_err:
-                            st.error(f"**Parse fout:** {_parse_err}")
-                        st.code(_dbg[:3000] if _dbg else "(leeg — API-call mislukt?)", language="text")
+                            st.markdown("**Parse fout:**")
+                            st.error(_parse_err)
+
+                        # Exception traceback
+                        if _dbg_tb:
+                            st.markdown("**Exception traceback:**")
+                            st.code(_dbg_tb, language="python")
+
+                        # Ruwe Claude response
+                        st.markdown("**Claude's ruwe response:**")
+                        st.code(
+                            _dbg_raw[:4000] if _dbg_raw else "(leeg — API-call mislukt of timeout)",
+                            language="text",
+                        )
 
                     # ── Auto-test: beschrijf de eerste afbeelding ──
                     st.write("🔍 **Auto-test:** Claude beschrijft de afbeelding...")
@@ -2441,10 +2518,11 @@ with tab_analyse:
                         )
                         st.info(f"**Claude ziet:** {_test_resp.content[0].text}")
                     except Exception as _te:
-                        st.error(f"Beschrijvingstest ook mislukt: {_te}")
+                        st.error(f"Beschrijvingstest ook mislukt: {type(_te).__name__}: {_te}")
+                        st.code(traceback.format_exc(), language="python")
 
                 if _analysis_aborted:
-                    status.update(label="⚠️ Analyse mislukt — zie debug info hierboven", state="error")
+                    status.update(label=f"⚠️ Analyse mislukt: {_reason}", state="error")
                 else:
                     scenario = detect_scenario(bets, matches)
                     st.write(f"✅ Gevonden: {len(bets)} props, {len(matches)} wedstrijden")
@@ -2620,8 +2698,11 @@ with tab_analyse:
                 st.rerun()
 
         except Exception as e:
-            st.error(f"❌ Fout: {e}")
-            raise
+            _full_tb = traceback.format_exc()
+            _log.error(f"[analyse] Onverwachte fout:\n{_full_tb}")
+            st.error(f"❌ **{type(e).__name__}**: {e}")
+            with st.expander("🔧 Volledige traceback", expanded=True):
+                st.code(_full_tb, language="python")
         finally:
             for p in tmp_paths:
                 try:
