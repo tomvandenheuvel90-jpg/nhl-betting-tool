@@ -214,7 +214,17 @@ def save_to_history(
             }).execute()
             return session_id
         except Exception:
-            pass  # fallback naar JSON
+            # Nieuwe kolommen bestaan mogelijk nog niet — probeer met alleen originele kolommen
+            try:
+                _supabase.table("geschiedenis").insert({
+                    "id":        entry_id,
+                    "datum":     datum,
+                    "tijd":      tijd,
+                    "top5_json": json.dumps(top5_data, ensure_ascii=False),
+                }).execute()
+                return session_id
+            except Exception:
+                pass  # Supabase volledig onbeschikbaar → lokale fallback
 
     entry = {
         "datum":             datum,
@@ -302,7 +312,13 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "") -> None:
             _supabase.table("favorieten").upsert(row).execute()
             return
         except Exception:
-            pass
+            # Kolom bestaat mogelijk nog niet — probeer zonder source_session_id
+            try:
+                row_basic = {k: v for k, v in row.items() if k != "source_session_id"}
+                _supabase.table("favorieten").upsert(row_basic).execute()
+                return
+            except Exception:
+                pass  # Supabase volledig onbeschikbaar → lokale fallback
 
     # JSON fallback — voeg alleen toe als nog niet aanwezig
     favs = load_favorieten()
@@ -372,7 +388,13 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
             _supabase.table("resultaten").upsert(row).execute()
             return
         except Exception:
-            pass
+            # Kolom bestaat mogelijk nog niet — probeer zonder source_session_id
+            try:
+                row_basic = {k: v for k, v in row.items() if k != "source_session_id"}
+                _supabase.table("resultaten").upsert(row_basic).execute()
+                return
+            except Exception:
+                pass  # Supabase volledig onbeschikbaar → lokale fallback
 
     results = [r for r in load_resultaten() if r.get("id") != fav_id]
     results.insert(0, row)
