@@ -268,18 +268,19 @@ with tab_dashboard:
     _k1, _k2, _k3, _k4, _k5 = st.columns(5)
 
     if _dsh_huidig_saldo is not None:
-        _k1.metric("🏦 Bankroll", f"€{_dsh_huidig_saldo:.2f}",
-                   delta=f"€{_dsh_total_wl:+.2f}" if _dsh_total_wl else None)
+        _k1.metric("🏦 Bankroll", f"€{_dsh_huidig_saldo:.0f}",
+                   delta=f"€{_dsh_total_wl:+.0f}" if _dsh_total_wl else None)
     else:
-        _k1.metric("🏦 Bankroll", "Niet ingesteld", help="Stel je startbankroll in via de Bankroll tab")
+        _k1.metric("🏦 Bankroll", "—", help="Stel je startbankroll in via de Bankroll tab")
 
-    _k2.metric("💰 P&L deze week",
-               f"€{_dsh_week_wl:+.2f}" if _dsh_week_gedaan else "—",
+    _k2.metric("💰 P&L (week)",
+               f"€{_dsh_week_wl:+.0f}" if _dsh_week_gedaan else "—",
                delta=f"{len(_dsh_week_gedaan)} bets" if _dsh_week_gedaan else None)
-    _k3.metric("📈 ROI (totaal)",    f"{_dsh_roi:+.1f}%" if _dsh_gedaan else "—")
-    _k4.metric("🎯 Win rate",        f"{_dsh_wr:.0f}%"   if _dsh_gedaan else "—",
+    _k3.metric("📈 ROI",    f"{_dsh_roi:+.1f}%" if _dsh_gedaan else "—")
+    _k4.metric("🎯 Win%",   f"{_dsh_wr:.0f}%"   if _dsh_gedaan else "—",
                delta=f"{_dsh_won}/{len(_dsh_gedaan)}" if _dsh_gedaan else None)
-    _streak_label = f"{_dsh_streak_cnt}× {_dsh_streak_type}" if _dsh_gedaan else "—"
+    _streak_soort = "W" if _dsh_streak_type == "gewonnen" else ("L" if _dsh_streak_type == "verloren" else "")
+    _streak_label = f"{_dsh_streak_cnt}× {_streak_soort}" if _dsh_gedaan else "—"
     _k5.metric(f"{_dsh_streak_icon} Streak", _streak_label)
 
     st.markdown("---")
