@@ -30,6 +30,23 @@ _logging.basicConfig(
 )
 _log = _logging.getLogger(__name__)
 
+# ─── Globale UI-helper: KPI-kaartje (geen truncatie, hover-tooltip) ──────────
+
+def kpi_card(icon: str, label: str, value: str, sub: str = "",
+             positive: bool = None, tooltip: str = "") -> str:
+    """Geeft HTML terug voor een KPI-kaartje. Gebruik met st.markdown(..., unsafe_allow_html=True)."""
+    val_color  = "#4ade80" if positive is True else ("#f87171" if positive is False else "#ffffff")
+    sub_html   = f"<div style='font-size:0.78rem;color:#888;margin-top:2px;'>{sub}</div>" if sub else ""
+    title_attr = f'title="{tooltip}"' if tooltip else ""
+    return (
+        f"<div {title_attr} style='background:#11112b;border:1px solid #2a2a58;border-radius:12px;"
+        f"padding:16px 20px;text-align:center;cursor:default;margin-bottom:8px;'>"
+        f"<div style='font-size:0.82rem;color:#a0a0c0;margin-bottom:6px;'>{icon} {label}</div>"
+        f"<div style='font-size:1.6rem;font-weight:800;color:{val_color};line-height:1.2;'>{value}</div>"
+        f"{sub_html}"
+        f"</div>"
+    )
+
 # ─── Page config (moet vóór alle andere st-calls) ─────────────────────────────
 
 st.set_page_config(
@@ -264,24 +281,7 @@ with tab_dashboard:
     _dsh_datum_str = datetime.date.today().strftime("%-d %B %Y")
     st.caption(f"📅 {_dsh_datum_str}  ·  {len(_dsh_open)} open {'bet' if len(_dsh_open) == 1 else 'bets'}  ·  {len(_dsh_favorieten)} in Shortlist")
 
-    # ── KPI-kaartjes (custom HTML — geen truncatie, hover toont volledige waarde) ──
-    def _kpi_card(icon: str, label: str, value: str, sub: str = "", positive: bool = None, tooltip: str = "") -> str:
-        if positive is True:
-            val_color = "#4ade80"
-        elif positive is False:
-            val_color = "#f87171"
-        else:
-            val_color = "#ffffff"
-        sub_html = f"<div style='font-size:0.78rem;color:#888;margin-top:2px;'>{sub}</div>" if sub else ""
-        title_attr = f'title="{tooltip}"' if tooltip else ""
-        return (
-            f"<div {title_attr} style='background:#11112b;border:1px solid #2a2a58;border-radius:12px;"
-            f"padding:16px 20px;text-align:center;cursor:default;'>"
-            f"<div style='font-size:0.82rem;color:#a0a0c0;margin-bottom:6px;'>{icon} {label}</div>"
-            f"<div style='font-size:1.6rem;font-weight:800;color:{val_color};line-height:1.2;'>{value}</div>"
-            f"{sub_html}"
-            f"</div>"
-        )
+    # ── KPI-kaartjes (gebruikt globale kpi_card helper) ───────────────────────
 
     # Rij 1: Bankroll · P&L week · ROI
     _bk_val     = f"€{_dsh_huidig_saldo:.2f}" if _dsh_huidig_saldo is not None else "—"
@@ -295,9 +295,9 @@ with tab_dashboard:
     _roi_pos    = (True if _dsh_roi > 0 else False) if _dsh_gedaan and _dsh_roi != 0 else None
 
     _kr1, _kr2, _kr3 = st.columns(3)
-    _kr1.markdown(_kpi_card("🏦", "Bankroll", _bk_val, _bk_sub, _bk_pos, tooltip=_bk_val), unsafe_allow_html=True)
-    _kr2.markdown(_kpi_card("💰", "P&L deze week", _wk_val, _wk_sub, _wk_pos, tooltip=_wk_val), unsafe_allow_html=True)
-    _kr3.markdown(_kpi_card("📈", "ROI (totaal)", _roi_val, _roi_sub, _roi_pos, tooltip=_roi_val), unsafe_allow_html=True)
+    _kr1.markdown(kpi_card("🏦", "Bankroll", _bk_val, _bk_sub, _bk_pos, tooltip=_bk_val), unsafe_allow_html=True)
+    _kr2.markdown(kpi_card("💰", "P&L deze week", _wk_val, _wk_sub, _wk_pos, tooltip=_wk_val), unsafe_allow_html=True)
+    _kr3.markdown(kpi_card("📈", "ROI (totaal)", _roi_val, _roi_sub, _roi_pos, tooltip=_roi_val), unsafe_allow_html=True)
 
     # Rij 2: Win% · Streak · Open bets teller
     _wr_val     = f"{_dsh_wr:.1f}%" if _dsh_gedaan else "—"
@@ -312,9 +312,9 @@ with tab_dashboard:
     _open_pos   = None if len(_dsh_open) == 0 else False
 
     _kr4, _kr5, _kr6 = st.columns(3)
-    _kr4.markdown(_kpi_card("🎯", "Win rate", _wr_val, _wr_sub, _wr_pos, tooltip=_wr_val), unsafe_allow_html=True)
-    _kr5.markdown(_kpi_card(_dsh_streak_icon, "Streak", _streak_val, _streak_sub, _streak_pos), unsafe_allow_html=True)
-    _kr6.markdown(_kpi_card("⏳", "Open bets", _open_val, _open_sub, _open_pos), unsafe_allow_html=True)
+    _kr4.markdown(kpi_card("🎯", "Win rate", _wr_val, _wr_sub, _wr_pos, tooltip=_wr_val), unsafe_allow_html=True)
+    _kr5.markdown(kpi_card(_dsh_streak_icon, "Streak", _streak_val, _streak_sub, _streak_pos), unsafe_allow_html=True)
+    _kr6.markdown(kpi_card("⏳", "Open bets", _open_val, _open_sub, _open_pos), unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -828,15 +828,16 @@ with tab_favorieten:
         # Samenvatting als er afgeronde resultaten zijn
         _done = [r for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen", "verloren")]
         if _done:
-            _fn_won = sum(1 for r in _done if r.get("uitkomst") == "gewonnen")
+            _fn_won   = sum(1 for r in _done if r.get("uitkomst") == "gewonnen")
+            _fn_lost  = len(_done) - _fn_won
             _ft_inzet = sum(r.get("inzet", 0) for r in _done)
             _ft_wl    = sum(r.get("winst_verlies", 0) for r in _done)
             _froi     = (_ft_wl / _ft_inzet * 100) if _ft_inzet > 0 else 0.0
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("✅ Gewonnen",  _fn_won)
-            c2.metric("❌ Verloren",  len(_done) - _fn_won)
-            c3.metric("💰 P&L",       f"€{_ft_wl:+.2f}")
-            c4.metric("📈 ROI",       f"{_froi:+.1f}%")
+            _sc1, _sc2, _sc3, _sc4 = st.columns(4)
+            _sc1.markdown(kpi_card("✅", "Gewonnen", str(_fn_won), f"{_fn_won}/{len(_done)} bets"), unsafe_allow_html=True)
+            _sc2.markdown(kpi_card("❌", "Verloren",  str(_fn_lost), positive=(False if _fn_lost > 0 else None)), unsafe_allow_html=True)
+            _sc3.markdown(kpi_card("💰", "P&L", f"€{_ft_wl:+.2f}", f"inzet €{_ft_inzet:.2f}", positive=(_ft_wl > 0) if _ft_wl != 0 else None, tooltip=f"€{_ft_wl:+.4f}"), unsafe_allow_html=True)
+            _sc4.markdown(kpi_card("📈", "ROI", f"{_froi:+.1f}%", f"over {len(_done)} bets", positive=(_froi > 0) if _froi != 0 else None, tooltip=f"{_froi:+.4f}%"), unsafe_allow_html=True)
             st.markdown("---")
 
         for _idx, _fav in enumerate(_favs):
@@ -1050,27 +1051,26 @@ with tab_bankroll:
             _huidig_saldo = _start_bk_saved + _bt_wl
             _groei_pct    = (_bt_wl / _start_bk_saved * 100) if _start_bk_saved > 0 else 0.0
             _bmc1, _bmc2, _bmc3, _bmc4 = st.columns(4)
-            _bmc1.metric("🏦 Startbankroll",  f"€{_start_bk_saved:.2f}")
-            _bmc2.metric("💰 Huidig saldo",   f"€{_huidig_saldo:.2f}", delta=f"€{_bt_wl:+.2f}")
-            _bmc3.metric("📈 Groei",           f"{_groei_pct:+.1f}%")
-            _bmc4.metric("🎯 Win %",           f"{_bwin_pct:.1f}%")
+            _bmc1.markdown(kpi_card("🏦", "Startbankroll", f"€{_start_bk_saved:.2f}"), unsafe_allow_html=True)
+            _bmc2.markdown(kpi_card("💰", "Huidig saldo",  f"€{_huidig_saldo:.2f}", f"P&L {_bt_wl:+.2f}", positive=(_bt_wl > 0) if _bt_wl != 0 else None), unsafe_allow_html=True)
+            _bmc3.markdown(kpi_card("📈", "Groei",         f"{_groei_pct:+.1f}%", positive=(_groei_pct > 0) if _groei_pct != 0 else None), unsafe_allow_html=True)
+            _bmc4.markdown(kpi_card("🎯", "Win %",         f"{_bwin_pct:.1f}%",   positive=(_bwin_pct >= 55) if _gedaan else None), unsafe_allow_html=True)
             st.markdown("")
 
         _bc1, _bc2, _bc3, _bc4 = st.columns(4)
-        _bc1.metric("💰 Totaal P&L",  f"€{_bt_wl:+.2f}")
-        _bc2.metric("📈 ROI",          f"{_broi:+.1f}%")
-        _bc3.metric("📊 W / L",        f"{_bn_won} / {len(_gedaan) - _bn_won}")
-        _bc4.metric("🎰 Bets gespeeld", len(_gedaan))
+        _bc1.markdown(kpi_card("💰", "Totaal P&L",   f"€{_bt_wl:+.2f}", positive=(_bt_wl > 0) if _bt_wl != 0 else None, tooltip=f"€{_bt_wl:+.4f}"), unsafe_allow_html=True)
+        _bc2.markdown(kpi_card("📈", "ROI",           f"{_broi:+.1f}%",  positive=(_broi > 0) if _broi != 0 else None, tooltip=f"{_broi:+.4f}%"), unsafe_allow_html=True)
+        _bc3.markdown(kpi_card("📊", "W / L",         f"{_bn_won} / {len(_gedaan) - _bn_won}", f"{len(_gedaan)} bets gespeeld"), unsafe_allow_html=True)
+        _bc4.markdown(kpi_card("🎰", "Bets gespeeld", str(len(_gedaan))), unsafe_allow_html=True)
 
         # Streak + drawdown
         _cur_streak, _best_streak, _streak_type = _calc_streak(_gedaan)
         _max_dd = _calc_drawdown(_gedaan)
         _streak_icon = "🔥" if _streak_type == "gewonnen" else "❄️"
         _bx1, _bx2, _bx3 = st.columns(3)
-        _bx1.metric(f"{_streak_icon} Huidige streak", f"{_cur_streak}× {_streak_type}")
-        _bx2.metric("🏆 Langste streak",              f"{_best_streak}")
-        _bx3.metric("📉 Max drawdown",                f"€{_max_dd:.2f}",
-                    help="Grootste verlies van piek naar dal in je P&L curve")
+        _bx1.markdown(kpi_card(_streak_icon, "Huidige streak", f"{_cur_streak}× {_streak_type}", positive=(_streak_type == "gewonnen")), unsafe_allow_html=True)
+        _bx2.markdown(kpi_card("🏆", "Langste streak", str(_best_streak)), unsafe_allow_html=True)
+        _bx3.markdown(kpi_card("📉", "Max drawdown", f"€{_max_dd:.2f}", "piek-naar-dal verlies", positive=(False if _max_dd > 0 else None), tooltip=f"€{_max_dd:.4f}"), unsafe_allow_html=True)
 
         # ── P&L grafiek (met bankrollniveau) ────────────────────────────────
         st.markdown("---")
@@ -1474,11 +1474,11 @@ with tab_geplaatst:
                 _gp_roi   = (_gp_wl / _gp_inzet * 100) if _gp_inzet > 0 else 0.0
                 _gp_wr    = (_gp_won / len(_gp_afgerond) * 100) if _gp_afgerond else 0.0
                 sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-                sc1.metric("Totaal bets",   len(_gp_data))
-                sc2.metric("Win rate",      f"{_gp_wr:.0f}%")
-                sc3.metric("Totale inzet",  f"€{_gp_inzet:.2f}")
-                sc4.metric("P&L",           f"€{_gp_wl:+.2f}")
-                sc5.metric("ROI",           f"{_gp_roi:+.1f}%")
+                sc1.markdown(kpi_card("🎰", "Totaal bets",  str(len(_gp_data)), f"{len(_gp_afgerond)} afgerond"), unsafe_allow_html=True)
+                sc2.markdown(kpi_card("🎯", "Win rate",     f"{_gp_wr:.1f}%",   f"{_gp_won}/{len(_gp_afgerond)}", positive=(_gp_wr >= 55) if _gp_afgerond else None), unsafe_allow_html=True)
+                sc3.markdown(kpi_card("💶", "Totale inzet", f"€{_gp_inzet:.2f}"), unsafe_allow_html=True)
+                sc4.markdown(kpi_card("💰", "P&L",          f"€{_gp_wl:+.2f}",  positive=(_gp_wl > 0) if _gp_wl != 0 else None, tooltip=f"€{_gp_wl:+.4f}"), unsafe_allow_html=True)
+                sc5.markdown(kpi_card("📈", "ROI",          f"{_gp_roi:+.1f}%", positive=(_gp_roi > 0) if _gp_roi != 0 else None, tooltip=f"{_gp_roi:+.4f}%"), unsafe_allow_html=True)
             st.markdown("---")
 
             # ── Groepeer op maand → week ──────────────────────────────────────
