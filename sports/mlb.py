@@ -361,6 +361,161 @@ def get_team_form_for_match(team_name: str) -> dict:
     return result
 
 
+# ─── Startende werper (probable pitcher) ─────────────────────────────────────
+
+_LEAGUE_ERA = 4.35  # MLB gemiddelde ERA (referentie voor normalisatie)
+
+
+_W_CURRENT = 0.60   # gewicht huidig seizoen
+_W_PREV    = 0.40   # gewicht vorig seizoen
+
+
+def _fetch_pitching_stat(player_id: int, season: int) -> dict:
+    """Haal ruwe pitching stats op voor één seizoen. Geeft leeg dict als geen data."""
+    data   = _get(f"{BASE}/people/{player_id}/stats?stats=season&season={season}&group=pitching&sportId=1")
+    splits = data.get("stats", [{}])[0].get("splits", [])
+    if not splits:
+        return {}
+    stat = splits[0].get("stat", {})
+
+    def _f(k, default=0.0):
+        try:
+            return float(stat.get(k) or default)
+        except (TypeError, ValueError):
+            return default
+
+    ip = _f("inningsPitched", 0.0)
+    k  = _f("strikeOuts", 0.0)
+    return {
+        "era":             _f("era",  _LEAGUE_ERA),
+        "whip":            _f("whip", 1.30),
+        "k_per_9":         round(k / ip * 9, 2) if ip > 0 else 0.0,
+        "innings_pitched": round(ip, 1),
+        "games_started":   int(stat.get("gamesStarted") or 0),
+        "hits_per_9":      round(_f("hits") / ip * 9, 2) if ip > 0 else 0.0,
+        "bb_per_9":        round(_f("baseOnBalls") / ip * 9, 2) if ip > 0 else 0.0,
+        "hr_per_9":        round(_f("homeRuns") / ip * 9, 2) if ip > 0 else 0.0,
+        "win_pct":         round(_f("wins") / max(_f("wins") + _f("losses"), 1), 3),
+    }
+
+
+def get_pitcher_season_stats(player_id: int) -> dict:
+    """
+    Haal pitchingstatistieken op, gewogen over huidig en vorig seizoen:
+      60% huidig seizoen + 40% vorig seizoen (voor alle metrics).
+
+    Als het huidige seizoen geen data heeft (begin seizoen / rookie),
+    wordt 100% vorig seizoen gebruikt. Als beide ontbreken, leeg dict.
+
+    Geeft: era, whip, k_per_9, hits_per_9, bb_per_9, hr_per_9, win_pct,
+           innings_pitched, games_started, era_current, era_prev.
+    """
+    season    = _current_season()
+    cache_key = f"mlb_pitcher_stats_v2_{player_id}_{season}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    cur  = _fetch_pitching_stat(player_id, season)
+    prev = _fetch_pitching_stat(player_id, season - 1)
+
+    if not cur and not prev:
+        return {}
+
+    # Als één seizoen ontbreekt, gebruik het andere volledig
+    if not cur:
+        result = {**prev, "era_current": None, "era_prev": round(prev["era"], 2),
+                  "blend_note": "100% vorig seizoen (geen huidig seizoen data)"}
+        cache_set(cache_key, result, ttl_hours=6)
+        return result
+    if not prev:
+        result = {**cur, "era_current": round(cur["era"], 2), "era_prev": None,
+                  "blend_note": "100% huidig seizoen (geen vorig seizoen data)"}
+        cache_set(cache_key, result, ttl_hours=6)
+        return result
+
+    # Blend: 60% huidig + 40% vorig voor alle numerieke stats
+    def _blend(key):
+        return round(cur[key] * _W_CURRENT + prev[key] * _W_PREV, 2)
+
+    result = {
+        "era":             _blend("era"),
+        "whip":            _blend("whip"),
+        "k_per_9":         _blend("k_per_9"),
+        "hits_per_9":      _blend("hits_per_9"),
+        "bb_per_9":        _blend("bb_per_9"),
+        "hr_per_9":        _blend("hr_per_9"),
+        "win_pct":         _blend("win_pct"),
+        "innings_pitched": round(cur["innings_pitched"], 1),
+        "games_started":   cur["games_started"],
+        # Bewaar ongewogen waarden voor weergave in UI
+        "era_current":     round(cur["era"], 2),
+        "era_prev":        round(prev["era"], 2),
+        "blend_note":      f"60% {season} + 40% {season - 1}",
+    }
+    cache_set(cache_key, result, ttl_hours=6)
+    return result
+
+
+def get_probable_pitchers(home_team_name: str, away_team_name: str,
+                          game_date: str = "") -> dict:
+    """
+    Zoek de startende werpers voor een wedstrijd op via de MLB schedule API
+    met 'probablePitcher' hydration.
+
+    Geeft dict: {"home": {name, era, whip, k_per_9, ...}, "away": {...}}
+    Leeg sub-dict als de werper nog niet bekend is (bv. 2+ dagen vooruit).
+    """
+    if not game_date:
+        game_date = datetime.date.today().isoformat()
+
+    cache_key = f"mlb_pitchers_{home_team_name}_{away_team_name}_{game_date}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    data = _get(
+        f"{BASE}/schedule?date={game_date}&sportId=1&gameType=R"
+        f"&hydrate=probablePitcher"
+    )
+
+    home_lower = home_team_name.strip().lower()
+    away_lower = away_team_name.strip().lower()
+    result     = {"home": {}, "away": {}}
+
+    for date_obj in data.get("dates", []):
+        for game in date_obj.get("games", []):
+            teams     = game.get("teams", {})
+            home_team = teams.get("home", {}).get("team", {})
+            away_team = teams.get("away", {}).get("team", {})
+            h_name    = home_team.get("name", "").lower()
+            a_name    = away_team.get("name", "").lower()
+
+            # Controleer of dit de juiste wedstrijd is
+            h_match = home_lower in h_name or h_name in home_lower or \
+                      home_team.get("abbreviation","").lower() in home_lower
+            a_match = away_lower in a_name or a_name in away_lower or \
+                      away_team.get("abbreviation","").lower() in away_lower
+            if not (h_match and a_match):
+                continue
+
+            for side in ("home", "away"):
+                pitcher = teams.get(side, {}).get("probablePitcher")
+                if not pitcher:
+                    continue
+                pid   = pitcher.get("id")
+                pname = pitcher.get("fullName", pitcher.get("lastName", "Onbekend"))
+                stats = get_pitcher_season_stats(pid) if pid else {}
+                result[side] = {"name": pname, "player_id": pid, **stats}
+            break
+        if result["home"] or result["away"]:
+            break
+
+    # Kort cachen: werpers kunnen tot vlak voor de wedstrijd veranderen
+    cache_set(cache_key, result, ttl_hours=2)
+    return result
+
+
 # ─── Auto-props helpers ───────────────────────────────────────────────────────
 
 def get_today_games() -> list:

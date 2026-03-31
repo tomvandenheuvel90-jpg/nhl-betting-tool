@@ -437,3 +437,58 @@ def delete_parlay(parlay_id: str) -> None:
 def _local_path(filename: str) -> Path:
     """Hulpfunctie voor lokale bestandspaden."""
     return _BASE_DIR / filename
+
+
+# ── Settings (eenvoudige key-value opslag) ────────────────────────────────────
+
+_SETTINGS_FILE = _BASE_DIR / "settings.json"
+
+
+def load_settings() -> dict:
+    """Laad app-instellingen (startbankroll etc.)."""
+    if _SETTINGS_FILE.exists():
+        try:
+            return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_settings(settings: dict) -> None:
+    """Sla app-instellingen op."""
+    try:
+        _SETTINGS_FILE.write_text(
+            json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def get_setting(key: str, default=None):
+    return load_settings().get(key, default)
+
+
+def set_setting(key: str, value) -> None:
+    s = load_settings()
+    s[key] = value
+    save_settings(s)
+
+
+# ── Direct bet (gesloten weddenschap direct naar resultaten) ──────────────────
+
+def add_direct_bet(speler: str, sport: str, bet_type: str, odds: float,
+                   inzet: float, uitkomst: str, datum: str = "",
+                   ev_score: float = 0.0) -> str:
+    """Voeg een al gezette weddenschap direct toe aan resultaten, zonder favorieten."""
+    import uuid as _uuid
+    fav_id = f"direct_{_uuid.uuid4().hex[:10]}"
+    fav = {
+        "speler":    speler,
+        "bet":       bet_type,
+        "sport":     sport,
+        "odds":      odds,
+        "ev_score":  ev_score,
+        "datum":     datum or datetime.date.today().isoformat(),
+    }
+    upsert_resultaat(fav_id, fav, uitkomst, inzet)
+    return fav_id
