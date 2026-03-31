@@ -101,29 +101,42 @@ def _cutoff_date() -> str:
     return (datetime.date.today() - datetime.timedelta(days=HISTORY_DAYS)).isoformat()
 
 
+def _get_used_session_ids() -> set:
+    """Geeft alle session_ids terug die zijn gekoppeld aan een geplaatste weddenschap."""
+    results = load_resultaten()
+    return {r.get("source_session_id") for r in results if r.get("source_session_id")}
+
+
 # ─── Geschiedenis ─────────────────────────────────────────────────────────────
 
 def load_history() -> list:
-    cutoff = _cutoff_date()
+    """Laad alle analyses: recent (< 7 dagen) OF gekoppeld aan een geplaatste weddenschap."""
+    cutoff    = _cutoff_date()
+    used_ids  = _get_used_session_ids()
+
     if _using_supabase:
         try:
+            # Haal alles op; filter client-side op datum of gebruik
             resp = (
                 _supabase.table("geschiedenis")
                 .select("*")
-                .gte("datum", cutoff)
                 .order("datum", desc=True)
                 .order("tijd", desc=True)
                 .execute()
             )
             result = []
             for r in (resp.data or []):
+                sid = r.get("session_id", "")
+                if r.get("datum", "") < cutoff and sid not in used_ids:
+                    continue  # oud en ongebruikt → overslaan
                 _ap = r.get("alle_props_json", "[]") or "[]"
                 _ps = r.get("parlay_suggesties_json", "[]") or "[]"
                 result.append({
-                    "datum":           r.get("datum", ""),
-                    "tijd":            r.get("tijd", ""),
-                    "top5":            json.loads(r.get("top5_json", "[]")),
-                    "alle_props_json": json.loads(_ap),
+                    "datum":             r.get("datum", ""),
+                    "tijd":              r.get("tijd", ""),
+                    "session_id":        sid,
+                    "top5":              json.loads(r.get("top5_json", "[]")),
+                    "alle_props_json":   json.loads(_ap),
                     "parlay_suggesties": json.loads(_ps),
                 })
             return result
@@ -134,7 +147,10 @@ def load_history() -> list:
         return []
     try:
         entries = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-        return [e for e in entries if e.get("datum", "") >= cutoff]
+        return [
+            e for e in entries
+            if e.get("datum", "") >= cutoff or e.get("session_id", "") in used_ids
+        ]
     except Exception:
         return []
 
@@ -143,10 +159,12 @@ def save_to_history(
     enriched: list,
     alle_props: Optional[list] = None,
     parlay_suggesties: Optional[list] = None,
-) -> None:
-    now   = datetime.datetime.now()
-    datum = now.strftime("%Y-%m-%d")
-    tijd  = now.strftime("%H:%M")
+) -> str:
+    """Sla analyse op en geef de session_id terug."""
+    now        = datetime.datetime.now()
+    datum      = now.strftime("%Y-%m-%d")
+    tijd       = now.strftime("%H:%M")
+    session_id = uuid.uuid4().hex[:12]
     top5  = enriched[:5]
     top5_data = [
         {
@@ -186,34 +204,51 @@ def save_to_history(
         try:
             entry_id = f"{datum}_{tijd}_{uuid.uuid4().hex[:6]}"
             _supabase.table("geschiedenis").insert({
-                "id":                    entry_id,
-                "datum":                 datum,
-                "tijd":                  tijd,
-                "top5_json":             json.dumps(top5_data, ensure_ascii=False),
-                "alle_props_json":       json.dumps(_alle_compact, ensure_ascii=False),
+                "id":                     entry_id,
+                "datum":                  datum,
+                "tijd":                   tijd,
+                "session_id":             session_id,
+                "top5_json":              json.dumps(top5_data, ensure_ascii=False),
+                "alle_props_json":        json.dumps(_alle_compact, ensure_ascii=False),
                 "parlay_suggesties_json": json.dumps(parlay_suggesties or [], ensure_ascii=False),
             }).execute()
-            return
+            return session_id
         except Exception:
             pass  # fallback naar JSON
 
-    entry   = {
-        "datum":              datum,
-        "tijd":               tijd,
-        "top5":               top5_data,
-        "alle_props_json":    _alle_compact,
-        "parlay_suggesties":  parlay_suggesties or [],
+    entry = {
+        "datum":             datum,
+        "tijd":              tijd,
+        "session_id":        session_id,
+        "top5":              top5_data,
+        "alle_props_json":   _alle_compact,
+        "parlay_suggesties": parlay_suggesties or [],
     }
-    entries = load_history()
-    entries.insert(0, entry)
-    cutoff  = _cutoff_date()
-    entries = [e for e in entries if e.get("datum", "") >= cutoff]
+
+    # Laad alle bestaande entries en prune slim:
+    # bewaar alleen entries die recent zijn OF gekoppeld aan een geplaatste bet
+    cutoff   = _cutoff_date()
+    used_ids = _get_used_session_ids()
+    try:
+        if HISTORY_FILE.exists():
+            all_entries = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        else:
+            all_entries = []
+    except Exception:
+        all_entries = []
+
+    all_entries.insert(0, entry)
+    all_entries = [
+        e for e in all_entries
+        if e.get("datum", "") >= cutoff or e.get("session_id", "") in used_ids
+    ]
     try:
         HISTORY_FILE.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(all_entries, ensure_ascii=False, indent=2), encoding="utf-8"
         )
     except Exception:
         pass
+    return session_id
 
 
 # ─── Favorieten ───────────────────────────────────────────────────────────────
@@ -249,17 +284,18 @@ def save_favorieten(favs: list) -> None:
         pass
 
 
-def add_favoriet(fav_id: str, bet: dict) -> None:
+def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "") -> None:
     datum = datetime.date.today().isoformat()
     row = {
-        "id":            fav_id,
-        "datum":         datum,
-        "speler":        bet.get("player", ""),
-        "bet":           bet.get("bet_type", ""),
-        "odds":          round(float(bet.get("odds", 0)), 2),
-        "ev_score":      round(float(bet.get("ev", 0)), 4),
-        "sport":         bet.get("sport", ""),
-        "bet365_status": bet.get("bet365", {}).get("status", "unknown"),
+        "id":                fav_id,
+        "datum":             datum,
+        "speler":            bet.get("player", ""),
+        "bet":               bet.get("bet_type", ""),
+        "odds":              round(float(bet.get("odds", 0)), 2),
+        "ev_score":          round(float(bet.get("ev", 0)), 4),
+        "sport":             bet.get("sport", ""),
+        "bet365_status":     bet.get("bet365", {}).get("status", "unknown"),
+        "source_session_id": source_session_id,
     }
     if _using_supabase:
         try:
@@ -319,16 +355,17 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
     odds = float(fav.get("odds", 1.0))
     wl   = round(inzet * (odds - 1), 2) if uitkomst == "gewonnen" else round(-inzet, 2)
     row  = {
-        "id":            fav_id,
-        "datum":         fav.get("datum", datetime.date.today().isoformat()),
-        "speler":        fav.get("speler", ""),
-        "bet":           fav.get("bet", ""),
-        "odds":          odds,
-        "inzet":         round(inzet, 2),
-        "uitkomst":      uitkomst,
-        "winst_verlies": wl,
-        "sport":         fav.get("sport", ""),
-        "ev_score":      fav.get("ev_score", 0.0),
+        "id":                fav_id,
+        "datum":             fav.get("datum", datetime.date.today().isoformat()),
+        "speler":            fav.get("speler", ""),
+        "bet":               fav.get("bet", ""),
+        "odds":              odds,
+        "inzet":             round(inzet, 2),
+        "uitkomst":          uitkomst,
+        "winst_verlies":     wl,
+        "sport":             fav.get("sport", ""),
+        "ev_score":          fav.get("ev_score", 0.0),
+        "source_session_id": fav.get("source_session_id", ""),
     }
     if _using_supabase:
         try:

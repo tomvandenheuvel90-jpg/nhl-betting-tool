@@ -396,7 +396,7 @@ def render_top3(top3: list):
         )
 
 
-def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
+def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, session_id: str = ""):
     sport_icon    = SPORT_ICONS.get(bet["sport"].upper(), "⚽")
     ev_str        = f"+{bet['ev']:.3f}" if bet["ev"] >= 0 else f"{bet['ev']:.3f}"
     composite_pct = int(bet["composite"] * 100)
@@ -481,7 +481,7 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
                     st.success("✅ Nog steeds interessant")
 
         # Favoriet knop
-        _fav_label = "⭐ Verwijder favoriet" if is_fav else "⭐ Sla op als favoriet"
+        _fav_label = "⭐ Verwijder uit Shortlist" if is_fav else "⭐ Voeg toe aan Shortlist"
         fid = db.make_fav_id(bet["player"], bet["bet_type"])
         if st.button(_fav_label, key=f"fav_{rank}_{total}", use_container_width=False):
             if is_fav:
@@ -491,9 +491,9 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False):
                 if _fav_adj is not None and abs(_fav_adj - float(bet["odds"])) > 0.001:
                     _composite = bet.get("composite", 0.5)
                     _adj_ev    = _composite * (_fav_adj - 1) - (1 - _composite)
-                    db.add_favoriet(fid, {**bet, "odds": _fav_adj, "ev": _adj_ev})
+                    db.add_favoriet(fid, {**bet, "odds": _fav_adj, "ev": _adj_ev}, source_session_id=session_id)
                 else:
-                    db.add_favoriet(fid, bet)
+                    db.add_favoriet(fid, bet, source_session_id=session_id)
             st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)

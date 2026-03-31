@@ -206,12 +206,185 @@ except FileNotFoundError:
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-tab_analyse, tab_favorieten, tab_bankroll, tab_parlay, tab_history = st.tabs(
-    ["🔍 Analyse", "⭐ Favorieten", "📊 Bankroll", "🎯 Parlay Builder", "📋 Geschiedenis"]
+tab_dashboard, tab_analyse, tab_favorieten, tab_parlay, tab_geplaatst, tab_bankroll, tab_history = st.tabs(
+    ["🏠 Dashboard", "🔍 Analyse", "⭐ Shortlist", "🎯 Parlay Builder", "📋 Geplaatste Bets", "📊 Bankroll", "🗂️ Analyse Geschiedenis"]
 )
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — ANALYSE
+# TAB 1 — DASHBOARD
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_dashboard:
+    _dsh_resultaten  = db.load_resultaten()
+    _dsh_favorieten  = db.load_favorieten()
+    _dsh_history     = db.load_history()
+    _dsh_open        = [r for r in _dsh_resultaten if r.get("uitkomst") == "open"]
+    _dsh_gedaan      = [r for r in _dsh_resultaten if r.get("uitkomst") in ("gewonnen","verloren")]
+    _dsh_start_bk    = float(db.get_setting("start_bankroll") or 0.0)
+
+    # ── KPI berekeningen ──────────────────────────────────────────────────────
+    _dsh_won         = sum(1 for r in _dsh_gedaan if r.get("uitkomst") == "gewonnen")
+    _dsh_total_inzet = sum(r.get("inzet", 0) for r in _dsh_gedaan)
+    _dsh_total_wl    = sum(r.get("winst_verlies", 0) for r in _dsh_gedaan)
+    _dsh_roi         = (_dsh_total_wl / _dsh_total_inzet * 100) if _dsh_total_inzet > 0 else 0.0
+    _dsh_wr          = (_dsh_won / len(_dsh_gedaan) * 100) if _dsh_gedaan else 0.0
+    _dsh_huidig_saldo = (_dsh_start_bk + _dsh_total_wl) if _dsh_start_bk > 0 else None
+
+    # Streak berekenen
+    def _dsh_streak(results: list) -> tuple:
+        if not results:
+            return 0, "—"
+        s = sorted(results, key=lambda r: r.get("datum",""))
+        last = s[-1].get("uitkomst","")
+        cnt = 0
+        for r in reversed(s):
+            if r.get("uitkomst") == last:
+                cnt += 1
+            else:
+                break
+        return cnt, last
+
+    _dsh_streak_cnt, _dsh_streak_type = _dsh_streak(_dsh_gedaan)
+    _dsh_streak_icon = "🔥" if _dsh_streak_type == "gewonnen" else ("❄️" if _dsh_streak_type == "verloren" else "—")
+
+    # Laatste analyse
+    _dsh_last_analyse = _dsh_history[0] if _dsh_history else None
+    _dsh_last_analyse_str = (
+        f"{_dsh_last_analyse.get('datum','')} om {_dsh_last_analyse.get('tijd','')}"
+        if _dsh_last_analyse else "Nog geen analyse"
+    )
+
+    # Week P&L (laatste 7 dagen)
+    _dsh_week_cutoff = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    _dsh_week_gedaan = [r for r in _dsh_gedaan if r.get("datum","") >= _dsh_week_cutoff]
+    _dsh_week_wl     = sum(r.get("winst_verlies",0) for r in _dsh_week_gedaan)
+
+    # ── Welkomstregel ─────────────────────────────────────────────────────────
+    st.markdown("### 🏠 Dashboard")
+    _dsh_datum_str = datetime.date.today().strftime("%-d %B %Y")
+    st.caption(f"📅 {_dsh_datum_str}  ·  {len(_dsh_open)} open {'bet' if len(_dsh_open) == 1 else 'bets'}  ·  {len(_dsh_favorieten)} in Shortlist")
+
+    # ── KPI-rij ───────────────────────────────────────────────────────────────
+    _k1, _k2, _k3, _k4, _k5 = st.columns(5)
+
+    if _dsh_huidig_saldo is not None:
+        _k1.metric("🏦 Bankroll", f"€{_dsh_huidig_saldo:.2f}",
+                   delta=f"€{_dsh_total_wl:+.2f}" if _dsh_total_wl else None)
+    else:
+        _k1.metric("🏦 Bankroll", "Niet ingesteld", help="Stel je startbankroll in via de Bankroll tab")
+
+    _k2.metric("💰 P&L deze week",
+               f"€{_dsh_week_wl:+.2f}" if _dsh_week_gedaan else "—",
+               delta=f"{len(_dsh_week_gedaan)} bets" if _dsh_week_gedaan else None)
+    _k3.metric("📈 ROI (totaal)",    f"{_dsh_roi:+.1f}%" if _dsh_gedaan else "—")
+    _k4.metric("🎯 Win rate",        f"{_dsh_wr:.0f}%"   if _dsh_gedaan else "—",
+               delta=f"{_dsh_won}/{len(_dsh_gedaan)}" if _dsh_gedaan else None)
+    _streak_label = f"{_dsh_streak_cnt}× {_dsh_streak_type}" if _dsh_gedaan else "—"
+    _k5.metric(f"{_dsh_streak_icon} Streak", _streak_label)
+
+    st.markdown("---")
+
+    # ── Open bets (meest actioneerbaar) ───────────────────────────────────────
+    if _dsh_open:
+        _dsh_open_sorted = sorted(_dsh_open, key=lambda r: r.get("datum",""))
+        _days_open_max   = 0
+        try:
+            _days_open_max = (datetime.date.today() -
+                              datetime.date.fromisoformat(_dsh_open_sorted[0].get("datum","")[:10])).days
+        except Exception:
+            pass
+
+        _open_header = f"⏳ {len(_dsh_open)} open {'weddenschap' if len(_dsh_open) == 1 else 'weddenschappen'}"
+        if _days_open_max >= 3:
+            _open_header += f"  ⚠️ oudste al {_days_open_max} dagen open"
+        st.markdown(f"#### {_open_header}")
+        st.caption("Markeer de uitkomst zodra de wedstrijd gespeeld is.")
+
+        for _dop in _dsh_open_sorted:
+            _dop_id  = _dop.get("id","")
+            _dop_dag = ""
+            try:
+                _dop_dag = f"{(datetime.date.today() - datetime.date.fromisoformat(_dop.get('datum','')[:10])).days}d geleden"
+            except Exception:
+                _dop_dag = _dop.get("datum","")[:10]
+            _dopa, _dopb, _dopc, _dopd, _dope = st.columns([3, 1, 1, 1, 1])
+            _dopa.write(f"**{_dop.get('speler','')}** — {_dop.get('bet','')}")
+            _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · €{_dop.get('inzet',0):.2f} · {_dop_dag}")
+            if _dopb.button("✅ Won",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
+                db.upsert_resultaat(_dop_id, _dop, "gewonnen", float(_dop.get("inzet",10)))
+                st.rerun()
+            if _dopc.button("❌ Verloor", key=f"dsh_lost_{_dop_id}", use_container_width=True):
+                db.upsert_resultaat(_dop_id, _dop, "verloren", float(_dop.get("inzet",10)))
+                st.rerun()
+    else:
+        st.success("✅ Geen open weddenschappen — alles is up-to-date.")
+
+    st.markdown("---")
+
+    # ── Twee kolommen: recente resultaten + shortlist/analyse ─────────────────
+    _dcol_l, _dcol_r = st.columns([3, 2])
+
+    with _dcol_l:
+        st.markdown("#### 📊 Laatste resultaten")
+        _dsh_recent = sorted(_dsh_gedaan, key=lambda r: r.get("datum",""), reverse=True)[:7]
+        if not _dsh_recent:
+            st.info("Nog geen afgeronde weddenschappen.")
+        else:
+            for _dr in _dsh_recent:
+                _dr_icon = "✅" if _dr.get("uitkomst") == "gewonnen" else "❌"
+                _dr_wl   = _dr.get("winst_verlies", 0)
+                _dr_wl_s = f"€{_dr_wl:+.2f}"
+                _dr_kleur = "#4ade80" if _dr_wl >= 0 else "#f87171"
+                st.markdown(
+                    f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                    f"padding:6px 0;border-bottom:1px solid #1e1e3a;'>"
+                    f"<span>{_dr_icon} <b>{_dr.get('speler','')}</b> — {_dr.get('bet','')}"
+                    f"<br><small style='color:#888;'>{_dr.get('sport','')} · {_dr.get('datum','')[:10]}</small></span>"
+                    f"<span style='color:{_dr_kleur};font-weight:700;font-size:1.1rem;'>{_dr_wl_s}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+    with _dcol_r:
+        # Shortlist preview
+        st.markdown("#### ⭐ Shortlist")
+        if not _dsh_favorieten:
+            st.info("Shortlist is leeg — voeg props toe via Analyse of Analyse Geschiedenis.")
+        else:
+            for _df in _dsh_favorieten[:5]:
+                _df_ev = float(_df.get("ev_score", 0))
+                _ev_kleur = "#4ade80" if _df_ev >= 0.05 else "#facc15"
+                st.markdown(
+                    f"<div style='padding:5px 0;border-bottom:1px solid #1e1e3a;'>"
+                    f"<b>{_df.get('speler','')}</b> — {_df.get('bet','')}<br>"
+                    f"<small style='color:#888;'>@ {_df.get('odds','—')} · "
+                    f"<span style='color:{_ev_kleur};'>EV {_df_ev:+.3f}</span></small>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            if len(_dsh_favorieten) > 5:
+                st.caption(f"+ {len(_dsh_favorieten) - 5} meer → ga naar Shortlist tab")
+
+        st.markdown("---")
+
+        # Laatste analyse info
+        st.markdown("#### 🔍 Laatste analyse")
+        if _dsh_last_analyse:
+            _la_props = _dsh_last_analyse.get("alle_props_json") or _dsh_last_analyse.get("top5") or []
+            _la_sport_set = {p.get("sport","") for p in _la_props if p.get("sport")}
+            st.markdown(
+                f"<div style='padding:5px 0;'>"
+                f"📅 <b>{_dsh_last_analyse_str}</b><br>"
+                f"<small style='color:#888;'>{len(_la_props)} props · {', '.join(sorted(_la_sport_set)) or '—'}</small>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("Nog geen analyse gedaan. Ga naar de Analyse tab om te beginnen.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — ANALYSE
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_analyse:
@@ -444,7 +617,8 @@ with tab_analyse:
                 ]
 
                 if enriched:
-                    db.save_to_history(enriched, alle_props=enriched_ranked, parlay_suggesties=_auto_parlays)
+                    _sid = db.save_to_history(enriched, alle_props=enriched_ranked, parlay_suggesties=_auto_parlays)
+                    st.session_state["current_session_id"] = _sid
 
                 st.session_state.last_analysis = {
                     "enriched":              enriched,
@@ -554,9 +728,10 @@ with tab_analyse:
             st.markdown("---")
             st.markdown("### 📊 Alle props")
             _fav_ids_set = {f["id"] for f in db.load_favorieten()}
+            _cur_sid     = st.session_state.get("current_session_id", "")
             for i, bet in enumerate(enriched, 1):
                 _is_fav = db.make_fav_id(bet["player"], bet["bet_type"]) in _fav_ids_set
-                render_bet_card(bet, i, len(enriched), is_fav=_is_fav)
+                render_bet_card(bet, i, len(enriched), is_fav=_is_fav, session_id=_cur_sid)
 
         st.caption("⚠️ Statistische analyse ter ondersteuning. Wedden brengt financiële risico's. Speel verantwoord.")
 
@@ -566,7 +741,7 @@ with tab_analyse:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_favorieten:
-    st.markdown("### ⭐ Favorieten")
+    st.markdown("### ⭐ Shortlist — Bets in overweging")
 
     # ── Handmatig weddenschap toevoegen ───────────────────────────────────────
     with st.expander("➕ Handmatig weddenschap toevoegen", expanded=False):
@@ -659,7 +834,11 @@ with tab_favorieten:
                     "💰 Inzet (€)", min_value=0.10, value=_inzet_default,
                     step=1.0, format="%.2f", key=f"inzet_{_fid}_{_idx}",
                 )
-                _cw, _cl, _cp = st.columns(3)
+                _cpl, _cw, _cl, _cp = st.columns(4)
+                if _cpl.button("📋 Geplaatst", key=f"placed_{_fid}_{_idx}", use_container_width=True,
+                               help="Markeer als geplaatst (uitkomst nog onbekend)"):
+                    db.upsert_resultaat(_fid, _fav, "open", _inzet)
+                    st.rerun()
                 if _cw.button("✅ Gewonnen", key=f"won_{_fid}_{_idx}",  use_container_width=True):
                     db.upsert_resultaat(_fid, _fav, "gewonnen", _inzet)
                     st.rerun()
@@ -1221,28 +1400,181 @@ with tab_parlay:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — GESCHIEDENIS
+# TAB 4 — GEPLAATSTE BETS
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab_geplaatst:
+    st.markdown("### 📋 Geplaatste Weddenschappen")
+    st.caption("Alle weddenschappen die je hebt ingezet, gerangschikt per maand en week.")
+
+    from datetime import date as _date
+
+    _alle_res_gp = db.load_resultaten()
+
+    if not _alle_res_gp:
+        st.info("Nog geen weddenschappen geregistreerd. Voeg bets toe via de Shortlist of Bankroll tab.")
+    else:
+        # ── Filters ──────────────────────────────────────────────────────────
+        _gp_c1, _gp_c2, _gp_c3 = st.columns(3)
+        _gp_sport    = _gp_c1.selectbox("Sport", ["Alles","NHL","NBA","MLB","Voetbal","Overig"], key="gp_sport")
+        _gp_uitkomst = _gp_c2.selectbox("Uitkomst", ["Alles","open","gewonnen","verloren"], key="gp_uitkomst")
+        _gp_zoek     = _gp_c3.text_input("🔍 Zoek speler", key="gp_zoek", placeholder="naam...")
+
+        _gp_data = _alle_res_gp
+        if _gp_sport != "Alles":
+            _gp_data = [r for r in _gp_data if _gp_sport.lower() in (r.get("sport") or "").lower()]
+        if _gp_uitkomst != "Alles":
+            _gp_data = [r for r in _gp_data if r.get("uitkomst","") == _gp_uitkomst]
+        if _gp_zoek:
+            _gp_data = [r for r in _gp_data if _gp_zoek.lower() in (r.get("speler") or "").lower()]
+
+        if not _gp_data:
+            st.info("Geen weddenschappen gevonden met deze filters.")
+        else:
+            # ── Totaalsamenvatting ────────────────────────────────────────────
+            _gp_afgerond = [r for r in _gp_data if r.get("uitkomst") in ("gewonnen","verloren")]
+            if _gp_afgerond:
+                _gp_won   = sum(1 for r in _gp_afgerond if r.get("uitkomst") == "gewonnen")
+                _gp_inzet = sum(r.get("inzet", 0) for r in _gp_afgerond)
+                _gp_wl    = sum(r.get("winst_verlies", 0) for r in _gp_afgerond)
+                _gp_roi   = (_gp_wl / _gp_inzet * 100) if _gp_inzet > 0 else 0.0
+                _gp_wr    = (_gp_won / len(_gp_afgerond) * 100) if _gp_afgerond else 0.0
+                sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+                sc1.metric("Totaal bets",   len(_gp_data))
+                sc2.metric("Win rate",      f"{_gp_wr:.0f}%")
+                sc3.metric("Totale inzet",  f"€{_gp_inzet:.2f}")
+                sc4.metric("P&L",           f"€{_gp_wl:+.2f}")
+                sc5.metric("ROI",           f"{_gp_roi:+.1f}%")
+            st.markdown("---")
+
+            # ── Groepeer op maand → week ──────────────────────────────────────
+            def _week_label(datum_str: str) -> str:
+                try:
+                    d  = _date.fromisoformat(datum_str)
+                    wn = d.isocalendar()[1]
+                    # Maandag en zondag van die week
+                    maandag = d - datetime.timedelta(days=d.weekday())
+                    zondag  = maandag + datetime.timedelta(days=6)
+                    return f"Week {wn} · {maandag.strftime('%-d %b')} – {zondag.strftime('%-d %b')}"
+                except Exception:
+                    return "Onbekend"
+
+            def _maand_label(datum_str: str) -> str:
+                try:
+                    d = _date.fromisoformat(datum_str)
+                    return d.strftime("%B %Y").capitalize()
+                except Exception:
+                    return "Onbekend"
+
+            # Sorteren nieuwste eerst
+            _gp_data_sorted = sorted(_gp_data, key=lambda r: r.get("datum",""), reverse=True)
+
+            # Groeperen op maand
+            from collections import OrderedDict
+            _maand_dict: dict = OrderedDict()
+            for _r in _gp_data_sorted:
+                _ml = _maand_label(_r.get("datum",""))
+                _wl = _week_label(_r.get("datum",""))
+                if _ml not in _maand_dict:
+                    _maand_dict[_ml] = OrderedDict()
+                if _wl not in _maand_dict[_ml]:
+                    _maand_dict[_ml][_wl] = []
+                _maand_dict[_ml][_wl].append(_r)
+
+            for _maand, _weken in _maand_dict.items():
+                # Maand samenvatting
+                _m_rijen    = [r for wk in _weken.values() for r in wk]
+                _m_afgerond = [r for r in _m_rijen if r.get("uitkomst") in ("gewonnen","verloren")]
+                _m_won      = sum(1 for r in _m_afgerond if r.get("uitkomst") == "gewonnen")
+                _m_inzet    = sum(r.get("inzet",0) for r in _m_afgerond)
+                _m_wl       = sum(r.get("winst_verlies",0) for r in _m_afgerond)
+                _m_wr_str   = f"{_m_won}/{len(_m_afgerond)}" if _m_afgerond else "—"
+                _m_wl_str   = f"€{_m_wl:+.2f}" if _m_afgerond else "—"
+
+                with st.expander(
+                    f"📅 **{_maand}**  ·  {len(_m_rijen)} bets  ·  W/L {_m_wr_str}  ·  P&L {_m_wl_str}",
+                    expanded=True,
+                ):
+                    for _week, _bets in _weken.items():
+                        # Week samenvatting
+                        _w_afgerond = [r for r in _bets if r.get("uitkomst") in ("gewonnen","verloren")]
+                        _w_won      = sum(1 for r in _w_afgerond if r.get("uitkomst") == "gewonnen")
+                        _w_inzet    = sum(r.get("inzet",0) for r in _w_afgerond)
+                        _w_wl       = sum(r.get("winst_verlies",0) for r in _w_afgerond)
+                        _w_wr_str   = f"{_w_won}/{len(_w_afgerond)}" if _w_afgerond else "—"
+                        _w_wl_str   = f"€{_w_wl:+.2f}" if _w_afgerond else "—"
+
+                        st.markdown(
+                            f"<div style='background:#0e0e24;border-left:3px solid #4361ee;"
+                            f"padding:6px 12px;margin:8px 0 4px 0;border-radius:4px;'>"
+                            f"<strong>{_week}</strong> &nbsp;·&nbsp; {len(_bets)} bets "
+                            f"&nbsp;·&nbsp; W/L {_w_wr_str} "
+                            f"&nbsp;·&nbsp; P&L {_w_wl_str}</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                        for _b in _bets:
+                            _b_uit  = _b.get("uitkomst","")
+                            _b_icon = "✅" if _b_uit == "gewonnen" else ("❌" if _b_uit == "verloren" else "⏳")
+                            _b_wl   = _b.get("winst_verlies",0)
+                            _b_wl_s = f"€{_b_wl:+.2f}" if _b_uit != "open" else "—"
+                            _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns([3, 1, 1, 1, 1])
+                            _bc1.write(f"{_b_icon} **{_b.get('speler','')}** — {_b.get('bet','')}")
+                            _bc2.write(f"@ {_b.get('odds','—')}")
+                            _bc3.write(f"€{_b.get('inzet',0):.2f}")
+                            _bc4.write(_b_wl_s)
+                            _bc5.caption(_b.get("datum",""))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — ANALYSE GESCHIEDENIS
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_history:
-    st.markdown("### 📋 Analysegeschiedenis (laatste 7 dagen)")
+    st.markdown("### 🗂️ Analyse Geschiedenis")
+    st.caption("Analyses blijven bewaard zolang ze recent zijn (< 7 dagen) of gekoppeld zijn aan een geplaatste weddenschap.")
 
-    _hf1, _hf2 = st.columns(2)
-    _hist_sport = _hf1.selectbox("Filter sport",
+    # ── Bet-type categorieën ──────────────────────────────────────────────────
+    _BET_CATEGORIEEN = {
+        "Player Prop": ["goals","assists","shots","points","hits","home runs","strikeouts",
+                        "rebounds","steals","blocks","prop"],
+        "Moneyline":   ["moneyline","ml","win","to win"],
+        "Spread":      ["spread","handicap","puck line","run line","point spread"],
+        "Total":       ["over","under","total","o/u"],
+        "Parlay":      ["parlay","combo","combined"],
+    }
+
+    def _bet_categorie(bet_type: str) -> str:
+        bt = (bet_type or "").lower()
+        for cat, keywords in _BET_CATEGORIEEN.items():
+            if any(k in bt for k in keywords):
+                return cat
+        return "Overig"
+
+    _hf1, _hf2, _hf3, _hf4 = st.columns(4)
+    _hist_sport = _hf1.selectbox("Sport",
         ["Alles","NHL","NBA","MLB","Voetbal"], key="hist_sport_flt")
-    _hist_btype = _hf2.selectbox("Filter bet type",
-        ["Alles","Goals","Assists","Shots","Points","Hits","Home Runs","Strikeouts"],
-        key="hist_btype_flt")
+    _hist_cat   = _hf2.selectbox("Bet categorie",
+        ["Alles","Player Prop","Moneyline","Spread","Total","Parlay","Overig"],
+        key="hist_cat_flt")
+    _hist_zoek  = _hf3.text_input("🔍 Speler", key="hist_zoek", placeholder="naam...")
+    _hist_sort  = _hf4.selectbox("Sortering", ["Nieuwste eerst","Oudste eerst"], key="hist_sort")
     st.markdown("---")
 
     _all_hist = db.load_history()
+    if _hist_sort == "Oudste eerst":
+        _all_hist = list(reversed(_all_hist))
 
     if not _all_hist:
         st.info("Nog geen analyses opgeslagen. Voer een analyse uit om de geschiedenis te vullen.")
     else:
+        _used_sids = db._get_used_session_ids()
+        _shown = 0
         for entry in _all_hist:
-            datum = entry.get("datum","")
-            tijd  = entry.get("tijd","")
+            datum   = entry.get("datum","")
+            tijd    = entry.get("tijd","")
+            _sid    = entry.get("session_id","")
+            _is_used = _sid in _used_sids and bool(_sid)
             _alle_p = entry.get("alle_props_json") or []
             if isinstance(_alle_p, str):
                 try:    _alle_p = json.loads(_alle_p)
@@ -1252,41 +1584,73 @@ with tab_history:
             if not _alle_p:
                 _alle_p = [
                     {
-                        "player":   b.get("speler", b.get("player","")),
-                        "sport":    b.get("sport",""),
-                        "bet_type": b.get("bet", b.get("bet_type","")),
-                        "odds":     b.get("odds",""),
-                        "ev":       float(str(b.get("ev_score","0")).replace("+","")) if b.get("ev_score") else float(b.get("ev") or 0),
+                        "player":    b.get("speler", b.get("player","")),
+                        "sport":     b.get("sport",""),
+                        "bet_type":  b.get("bet", b.get("bet_type","")),
+                        "odds":      b.get("odds",""),
+                        "ev":        float(str(b.get("ev_score","0")).replace("+","")) if b.get("ev_score") else float(b.get("ev") or 0),
                         "composite": 0,
-                        "rating":   b.get("rating",""),
+                        "rating":    b.get("rating",""),
                     }
                     for b in (entry.get("top5") or [])
                 ]
 
-            # Filters
+            # Filters toepassen
             _filt_p = _alle_p
             if _hist_sport != "Alles":
                 _filt_p = [p for p in _filt_p if _hist_sport.lower() in (p.get("sport") or "").lower()]
-            if _hist_btype != "Alles":
-                _filt_p = [p for p in _filt_p if _hist_btype.lower() in (p.get("bet_type") or "").lower()]
+            if _hist_cat != "Alles":
+                _filt_p = [p for p in _filt_p if _bet_categorie(p.get("bet_type","")) == _hist_cat]
+            if _hist_zoek:
+                _filt_p = [p for p in _filt_p if _hist_zoek.lower() in (p.get("player","") + p.get("speler","")).lower()]
             if not _filt_p:
                 continue
 
-            with st.expander(f"📅 {datum} om {tijd}  —  {len(_filt_p)} props", expanded=False):
-                for _hp in _filt_p:
-                    _hpc1, _hpc2, _hpc3, _hpc4 = st.columns([3, 1, 1, 1])
-                    _hpc1.write(f"**{_hp.get('player', _hp.get('speler',''))}** — {_hp.get('bet_type', _hp.get('bet',''))}")
+            _shown += 1
+            _bewaard_badge = " 📌 *bewaard*" if _is_used else ""
+            _sport_set = {p.get("sport","") for p in _filt_p if p.get("sport")}
+            _sport_str = " · ".join(sorted(_sport_set)) if _sport_set else ""
+
+            with st.expander(
+                f"📅 {datum} {tijd}  ·  {len(_filt_p)} props  ·  {_sport_str}{_bewaard_badge}",
+                expanded=False,
+            ):
+                for _idx_hp, _hp in enumerate(_filt_p):
+                    _player   = _hp.get("player", _hp.get("speler",""))
+                    _bet_type = _hp.get("bet_type", _hp.get("bet",""))
+                    _cat_tag  = _bet_categorie(_bet_type)
+                    _hpc1, _hpc2, _hpc3, _hpc4, _hpc5 = st.columns([3, 1, 1, 1, 1])
+                    _hpc1.write(f"**{_player}** — {_bet_type}")
+                    _hpc1.caption(f"{_hp.get('sport','')} · {_cat_tag}")
                     _hpc2.write(f"@ {_hp.get('odds','—')}")
                     _hev   = float(_hp.get("ev") or 0)
                     _hev_s = f"+{_hev:.3f}" if _hev >= 0 else f"{_hev:.3f}"
                     _hpc3.write(f"EV: {_hev_s}")
-                    _hpk   = f"hpar_{datum}_{_hp.get('player',_hp.get('speler',''))}_{_hp.get('bet_type',_hp.get('bet',''))}"
-                    if _hpc4.button("🎯 Parlay", key=_hpk[:60]):
-                        st.session_state.parlay_legs.append({
-                            "player":   _hp.get("player", _hp.get("speler","")),
+                    # Shortlist knop
+                    _hshk = f"hshort_{datum}_{_sid}_{_idx_hp}"
+                    if _hpc4.button("⭐ Shortlist", key=_hshk[:60]):
+                        _fid_h = db.make_fav_id(_player, _bet_type)
+                        db.add_favoriet(_fid_h, {
+                            "player":   _player,
+                            "bet_type": _bet_type,
+                            "odds":     float(_hp.get("odds") or 1.5),
+                            "ev":       _hev,
                             "sport":    _hp.get("sport",""),
-                            "bet_type": _hp.get("bet_type", _hp.get("bet","")),
+                            "source_session_id": _sid,
+                        }, source_session_id=_sid)
+                        st.success(f"✅ {_player} toegevoegd aan Shortlist")
+                        st.rerun()
+                    # Parlay knop
+                    _hpk = f"hpar_{datum}_{_sid}_{_idx_hp}"
+                    if _hpc5.button("🎯 Parlay", key=_hpk[:60]):
+                        st.session_state.parlay_legs.append({
+                            "player":   _player,
+                            "sport":    _hp.get("sport",""),
+                            "bet_type": _bet_type,
                             "odds":     float(_hp.get("odds") or 1.5),
                             "hit_rate": float(_hp.get("composite") or 0.5),
                         })
                         st.rerun()
+
+        if _shown == 0:
+            st.info("Geen analyses gevonden met deze filters.")
