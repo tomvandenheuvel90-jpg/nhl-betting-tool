@@ -190,7 +190,7 @@ st.markdown("""
   <span style="font-size:2rem;">🎯</span>
   <div>
     <div style="font-size:1.5rem;font-weight:800;color:#c4b5fd;letter-spacing:-0.3px;">Bet Analyzer</div>
-    <div style="color:#6060a0;font-size:0.82rem;margin-top:2px;">
+    <div style="color:#8888b8;font-size:0.82rem;margin-top:2px;">
       Linemate + Flashscore &nbsp;·&nbsp; NHL · NBA · MLB · Voetbal
     </div>
   </div>

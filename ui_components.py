@@ -31,11 +31,11 @@ def render_option_box(col, opt: dict, best: dict):
         st.markdown(
             f"<div style='background:{bg};border:1px solid {bc};"
             f"border-radius:8px;padding:10px;text-align:center;'>"
-            f"<div style='font-size:0.75rem;color:#8080b0;margin-bottom:4px'>"
+            f"<div style='font-size:0.75rem;color:#a0a0c8;margin-bottom:4px'>"
             f"{opt['label']}{'  ⭐' if is_best else ''}</div>"
             f"<div style='font-size:1.1rem;font-weight:700;color:#fff'>"
             f"Odds: {'{:.2f}'.format(opt['odds']) if opt['odds'] else '—'}</div>"
-            f"<div style='color:#8080b0;font-size:0.85rem'>Model: {opt['prob']*100:.1f}%</div>"
+            f"<div style='color:#a0a0c8;font-size:0.85rem'>Model: {opt['prob']*100:.1f}%</div>"
             f"<div style='font-size:1.0rem;font-weight:700;color:{bc}'>EV {ev_str}</div>"
             f"<div style='font-size:0.8rem;color:{bc}'>{rat}</div></div>",
             unsafe_allow_html=True,
@@ -115,11 +115,11 @@ def _match_card_header(home: str, away: str, time_str: str, icon: str, comp: str
     with hcol:
         title = f"#### {icon} {home}  vs  {away}"
         if comp:
-            title += f"  <small style='color:#6060a0'> {comp}</small>"
+            title += f"  <small style='color:#8888b8'> {comp}</small>"
         st.markdown(title, unsafe_allow_html=True)
     with tcol:
         if time_str:
-            st.markdown(f"<div style='text-align:right;color:#8080b0;padding-top:8px'>⏰ {time_str}</div>",
+            st.markdown(f"<div style='text-align:right;color:#a0a0c8;padding-top:8px'>⏰ {time_str}</div>",
                         unsafe_allow_html=True)
 
 
@@ -156,7 +156,7 @@ def render_nhl_match_cards(match_analyses: list):
                                    f"L10: {hf.get('last10','—')}  \n"
                                    f"Reeks: {hf.get('streak','—')}  \nThuis: {hf.get('home_record','—')}")
                 with c2:
-                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#8080b0;'>"
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c8;'>"
                                 f"<div>xGoals: {probs.get('lH',0):.2f} – {probs.get('lA',0):.2f}</div></div>",
                                 unsafe_allow_html=True)
                 with c3:
@@ -170,7 +170,7 @@ def render_nhl_match_cards(match_analyses: list):
             opt_cols = st.columns(3)
             for col, opt in zip(opt_cols, ma["options"]):
                 render_option_box(col, opt, best)
-            st.markdown(f"<div style='color:#6060a0;font-size:0.75rem;margin-top:8px;'>"
+            st.markdown(f"<div style='color:#8888b8;font-size:0.75rem;margin-top:8px;'>"
                         f"Odds bron: {odds_src}  ·  "
                         f"Model: Poisson (xG {probs.get('lH',0):.2f}–{probs.get('lA',0):.2f})</div>",
                         unsafe_allow_html=True)
@@ -209,7 +209,7 @@ def render_soccer_match_cards(match_analyses: list):
                         st.caption(f"GF avg: {hf.get('gf_avg',0):.2f}\n"
                                    f"GA avg: {hf.get('ga_avg',0):.2f}\nForm: {hf.get('form','—')}")
                 with c2:
-                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#8080b0;'>"
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c8;'>"
                                 f"<div>xG: {probs.get('lH',0):.2f} – {probs.get('lA',0):.2f}</div></div>",
                                 unsafe_allow_html=True)
                 with c3:
@@ -222,7 +222,7 @@ def render_soccer_match_cards(match_analyses: list):
             opt_cols = st.columns(3)
             for col, opt in zip(opt_cols, ma["options"]):
                 render_option_box(col, opt, best)
-            st.markdown(f"<div style='color:#6060a0;font-size:0.75rem;margin-top:8px;'>"
+            st.markdown(f"<div style='color:#8888b8;font-size:0.75rem;margin-top:8px;'>"
                         f"Odds bron: {ma.get('odds_bron','')}  ·  "
                         f"xG {probs.get('lH',0):.2f}–{probs.get('lA',0):.2f}</div>",
                         unsafe_allow_html=True)
@@ -263,7 +263,7 @@ def render_nba_match_cards(match_analyses: list):
                                    f"Thuis: {hf.get('home_record','—')}")
                 with c2:
                     margin = probs.get("exp_margin", 0)
-                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#8080b0;'>"
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c8;'>"
                                 f"<div>Verwachte marge:</div>"
                                 f"<div style='font-size:1.2rem;font-weight:700;color:#fff'>{margin:+.1f} pts</div>"
                                 f"<div style='font-size:0.85rem;margin-top:4px'>"
@@ -280,7 +280,7 @@ def render_nba_match_cards(match_analyses: list):
             opt_cols = st.columns(min(len(ma["options"]), 4))
             for col, opt in zip(opt_cols, ma["options"]):
                 render_option_box(col, opt, best)
-            st.markdown(f"<div style='color:#6060a0;font-size:0.75rem;margin-top:8px;'>"
+            st.markdown(f"<div style='color:#8888b8;font-size:0.75rem;margin-top:8px;'>"
                         f"Odds bron: {ma.get('odds_bron','')}  ·  "
                         f"Marge model: {probs.get('exp_margin',0):+.1f} punten</div>",
                         unsafe_allow_html=True)
@@ -349,7 +349,7 @@ def render_mlb_match_cards(match_analyses: list):
                                    f"Runs avg: {hf.get('runs_avg',0):.2f}\n"
                                    f"Thuis: {hf.get('home_record','—')}")
                 with c2:
-                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#8080b0;'>"
+                    st.markdown(f"<div style='text-align:center;padding-top:12px;color:#a0a0c8;'>"
                                 f"<div>xRuns: {probs.get('lH',0):.2f} – {probs.get('lA',0):.2f}</div>"
                                 f"<div style='font-size:0.85rem;margin-top:4px'>"
                                 f"Run line: ±{ma.get('run_line',1.5):.1f}</div></div>",
@@ -370,7 +370,7 @@ def render_mlb_match_cards(match_analyses: list):
             _src = f"Odds bron: {ma.get('odds_bron','')}  ·  xRuns {probs.get('lH',0):.2f}–{probs.get('lA',0):.2f}"
             if hp or ap:
                 _src += "  ·  model incl. pitcher ERA"
-            st.markdown(f"<div style='color:#6060a0;font-size:0.75rem;margin-top:8px;'>{_src}</div>",
+            st.markdown(f"<div style='color:#8888b8;font-size:0.75rem;margin-top:8px;'>{_src}</div>",
                         unsafe_allow_html=True)
             render_fav_button(ma, "MLB", "MLB API")
             st.markdown("</div>", unsafe_allow_html=True)

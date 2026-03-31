@@ -6,26 +6,27 @@ Importeer APP_CSS en inject via st.markdown(APP_CSS, unsafe_allow_html=True)
 APP_CSS = """
 <style>
 /* ═══════════════════════════════════════════════════════
-   DARK PRO THEME — BetAnalyzer
+   DARK PRO THEME — BetAnalyzer  (contrast-verbeterd)
    Palette:
-     bg-deep:    #08081a   (main background)
-     bg-surface: #11112b   (cards / sidepanels)
-     bg-raised:  #1a1a3e   (hover / nested)
-     primary:    #7c3aed   (violet)
-     primary-lg: #9d5ff5   (hover)
-     glow:       rgba(124,58,237,0.18)
-     text:       #dde0f5   (body)
-     text-muted: #7070a0   (secondary)
-     border:     #2a2a50   (subtle border)
-     green:      #4ade80
-     yellow:     #facc15
-     red:        #f87171
+     bg-deep:      #08081a   (main background)
+     bg-surface:   #11112b   (cards / sidepanels)
+     bg-raised:    #1a1a3e   (hover / nested)
+     primary:      #7c3aed   (violet)
+     primary-lg:   #9d5ff5   (hover)
+     glow:         rgba(124,58,237,0.18)
+     text:         #e8eaf6   (body — iets helderder)
+     text-muted:   #a8aace   (secondary — was #7070a0, nu leesbaar)
+     text-subtle:  #8888b8   (tertiary — was #6060a0)
+     border:       #2e2e56   (subtle border — iets lichter)
+     green:        #4ade80
+     yellow:       #facc15
+     red:          #f87171
 ═══════════════════════════════════════════════════════ */
 
 /* ── Global background & typography ── */
 .stApp {
   background: #08081a !important;
-  color: #dde0f5 !important;
+  color: #e8eaf6 !important;
   font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
 }
 
@@ -39,18 +40,30 @@ APP_CSS = """
 /* ── Top Streamlit header bar ── */
 [data-testid="stHeader"] {
   background: linear-gradient(135deg, #0d0d25 0%, #12103a 100%) !important;
-  border-bottom: 1px solid #2a2a50 !important;
+  border-bottom: 1px solid #2e2e56 !important;
 }
 
-/* ── App title / h1 ── */
+/* ── Headings ── */
 h1 { color: #c4b5fd !important; letter-spacing: -0.5px; }
-h2 { color: #a78bfa !important; }
-h3 { color: #a78bfa !important; }
+h2 { color: #b0a0f8 !important; }
+h3 { color: #b0a0f8 !important; }
 h4 { color: #c4b5fd !important; }
 
-/* ── Markdown text ── */
-p, li, label { color: #dde0f5 !important; }
-.stMarkdown p { color: #dde0f5 !important; }
+/* ── Markdown & body text ── */
+p, li { color: #e8eaf6 !important; }
+.stMarkdown p { color: #e8eaf6 !important; }
+
+/* ── Form labels — waren soms onzichtbaar ── */
+label,
+.stTextInput label,
+.stNumberInput label,
+.stSelectbox label,
+.stDateInput label,
+.stCheckbox label,
+[data-testid="stWidgetLabel"] {
+  color: #c8caee !important;
+  font-weight: 500 !important;
+}
 
 /* ── Tabs ── */
 .stTabs [data-baseweb="tab-list"] {
@@ -58,11 +71,11 @@ p, li, label { color: #dde0f5 !important; }
   border-radius: 12px !important;
   padding: 4px !important;
   gap: 2px !important;
-  border: 1px solid #2a2a50 !important;
+  border: 1px solid #2e2e56 !important;
 }
 .stTabs [data-baseweb="tab"] {
   background: transparent !important;
-  color: #7070a0 !important;
+  color: #a8aace !important;
   border-radius: 8px !important;
   font-weight: 600 !important;
   font-size: 0.88rem !important;
@@ -82,7 +95,7 @@ p, li, label { color: #dde0f5 !important; }
 .stTabs [data-baseweb="tab-highlight"] { display: none !important; }
 .stTabs [data-baseweb="tab-border"]    { display: none !important; }
 
-/* ── Primary button (Analyseer) ── */
+/* ── Primary button ── */
 .stButton > button[kind="primary"],
 .stButton > button[data-testid="baseButton-primary"] {
   background: linear-gradient(135deg, #5b21b6 0%, #7c3aed 100%) !important;
@@ -103,7 +116,7 @@ p, li, label { color: #dde0f5 !important; }
 }
 .stButton > button[kind="primary"]:disabled {
   background: #2a2a50 !important;
-  color: #4a4a70 !important;
+  color: #6868a0 !important;
   box-shadow: none !important;
   transform: none !important;
 }
@@ -111,9 +124,9 @@ p, li, label { color: #dde0f5 !important; }
 /* ── Secondary / normal buttons ── */
 .stButton > button[kind="secondary"],
 .stButton > button:not([kind="primary"]) {
-  background: #11112b !important;
+  background: #14142e !important;
   color: #c4b5fd !important;
-  border: 1px solid #3a3a70 !important;
+  border: 1px solid #3e3e72 !important;
   border-radius: 8px !important;
   font-weight: 600 !important;
   transition: all 0.2s ease !important;
@@ -138,17 +151,22 @@ p, li, label { color: #dde0f5 !important; }
 }
 [data-testid="stFileUploaderDropzone"] p,
 [data-testid="stFileUploaderDropzone"] span {
-  color: #8080c0 !important;
+  color: #a8aace !important;
 }
 
-/* ── Text inputs & password ── */
+/* ── Text inputs, number inputs, selectboxes ── */
 .stTextInput > div > div > input,
 .stNumberInput > div > div > input,
-.stSelectbox > div > div {
-  background: #11112b !important;
-  border: 1px solid #2a2a50 !important;
+.stSelectbox > div > div,
+.stDateInput > div > div > input {
+  background: #13132e !important;
+  border: 1px solid #2e2e56 !important;
   border-radius: 8px !important;
-  color: #dde0f5 !important;
+  color: #e8eaf6 !important;
+}
+.stTextInput > div > div > input::placeholder,
+.stNumberInput > div > div > input::placeholder {
+  color: #6868a0 !important;
 }
 .stTextInput > div > div > input:focus,
 .stNumberInput > div > div > input:focus {
@@ -156,39 +174,115 @@ p, li, label { color: #dde0f5 !important; }
   box-shadow: 0 0 0 2px rgba(124,58,237,0.25) !important;
 }
 
+/* ── Selectbox dropdown list ── */
+[data-baseweb="popover"] {
+  background: #13132e !important;
+}
+[data-baseweb="menu"] {
+  background: #13132e !important;
+  border: 1px solid #2e2e56 !important;
+}
+[data-baseweb="option"] {
+  background: #13132e !important;
+  color: #e8eaf6 !important;
+}
+[data-baseweb="option"]:hover {
+  background: #1a1a3e !important;
+  color: #c4b5fd !important;
+}
+
+/* ── Expanders ── */
+[data-testid="stExpander"] {
+  background: #11112b !important;
+  border: 1px solid #2e2e56 !important;
+  border-radius: 10px !important;
+}
+[data-testid="stExpander"] summary {
+  color: #c4b5fd !important;
+  font-weight: 600 !important;
+}
+[data-testid="stExpander"] summary:hover {
+  color: #e0d4ff !important;
+}
+[data-testid="stExpander"] > div > div {
+  color: #e8eaf6 !important;
+}
+
 /* ── Metrics ── */
 [data-testid="stMetric"] {
   background: #11112b !important;
-  border: 1px solid #2a2a50 !important;
+  border: 1px solid #2e2e56 !important;
   border-radius: 10px !important;
   padding: 12px 16px !important;
 }
 [data-testid="stMetricValue"] { color: #c4b5fd !important; font-weight: 700 !important; }
-[data-testid="stMetricLabel"] { color: #7070a0 !important; }
+[data-testid="stMetricLabel"] { color: #a8aace !important; font-weight: 500 !important; }
 [data-testid="stMetricDelta"]  { font-weight: 600 !important; }
 
-/* ── Success / Warning / Error alerts ── */
-[data-testid="stAlert"][kind="success"], .stSuccess > div {
+/* ── Alerts ── */
+[data-testid="stAlert"][kind="success"], .stSuccess > div,
+div[data-testid="stAlertContainer"][data-baseweb="notification"][kind="positive"] {
   background: rgba(74,222,128,0.12) !important;
-  border: 1px solid rgba(74,222,128,0.3) !important;
-  border-radius: 10px !important; color: #4ade80 !important;
+  border: 1px solid rgba(74,222,128,0.35) !important;
+  border-radius: 10px !important;
+  color: #6effa0 !important;
 }
-[data-testid="stAlert"][kind="warning"], .stWarning > div {
-  background: rgba(250,204,21,0.10) !important;
-  border: 1px solid rgba(250,204,21,0.25) !important;
-  border-radius: 10px !important; color: #facc15 !important;
+[data-testid="stAlert"][kind="warning"], .stWarning > div,
+div[data-testid="stAlertContainer"][kind="warning"] {
+  background: rgba(250,204,21,0.12) !important;
+  border: 1px solid rgba(250,204,21,0.35) !important;
+  border-radius: 10px !important;
+  color: #ffe566 !important;
 }
-[data-testid="stAlert"][kind="error"], .stError > div {
-  background: rgba(248,113,113,0.10) !important;
-  border: 1px solid rgba(248,113,113,0.25) !important;
-  border-radius: 10px !important; color: #f87171 !important;
+[data-testid="stAlert"][kind="error"], .stError > div,
+div[data-testid="stAlertContainer"][kind="error"] {
+  background: rgba(248,113,113,0.12) !important;
+  border: 1px solid rgba(248,113,113,0.35) !important;
+  border-radius: 10px !important;
+  color: #ff9090 !important;
+}
+[data-testid="stAlert"][kind="info"], .stInfo > div,
+div[data-testid="stAlertContainer"][kind="info"] {
+  background: rgba(99,179,237,0.12) !important;
+  border: 1px solid rgba(99,179,237,0.35) !important;
+  border-radius: 10px !important;
+  color: #90cff5 !important;
 }
 
-/* ── Caption / small text ── */
-.stCaption, [data-testid="stCaptionContainer"] { color: #6060a0 !important; }
+/* ── Captions & small text ── */
+.stCaption,
+[data-testid="stCaptionContainer"],
+small {
+  color: #8888b8 !important;
+}
+
+/* ── Dataframe / table ── */
+[data-testid="stDataFrame"] table,
+.dvn-scroller {
+  background: #11112b !important;
+  color: #e8eaf6 !important;
+}
+[data-testid="stDataFrame"] th {
+  background: #1a1a3e !important;
+  color: #c4b5fd !important;
+  font-weight: 700 !important;
+}
+[data-testid="stDataFrame"] td {
+  color: #dde0f5 !important;
+  border-color: #2e2e56 !important;
+}
+
+/* ── Status widget (analyse voortgang) ── */
+[data-testid="stStatusWidget"] {
+  background: #11112b !important;
+  border: 1px solid #2e2e56 !important;
+  border-radius: 10px !important;
+  color: #e8eaf6 !important;
+}
+[data-testid="stStatusWidget"] p { color: #c8caee !important; }
 
 /* ── Horizontal dividers ── */
-hr { border-color: #2a2a50 !important; margin: 1.5rem 0 !important; }
+hr { border-color: #2e2e56 !important; margin: 1.5rem 0 !important; }
 
 /* ── Spinner ── */
 .stSpinner > div > div { border-top-color: #7c3aed !important; }
@@ -209,10 +303,10 @@ hr { border-color: #2a2a50 !important; margin: 1.5rem 0 !important; }
 .ev-positive    { color: #4ade80 !important; font-size: 1.3rem; font-weight: 800; }
 .ev-low         { color: #facc15 !important; font-size: 1.3rem; font-weight: 800; }
 
-/* ── Sidebar (if ever shown) ── */
+/* ── Sidebar ── */
 [data-testid="stSidebar"] {
   background: #0d0d28 !important;
-  border-right: 1px solid #2a2a50 !important;
+  border-right: 1px solid #2e2e56 !important;
 }
 
 /* ── Progress bar ── */
@@ -225,8 +319,10 @@ hr { border-color: #2a2a50 !important; margin: 1.5rem 0 !important; }
 
 /* ── Checkbox ── */
 [data-testid="stCheckbox"] > label > div[role="checkbox"] { border-color: #5b21b6 !important; }
+[data-testid="stCheckbox"] span { color: #c8caee !important; }
 
 /* ── Tooltip ── */
-[data-testid="stTooltipIcon"] { color: #7070a0 !important; }
+[data-testid="stTooltipIcon"] { color: #a8aace !important; }
+
 </style>
 """
