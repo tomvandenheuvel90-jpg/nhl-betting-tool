@@ -264,24 +264,57 @@ with tab_dashboard:
     _dsh_datum_str = datetime.date.today().strftime("%-d %B %Y")
     st.caption(f"📅 {_dsh_datum_str}  ·  {len(_dsh_open)} open {'bet' if len(_dsh_open) == 1 else 'bets'}  ·  {len(_dsh_favorieten)} in Shortlist")
 
-    # ── KPI-rij ───────────────────────────────────────────────────────────────
-    _k1, _k2, _k3, _k4, _k5 = st.columns(5)
+    # ── KPI-kaartjes (custom HTML — geen truncatie, hover toont volledige waarde) ──
+    def _kpi_card(icon: str, label: str, value: str, sub: str = "", positive: bool = None, tooltip: str = "") -> str:
+        if positive is True:
+            val_color = "#4ade80"
+        elif positive is False:
+            val_color = "#f87171"
+        else:
+            val_color = "#ffffff"
+        sub_html = f"<div style='font-size:0.78rem;color:#888;margin-top:2px;'>{sub}</div>" if sub else ""
+        title_attr = f'title="{tooltip}"' if tooltip else ""
+        return (
+            f"<div {title_attr} style='background:#11112b;border:1px solid #2a2a58;border-radius:12px;"
+            f"padding:16px 20px;text-align:center;cursor:default;'>"
+            f"<div style='font-size:0.82rem;color:#a0a0c0;margin-bottom:6px;'>{icon} {label}</div>"
+            f"<div style='font-size:1.6rem;font-weight:800;color:{val_color};line-height:1.2;'>{value}</div>"
+            f"{sub_html}"
+            f"</div>"
+        )
 
-    if _dsh_huidig_saldo is not None:
-        _k1.metric("🏦 Bankroll", f"€{_dsh_huidig_saldo:.0f}",
-                   delta=f"€{_dsh_total_wl:+.0f}" if _dsh_total_wl else None)
-    else:
-        _k1.metric("🏦 Bankroll", "—", help="Stel je startbankroll in via de Bankroll tab")
+    # Rij 1: Bankroll · P&L week · ROI
+    _bk_val     = f"€{_dsh_huidig_saldo:.2f}" if _dsh_huidig_saldo is not None else "—"
+    _bk_sub     = f"start €{_dsh_start_bk:.2f}  ·  P&L {_dsh_total_wl:+.2f}" if _dsh_start_bk > 0 else "Stel startbankroll in via Bankroll tab"
+    _bk_pos     = (True if _dsh_total_wl > 0 else False) if _dsh_start_bk > 0 and _dsh_total_wl != 0 else None
+    _wk_val     = f"€{_dsh_week_wl:+.2f}" if _dsh_week_gedaan else "—"
+    _wk_sub     = f"{len(_dsh_week_gedaan)} bets deze week" if _dsh_week_gedaan else "Geen bets deze week"
+    _wk_pos     = (True if _dsh_week_wl > 0 else False) if _dsh_week_gedaan and _dsh_week_wl != 0 else None
+    _roi_val    = f"{_dsh_roi:+.2f}%" if _dsh_gedaan else "—"
+    _roi_sub    = f"over {len(_dsh_gedaan)} afgeronde bets" if _dsh_gedaan else ""
+    _roi_pos    = (True if _dsh_roi > 0 else False) if _dsh_gedaan and _dsh_roi != 0 else None
 
-    _k2.metric("💰 P&L (week)",
-               f"€{_dsh_week_wl:+.0f}" if _dsh_week_gedaan else "—",
-               delta=f"{len(_dsh_week_gedaan)} bets" if _dsh_week_gedaan else None)
-    _k3.metric("📈 ROI",    f"{_dsh_roi:+.1f}%" if _dsh_gedaan else "—")
-    _k4.metric("🎯 Win%",   f"{_dsh_wr:.0f}%"   if _dsh_gedaan else "—",
-               delta=f"{_dsh_won}/{len(_dsh_gedaan)}" if _dsh_gedaan else None)
-    _streak_soort = "W" if _dsh_streak_type == "gewonnen" else ("L" if _dsh_streak_type == "verloren" else "")
-    _streak_label = f"{_dsh_streak_cnt}× {_streak_soort}" if _dsh_gedaan else "—"
-    _k5.metric(f"{_dsh_streak_icon} Streak", _streak_label)
+    _kr1, _kr2, _kr3 = st.columns(3)
+    _kr1.markdown(_kpi_card("🏦", "Bankroll", _bk_val, _bk_sub, _bk_pos, tooltip=_bk_val), unsafe_allow_html=True)
+    _kr2.markdown(_kpi_card("💰", "P&L deze week", _wk_val, _wk_sub, _wk_pos, tooltip=_wk_val), unsafe_allow_html=True)
+    _kr3.markdown(_kpi_card("📈", "ROI (totaal)", _roi_val, _roi_sub, _roi_pos, tooltip=_roi_val), unsafe_allow_html=True)
+
+    # Rij 2: Win% · Streak · Open bets teller
+    _wr_val     = f"{_dsh_wr:.1f}%" if _dsh_gedaan else "—"
+    _wr_sub     = f"{_dsh_won} gewonnen / {len(_dsh_gedaan) - _dsh_won} verloren" if _dsh_gedaan else ""
+    _wr_pos     = (True if _dsh_wr >= 55 else False) if _dsh_gedaan else None
+    _streak_soort = "gewonnen" if _dsh_streak_type == "gewonnen" else ("verloren" if _dsh_streak_type == "verloren" else "")
+    _streak_val = f"{_dsh_streak_cnt}×" if _dsh_gedaan else "—"
+    _streak_sub = _streak_soort if _dsh_gedaan else ""
+    _streak_pos = (True if _dsh_streak_type == "gewonnen" else False) if _dsh_gedaan else None
+    _open_val   = str(len(_dsh_open))
+    _open_sub   = "open weddenschappen" if len(_dsh_open) != 1 else "open weddenschap"
+    _open_pos   = None if len(_dsh_open) == 0 else False
+
+    _kr4, _kr5, _kr6 = st.columns(3)
+    _kr4.markdown(_kpi_card("🎯", "Win rate", _wr_val, _wr_sub, _wr_pos, tooltip=_wr_val), unsafe_allow_html=True)
+    _kr5.markdown(_kpi_card(_dsh_streak_icon, "Streak", _streak_val, _streak_sub, _streak_pos), unsafe_allow_html=True)
+    _kr6.markdown(_kpi_card("⏳", "Open bets", _open_val, _open_sub, _open_pos), unsafe_allow_html=True)
 
     st.markdown("---")
 
