@@ -1570,7 +1570,7 @@ with tab_history:
     else:
         _used_sids = db._get_used_session_ids()
         _shown = 0
-        for entry in _all_hist:
+        for _entry_idx, entry in enumerate(_all_hist):
             datum   = entry.get("datum","")
             tijd    = entry.get("tijd","")
             _sid    = entry.get("session_id","")
@@ -1627,8 +1627,8 @@ with tab_history:
                     _hev_s = f"+{_hev:.3f}" if _hev >= 0 else f"{_hev:.3f}"
                     _hpc3.write(f"EV: {_hev_s}")
                     # Shortlist knop
-                    _hshk = f"hshort_{datum}_{_sid}_{_idx_hp}"
-                    if _hpc4.button("⭐ Shortlist", key=_hshk[:60]):
+                    _hshk = f"hshort_{_entry_idx}_{_idx_hp}"
+                    if _hpc4.button("⭐ Shortlist", key=_hshk):
                         _fid_h = db.make_fav_id(_player, _bet_type)
                         db.add_favoriet(_fid_h, {
                             "player":   _player,
@@ -1641,8 +1641,8 @@ with tab_history:
                         st.success(f"✅ {_player} toegevoegd aan Shortlist")
                         st.rerun()
                     # Parlay knop
-                    _hpk = f"hpar_{datum}_{_sid}_{_idx_hp}"
-                    if _hpc5.button("🎯 Parlay", key=_hpk[:60]):
+                    _hpk = f"hpar_{_entry_idx}_{_idx_hp}"
+                    if _hpc5.button("🎯 Parlay", key=_hpk):
                         st.session_state.parlay_legs.append({
                             "player":   _player,
                             "sport":    _hp.get("sport",""),
