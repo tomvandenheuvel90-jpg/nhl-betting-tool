@@ -370,6 +370,7 @@ def save_resultaten(results: list) -> None:
 def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> None:
     odds = float(fav.get("odds", 1.0))
     wl   = round(inzet * (odds - 1), 2) if uitkomst == "gewonnen" else round(-inzet, 2)
+    _is_parlay = str(fav_id).startswith("parlay_")
     row  = {
         "id":                fav_id,
         "datum":             fav.get("datum", datetime.date.today().isoformat()),
@@ -381,6 +382,7 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
         "winst_verlies":     wl,
         "sport":             fav.get("sport", ""),
         "ev_score":          fav.get("ev_score", 0.0),
+        "is_parlay":         _is_parlay,
         "source_session_id": fav.get("source_session_id", ""),
     }
     if _using_supabase:
@@ -388,9 +390,10 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
             _supabase.table("resultaten").upsert(row).execute()
             return
         except Exception:
-            # Kolom bestaat mogelijk nog niet — probeer zonder source_session_id
+            # Kolom bestaat mogelijk nog niet — probeer zonder optionele kolommen
             try:
-                row_basic = {k: v for k, v in row.items() if k != "source_session_id"}
+                row_basic = {k: v for k, v in row.items()
+                             if k not in ("source_session_id", "is_parlay")}
                 _supabase.table("resultaten").upsert(row_basic).execute()
                 return
             except Exception:

@@ -196,12 +196,15 @@ label,
   background: #11112b !important;
   border: 1px solid #2e2e56 !important;
   border-radius: 10px !important;
+  overflow: hidden !important;  /* zorgt dat border-radius ook header afknipt */
 }
 [data-testid="stExpander"] summary {
+  background: #11112b !important;  /* header zelfde donkere achtergrond als card body */
   color: #c4b5fd !important;
   font-weight: 600 !important;
 }
 [data-testid="stExpander"] summary:hover {
+  background: #16163a !important;  /* subtiele hover-highlight */
   color: #e0d4ff !important;
 }
 [data-testid="stExpander"] > div > div {

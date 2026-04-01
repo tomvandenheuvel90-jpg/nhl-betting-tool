@@ -556,7 +556,7 @@ with tab_analyse:
                         for i, bet in enumerate(bets):
                             enriched.append(enrich_bet(bet, cache, linemate_weight=lm_w, season_weight=s_w))
                             prog.progress((i + 1) / len(bets))
-                        enriched.sort(key=lambda x: x["ev"], reverse=True)
+                        enriched.sort(key=lambda x: float(x.get("ev") or 0), reverse=True)
                         st.write(f"✅ {len(enriched)} props gescoord")
 
                         # Bet365 verificatie (optioneel)
@@ -692,6 +692,7 @@ with tab_analyse:
         res = st.session_state.last_analysis
 
         enriched              = res["enriched"]
+        enriched_ranked       = res.get("enriched_ranked", [])
         top3_out              = res["top3"]
         flashscore_text       = res["flashscore"]
         nhl_match_analyses    = res.get("nhl_match_analyses", [])
@@ -760,14 +761,15 @@ with tab_analyse:
                         st.success(f"✅ Parlay {_api} opgeslagen!")
                         st.rerun()
 
-            # Alle props
+            # Alle props — gesorteerd van beste naar slechtste EV (enriched_ranked)
+            _display_props = enriched_ranked if enriched_ranked else enriched
             st.markdown("---")
             st.markdown("### 📊 Alle props")
             _fav_ids_set = {f["id"] for f in db.load_favorieten()}
             _cur_sid     = st.session_state.get("current_session_id", "")
-            for i, bet in enumerate(enriched, 1):
+            for i, bet in enumerate(_display_props, 1):
                 _is_fav = db.make_fav_id(bet["player"], bet["bet_type"]) in _fav_ids_set
-                render_bet_card(bet, i, len(enriched), is_fav=_is_fav, session_id=_cur_sid)
+                render_bet_card(bet, i, len(_display_props), is_fav=_is_fav, session_id=_cur_sid)
 
         st.caption("⚠️ Statistische analyse ter ondersteuning. Wedden brengt financiële risico's. Speel verantwoord.")
 
@@ -1002,12 +1004,45 @@ with tab_bankroll:
                     return False
             except Exception:
                 pass
-        if _bk_kind == "Singles" and r.get("is_parlay"): return False
-        if _bk_kind == "Parlays" and not r.get("is_parlay"): return False
+        # Detecteer parlay via id-prefix (robuust voor bestaande records zonder is_parlay=True)
+        _r_is_parlay = str(r.get("id","")).startswith("parlay_") or bool(r.get("is_parlay"))
+        if _bk_kind == "Singles" and _r_is_parlay: return False
+        if _bk_kind == "Parlays" and not _r_is_parlay: return False
         return True
 
     _alle_res = [r for r in db.load_resultaten() if _bk_filter(r)]
     _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren")]
+
+    # ── Parlays laden (één keer, hergebruikt voor per-sport en Parlay ROI) ────
+    _all_parlays_bk     = db.load_parlays()
+    _parlays_bk_map     = {p["id"]: p for p in _all_parlays_bk}
+
+    # _gedaan_sport: parlay-entries uitgebreid naar losse sport-legs voor per-sport stats
+    # Elke leg krijgt inzet/P&L proportioneel toegewezen (inzet / aantal legs).
+    def _expand_parlay_legs(gedaan, parlays_map):
+        result = []
+        for r in gedaan:
+            r_id = str(r.get("id", ""))
+            if r_id.startswith("parlay_"):
+                prl = parlays_map.get(r_id[len("parlay_"):], {})
+                legs = prl.get("props_json") or []
+                n = max(len(legs), 1)
+                for leg in legs:
+                    result.append({
+                        "sport":         leg.get("sport", "") or "Parlay",
+                        "uitkomst":      r["uitkomst"],
+                        "inzet":         round(r.get("inzet", 0) / n, 2),
+                        "winst_verlies": round(r.get("winst_verlies", 0) / n, 2),
+                        "ev_score":      0.0,
+                        "odds":          float(leg.get("odds", 1.0)),
+                        "bet":           leg.get("bet_type", ""),
+                        "speler":        leg.get("player", ""),
+                        "_parlay_id":    r_id,
+                    })
+            else:
+                result.append(r)
+        return result
+    _gedaan_sport = _expand_parlay_legs(_gedaan, _parlays_bk_map)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
     def _calc_streak(results: list) -> tuple:
@@ -1094,23 +1129,31 @@ with tab_bankroll:
         else:
             st.caption("Minimaal 2 afgeronde weddenschappen nodig voor een grafiek.")
 
-        # ── Per sport ────────────────────────────────────────────────────────
+        # ── Per sport ─────────────────────────────────────────────────────────
+        # Gebruikt _gedaan_sport: parlay-entries zijn uitgebreid naar losse sport-legs.
         st.markdown("---")
         st.markdown("#### 🏟️ Per sport")
-        for _bsport in sorted({r.get("sport","?") for r in _gedaan}):
-            _sr  = [r for r in _gedaan if r.get("sport","") == _bsport]
-            _sw  = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen")
-            _si  = sum(r.get("inzet", 0) for r in _sr)
-            _swl = sum(r.get("winst_verlies", 0) for r in _sr)
+        for _bsport in sorted({r.get("sport","?") for r in _gedaan_sport}):
+            _sr   = [r for r in _gedaan_sport if r.get("sport","") == _bsport]
+            _sw   = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen")
+            _si   = sum(r.get("inzet", 0) for r in _sr)
+            _swl  = sum(r.get("winst_verlies", 0) for r in _sr)
             _sroi = (_swl / _si * 100) if _si > 0 else 0.0
-            _icon = SPORT_ICONS.get(_bsport.upper(), "⚽")
+            # Onderscheid single bets vs parlay legs in dit sport-bucket
+            _sr_singles = [r for r in _sr if not r.get("_parlay_id")]
+            _sr_legs    = [r for r in _sr if r.get("_parlay_id")]
+            _icon = SPORT_ICONS.get(_bsport.upper(), "⚽") if _bsport != "Parlay" else "🎰"
             with st.expander(f"{_icon} {_bsport}  —  P&L: €{_swl:+.2f}  |  ROI: {_sroi:+.1f}%", expanded=True):
                 _sc1, _sc2, _sc3 = st.columns(3)
                 _sc1.metric("W / L",        f"{_sw} / {len(_sr) - _sw}")
                 _sc2.metric("Totale inzet", f"€{_si:.2f}")
                 _sc3.metric("P&L",          f"€{_swl:+.2f}")
+                if _sr_legs:
+                    _pl_w = sum(1 for r in _sr_legs if r.get("uitkomst") == "gewonnen")
+                    _pl_l = len(_sr_legs) - _pl_w
+                    st.caption(f"🎰 Waarvan parlay legs: {_pl_w}W / {_pl_l}L  ·  {len(_sr_singles)} singles")
                 _btype_wl = {}
-                for _r in _sr:
+                for _r in _sr_singles:  # alleen singles voor meest winstgevend bet type
                     _bt = _r.get("bet","?")
                     _btype_wl[_bt] = _btype_wl.get(_bt, 0.0) + _r.get("winst_verlies", 0)
                 if _btype_wl:
@@ -1192,7 +1235,7 @@ with tab_bankroll:
             st.dataframe(pd.DataFrame(_bt_rows), use_container_width=True, hide_index=True)
 
         # ── Parlay ROI ───────────────────────────────────────────────────────
-        _all_parlays_bk = db.load_parlays()
+        # _all_parlays_bk already loaded above (reuse, avoids duplicate DB call)
         if _all_parlays_bk:
             st.markdown("---")
             st.markdown("#### 🎯 Parlay ROI")
@@ -1467,14 +1510,15 @@ with tab_parlay:
                         _pw = round(_prl_inzet * _prl_odds - _prl_inzet, 2)
                         db.update_parlay(_prl_id, {"uitkomst":"gewonnen","winst_verlies":_pw})
                         # Sla ook op in resultaten zodat het zichtbaar is in Geplaatste Bets + Bankroll
-                        _prl_legs = _prl.get("legs", []) or []
+                        _prl_legs = _prl.get("props_json", []) or []  # was incorrectly "legs"
                         _prl_fav  = {
-                            "odds":    _prl_odds,
-                            "datum":   (_prl.get("datum") or datetime.date.today().isoformat())[:10],
-                            "speler":  f"🎰 Parlay ({len(_prl_legs)} legs)",
-                            "bet":     ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
-                            "sport":   "Parlay",
-                            "ev_score": float(_prl.get("ev_score") or 0.0),
+                            "odds":      _prl_odds,
+                            "datum":     datetime.date.today().isoformat(),  # settlement date, not creation date
+                            "speler":    f"🎰 Parlay ({len(_prl_legs)} legs)",
+                            "bet":       ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
+                            "sport":     "Parlay",
+                            "ev_score":  float(_prl.get("ev_score") or 0.0),
+                            "props_json": _prl_legs,  # bewaar legs voor per-sport breakdown
                         }
                         db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "gewonnen", _prl_inzet)
                         st.rerun()
@@ -1484,14 +1528,15 @@ with tab_parlay:
                         _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
                         db.update_parlay(_prl_id, {"uitkomst":"verloren","winst_verlies":round(-_prl_inzet,2)})
                         # Sla ook op in resultaten zodat het zichtbaar is in Geplaatste Bets + Bankroll
-                        _prl_legs = _prl.get("legs", []) or []
+                        _prl_legs = _prl.get("props_json", []) or []  # was incorrectly "legs"
                         _prl_fav  = {
-                            "odds":    _prl_odds,
-                            "datum":   (_prl.get("datum") or datetime.date.today().isoformat())[:10],
-                            "speler":  f"🎰 Parlay ({len(_prl_legs)} legs)",
-                            "bet":     ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
-                            "sport":   "Parlay",
-                            "ev_score": float(_prl.get("ev_score") or 0.0),
+                            "odds":      _prl_odds,
+                            "datum":     datetime.date.today().isoformat(),  # settlement date, not creation date
+                            "speler":    f"🎰 Parlay ({len(_prl_legs)} legs)",
+                            "bet":       ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
+                            "sport":     "Parlay",
+                            "ev_score":  float(_prl.get("ev_score") or 0.0),
+                            "props_json": _prl_legs,  # bewaar legs voor per-sport breakdown
                         }
                         db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "verloren", _prl_inzet)
                         st.rerun()
