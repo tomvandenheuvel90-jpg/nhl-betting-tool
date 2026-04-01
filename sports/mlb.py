@@ -361,6 +361,115 @@ def get_team_form_for_match(team_name: str) -> dict:
     return result
 
 
+# ─── Head-to-head resultaten ──────────────────────────────────────────────────
+
+def _find_team_id(team_name: str) -> int:
+    """Zoek MLB team ID op (deel van) naam of afkorting via de standings API. Geeft 0 als niet gevonden."""
+    season = _current_season()
+    data   = _get(
+        f"{BASE}/standings?leagueId=103,104&season={season}"
+        f"&standingsTypes=regularSeason&hydrate=team"
+    )
+    search = team_name.strip().lower()
+    for record in data.get("records", []):
+        for tr in record.get("teamRecords", []):
+            team   = tr.get("team", {})
+            name   = team.get("name", "").lower()
+            abbrev = team.get("abbreviation", "").lower()
+            if any([search == name, search in name, search == abbrev, abbrev in search]):
+                return int(team.get("id", 0))
+    return 0
+
+
+def get_h2h_results(home_name: str, away_name: str, n: int = 5) -> dict:
+    """
+    Haalt de laatste n head-to-head resultaten op tussen twee MLB teams via
+    de schedule API (huidig seizoen + vorig seizoen als aanvulling).
+
+    Win/verlies vanuit het perspectief van home_name (ongeacht locatie).
+
+    Geeft:
+      {"home_wins": int, "away_wins": int, "draws": int,
+       "total": int, "home_win_rate": float}
+    of {} als geen data beschikbaar is.
+    """
+    cache_key = (f"mlb_h2h_{home_name.strip().lower().replace(' ','_')}"
+                 f"_{away_name.strip().lower().replace(' ','_')}")
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    home_id = _find_team_id(home_name)
+    away_id = _find_team_id(away_name)
+    if not home_id or not away_id:
+        return {}
+
+    def _fetch_h2h(yr: int) -> list:
+        data   = _get(
+            f"{BASE}/schedule?sportId=1&teamId={home_id}"
+            f"&season={yr}&gameType=R&hydrate=team"
+        )
+        found  = []
+        for date in data.get("dates", []):
+            for g in date.get("games", []):
+                status = g.get("status", {}).get("abstractGameState", "")
+                if status != "Final":
+                    continue
+                teams  = g.get("teams", {})
+                ht     = teams.get("home", {})
+                at     = teams.get("away", {})
+                h_id   = ht.get("team", {}).get("id", 0)
+                a_id   = at.get("team", {}).get("id", 0)
+                # Alleen H2H tussen de twee opgegeven teams
+                if {h_id, a_id} != {home_id, away_id}:
+                    continue
+                h_score = ht.get("score")
+                a_score = at.get("score")
+                if h_score is None or a_score is None:
+                    continue
+                found.append({
+                    "home_id": h_id, "away_id": a_id,
+                    "home_s":  int(h_score), "away_s": int(a_score),
+                })
+        return found
+
+    season = _current_season()
+    games  = _fetch_h2h(season)
+    if len(games) < n:
+        try:
+            games += _fetch_h2h(season - 1)
+        except Exception:
+            pass
+
+    games = games[-n:]
+    if not games:
+        return {}
+
+    home_wins = away_wins = draws = 0
+    for g in games:
+        if g["home_id"] == home_id:
+            if g["home_s"] > g["away_s"]:   home_wins += 1
+            elif g["home_s"] < g["away_s"]: away_wins += 1
+            else:                            draws     += 1
+        else:
+            # home_name was het uitteam in deze wedstrijd
+            if g["away_s"] > g["home_s"]:   home_wins += 1
+            elif g["away_s"] < g["home_s"]: away_wins += 1
+            else:                            draws     += 1
+
+    total  = home_wins + away_wins + draws
+    result = {
+        "home_wins":     home_wins,
+        "away_wins":     away_wins,
+        "draws":         draws,
+        "total":         total,
+        "home_win_rate": round(home_wins / total, 3) if total > 0 else 0.5,
+    }
+    cache_set(cache_key, result, ttl_hours=4)
+    print(f"  🔁  MLB H2H {home_name} vs {away_name}: {home_wins}W-{away_wins}L-{draws}D ({total} games, wr={result['home_win_rate']})")
+    return result
+
+
 # ─── Startende werper (probable pitcher) ─────────────────────────────────────
 
 _LEAGUE_ERA = 4.35  # MLB gemiddelde ERA (referentie voor normalisatie)

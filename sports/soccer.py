@@ -297,6 +297,128 @@ def get_team_stats_for_match(team_name: str, competition: str) -> dict:
         return {}
 
 
+# ─── Venue-split stats (voor home/away weging) ────────────────────────────────
+
+def get_team_split_stats(team_id: int, venue: str, n: int = 10) -> dict:
+    """
+    Haalt goals-for en goals-against op voor uitsluitend thuis- (venue='home') of
+    uitwedstrijden (venue='away') van een voetbalteam.
+
+    Geeft {} als minder dan 5 venue-specifieke wedstrijden beschikbaar zijn.
+    Geeft {"gf_avg": float, "ga_avg": float, "games": int}.
+    """
+    if not API_KEY or not team_id:
+        return {}
+    venue     = venue.lower()
+    cache_key = f"soccer_split_{venue}_{team_id}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    data    = _get(f"/teams/{team_id}/matches?status=FINISHED&limit=30")
+    matches = data.get("matches", [])
+
+    gf_list: list = []
+    ga_list: list = []
+    for m in matches:
+        home_id = m.get("homeTeam", {}).get("id")
+        away_id = m.get("awayTeam", {}).get("id")
+        score   = m.get("score", {}).get("fullTime", {})
+        h_goals = score.get("home")
+        a_goals = score.get("away")
+        if h_goals is None or a_goals is None:
+            continue
+        if venue == "home" and home_id == team_id:
+            gf_list.append(float(h_goals))
+            ga_list.append(float(a_goals))
+        elif venue == "away" and away_id == team_id:
+            gf_list.append(float(a_goals))
+            ga_list.append(float(h_goals))
+
+    if len(gf_list) < 5:
+        return {}   # onvoldoende data → fallback naar overall in caller
+
+    # Neem de meest recente n games
+    gf_list = gf_list[-n:]
+    ga_list = ga_list[-n:]
+    ng      = len(gf_list)
+    result  = {
+        "gf_avg": round(sum(gf_list) / ng, 2),
+        "ga_avg": round(sum(ga_list) / ng, 2),
+        "games":  ng,
+    }
+    cache_set(cache_key, result, ttl_hours=2)
+    print(f"  📊  Soccer {venue}-split team {team_id}: GF {result['gf_avg']} | GA {result['ga_avg']} ({ng} games)")
+    return result
+
+
+# ─── Head-to-head resultaten ──────────────────────────────────────────────────
+
+def get_h2h_results(home_team_id: int, away_team_id: int, n: int = 5) -> dict:
+    """
+    Haalt de laatste n head-to-head resultaten op tussen twee voetbalteams
+    via het matches-endpoint van het thuisteam.
+
+    Win/verlies vanuit het perspectief van home_team_id (ongeacht locatie).
+
+    Geeft:
+      {"home_wins": int, "away_wins": int, "draws": int,
+       "total": int, "home_win_rate": float}
+    of {} als geen data beschikbaar is.
+    """
+    if not API_KEY or not home_team_id or not away_team_id:
+        return {}
+    cache_key = f"soccer_h2h_{home_team_id}_{away_team_id}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    data    = _get(f"/teams/{home_team_id}/matches?status=FINISHED&limit=50")
+    matches = data.get("matches", [])
+
+    h2h = []
+    for m in matches:
+        h_id  = m.get("homeTeam", {}).get("id")
+        a_id  = m.get("awayTeam", {}).get("id")
+        if {h_id, a_id} != {home_team_id, away_team_id}:
+            continue
+        score = m.get("score", {}).get("fullTime", {})
+        hg    = score.get("home")
+        ag    = score.get("away")
+        if hg is None or ag is None:
+            continue
+        h2h.append({"h_id": h_id, "a_id": a_id, "hg": int(hg), "ag": int(ag)})
+
+    h2h = h2h[-n:]
+    if not h2h:
+        return {}
+
+    home_wins = away_wins = draws = 0
+    for g in h2h:
+        if g["h_id"] == home_team_id:
+            # home_team_id was thuis in deze H2H
+            if g["hg"] > g["ag"]:   home_wins += 1
+            elif g["hg"] < g["ag"]: away_wins += 1
+            else:                    draws     += 1
+        else:
+            # home_team_id was uit in deze H2H
+            if g["ag"] > g["hg"]:   home_wins += 1
+            elif g["ag"] < g["hg"]: away_wins += 1
+            else:                    draws     += 1
+
+    total  = home_wins + away_wins + draws
+    result = {
+        "home_wins":     home_wins,
+        "away_wins":     away_wins,
+        "draws":         draws,
+        "total":         total,
+        "home_win_rate": round(home_wins / total, 3) if total > 0 else 0.5,
+    }
+    cache_set(cache_key, result, ttl_hours=4)
+    print(f"  🔁  Soccer H2H team {home_team_id} vs {away_team_id}: {home_wins}W-{away_wins}L-{draws}D (wr={result['home_win_rate']})")
+    return result
+
+
 def _current_season() -> int:
     today = datetime.date.today()
     # Voetbalseizoen aug–mei: voor augustus gebruiken we vorig jaar

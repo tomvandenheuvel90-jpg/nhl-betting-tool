@@ -73,6 +73,88 @@ def _best_option(options: list):
     )
 
 
+# ─── Gedeelde model-helpers (splits / H2H / form) ─────────────────────────────
+
+def _split_or_overall(split: dict, overall: dict, key: str):
+    """
+    Geeft venue-specifiek last-10 terug als ≥5 games beschikbaar zijn,
+    anders overall last-10. Beide dicts mogen None of {} zijn.
+    """
+    if (split or {}).get("last10_games", 0) >= 5:
+        return (split or {}).get(key)
+    return (overall or {}).get(key)
+
+
+_H2H_ADJ_PCT   = 0.03   # maximale H2H aanpassing (±3%)
+_H2H_MIN_GAMES = 3      # minimaal aantal H2H wedstrijden voor betrouwbaarheid
+
+
+def _h2h_adj(h2h: dict) -> float:
+    """
+    Geeft ±_H2H_ADJ_PCT aanpassing als home win rate > 60% of < 40%.
+    Geeft 0 als er minder dan _H2H_MIN_GAMES H2H wedstrijden zijn.
+    """
+    if (h2h or {}).get("total", 0) < _H2H_MIN_GAMES:
+        return 0.0
+    wr = h2h.get("home_win_rate", 0.5)
+    if wr > 0.60:
+        return _H2H_ADJ_PCT
+    if wr < 0.40:
+        return -_H2H_ADJ_PCT
+    return 0.0
+
+
+def _apply_h2h_3way(probs: dict, adj: float) -> dict:
+    """
+    Past H2H aanpassing toe op 3-weg kansen (NHL/Soccer).
+    Delta wordt proportioneel verdeeld over p_draw en p_away.
+    """
+    if not adj:
+        return probs
+    p_home = max(0.05, min(0.90, probs["p_home"] + adj))
+    delta  = p_home - probs["p_home"]
+    other  = (probs.get("p_draw") or 0.0) + (probs.get("p_away") or 0.0)
+    if other > 0:
+        p_draw = max(0.02, probs["p_draw"] - delta * probs["p_draw"] / other)
+        p_away = max(0.02, probs["p_away"] - delta * probs["p_away"] / other)
+    else:
+        p_draw = probs.get("p_draw", 0.0)
+        p_away = probs.get("p_away", 0.0)
+    tot = p_home + p_draw + p_away
+    return {**probs,
+            "p_home": round(p_home / tot, 4),
+            "p_draw": round(p_draw / tot, 4),
+            "p_away": round(p_away / tot, 4)}
+
+
+def _apply_h2h_2way(probs: dict, adj: float) -> dict:
+    """
+    Past H2H aanpassing toe op 2-weg kansen (NBA/MLB).
+    Raakt p_cover/spread niet aan — alleen p_home en p_away.
+    """
+    if not adj:
+        return probs
+    p_home = max(0.05, min(0.95, probs["p_home"] + adj))
+    return {**probs,
+            "p_home": round(p_home, 4),
+            "p_away": round(1.0 - p_home, 4)}
+
+
+def _soccer_form_multiplier(form_str: str) -> float:
+    """
+    Berekent form-multiplier op basis van de laatste 5 resultaten (WWDLL etc.).
+    W = +0.04 | D = 0 | L = −0.04 — gecapt op ±0.12.
+    Voorbeeld: WWWLL → +0.04+0.04+0.04−0.04−0.04 = +0.04 multiplier op gf_avg.
+    """
+    adj = 0.0
+    for ch in (form_str or "")[-5:]:
+        if ch.upper() == "W":
+            adj += 0.04
+        elif ch.upper() == "L":
+            adj -= 0.04
+    return round(max(-0.12, min(0.12, adj)), 4)
+
+
 # ─── NHL Wedstrijd-analyse ────────────────────────────────────────────────────
 
 _NHL_LEAGUE_GF_AVG = 3.05
@@ -129,31 +211,39 @@ def analyze_nhl_matches(matches: list) -> list:
         except Exception:
             pass
 
-        # ── Last-10 goals ophalen en blenden met seizoensgemiddelden ──────────
-        # blended = (last10 × 0.60) + (season × 0.40)
-        # Fallback naar seizoensgemiddelde als last-10 niet beschikbaar is.
+        # ── Last-10 goals + venue-splits ophalen ──────────────────────────────
+        # Prioriteit: venue-split (≥5 games) → overall last-10 → seizoensgemiddelde
+        # Thuis-team gebruikt zijn thuis-split; uit-team zijn uit-split.
+        home_abbrev  = (home_form or {}).get("abbrev", "")
+        away_abbrev  = (away_form or {}).get("abbrev", "")
         home_last10: dict = {}
         away_last10: dict = {}
+        home_split:  dict = {}
+        away_split:  dict = {}
         try:
-            home_abbrev = (home_form or {}).get("abbrev", "")
             if home_abbrev:
                 home_last10 = nhl.get_team_last10_goals(home_abbrev)
+                home_split  = nhl.get_team_split_last10_goals(home_abbrev, "home")
         except Exception:
             pass
         try:
-            away_abbrev = (away_form or {}).get("abbrev", "")
             if away_abbrev:
                 away_last10 = nhl.get_team_last10_goals(away_abbrev)
+                away_split  = nhl.get_team_split_last10_goals(away_abbrev, "away")
         except Exception:
             pass
 
-        # Bouw blended form-dicts voor het Poisson-model
+        # Bouw blended form-dicts: venue-split > overall last-10 > seizoensgemiddelde
         hf = dict(home_form or fallback)
         af = dict(away_form or fallback)
-        hf["gf_avg"] = _blend(hf.get("gf_avg", _NHL_LEAGUE_GF_AVG), home_last10.get("last10_gf_avg"))
-        hf["ga_avg"] = _blend(hf.get("ga_avg", _NHL_LEAGUE_GF_AVG), home_last10.get("last10_ga_avg"))
-        af["gf_avg"] = _blend(af.get("gf_avg", _NHL_LEAGUE_GF_AVG), away_last10.get("last10_gf_avg"))
-        af["ga_avg"] = _blend(af.get("ga_avg", _NHL_LEAGUE_GF_AVG), away_last10.get("last10_ga_avg"))
+        hf["gf_avg"] = _blend(hf.get("gf_avg", _NHL_LEAGUE_GF_AVG),
+                               _split_or_overall(home_split, home_last10, "last10_gf_avg"))
+        hf["ga_avg"] = _blend(hf.get("ga_avg", _NHL_LEAGUE_GF_AVG),
+                               _split_or_overall(home_split, home_last10, "last10_ga_avg"))
+        af["gf_avg"] = _blend(af.get("gf_avg", _NHL_LEAGUE_GF_AVG),
+                               _split_or_overall(away_split, away_last10, "last10_gf_avg"))
+        af["ga_avg"] = _blend(af.get("ga_avg", _NHL_LEAGUE_GF_AVG),
+                               _split_or_overall(away_split, away_last10, "last10_ga_avg"))
 
         scr_odds  = m.get("screenshot_odds") or {}
         b365_odds = {}
@@ -174,6 +264,17 @@ def analyze_nhl_matches(matches: list) -> list:
         if hf or af:
             probs = _nhl_match_probs(hf, af)
 
+        # ── H2H aanpassing (±3% op p_home als wr > 60% of < 40%) ─────────────
+        h2h = {}
+        if home_abbrev and away_abbrev:
+            try:
+                h2h = nhl.get_h2h_results(home_abbrev, away_abbrev)
+            except Exception:
+                pass
+        _adj = _h2h_adj(h2h)
+        if _adj and probs:
+            probs = _apply_h2h_3way(probs, _adj)
+
         home_odds = _odds("home_odds", "home")
         draw_odds = _odds("draw_odds", "draw")
         away_odds = _odds("away_odds", "away")
@@ -185,17 +286,20 @@ def analyze_nhl_matches(matches: list) -> list:
         ]
 
         results.append({
-            "home_team":    home_name,
-            "away_team":    away_name,
-            "time":         m.get("time"),
-            "home_form":    home_form,          # origineel (voor weergave)
-            "away_form":    away_form,           # origineel (voor weergave)
-            "home_last10":  home_last10,         # last-10 goals data
-            "away_last10":  away_last10,
-            "probs":        probs,
-            "odds_bron":    odds_bron,
-            "options":      options,
-            "best":         _best_option(options),
+            "home_team":   home_name,
+            "away_team":   away_name,
+            "time":        m.get("time"),
+            "home_form":   home_form,          # origineel seizoensgemiddelden
+            "away_form":   away_form,
+            "home_last10": home_last10,         # overall last-10
+            "away_last10": away_last10,
+            "home_split":  home_split,          # thuis-split last-10
+            "away_split":  away_split,          # uit-split last-10
+            "h2h":         h2h,                 # head-to-head resultaten
+            "probs":       probs,
+            "odds_bron":   odds_bron,
+            "options":     options,
+            "best":        _best_option(options),
         })
     return results
 
@@ -218,6 +322,7 @@ def _soccer_form_from_api(team_name: str, competition: str) -> dict:
         if not raw:
             return {}
         return {
+            "team_id":     raw.get("team_id"),          # nodig voor H2H + splits
             "full_name":   raw.get("name", team_name),
             "abbrev":      raw.get("name", team_name)[:3].upper(),
             "gf_avg":      raw.get("avg_goals_for", _SOCCER_LEAGUE_AVG),
@@ -279,7 +384,51 @@ def analyze_soccer_matches(matches: list) -> list:
         competition = m.get("competition") or m.get("sport") or "EPL"
         home_form   = _soccer_form_from_api(home_name, competition)
         away_form   = _soccer_form_from_api(away_name, competition)
-        probs       = _soccer_match_probs(home_form or fallback, away_form or fallback)
+
+        # ── Bouw werkende form-dicts voor het Poisson-model ───────────────────
+        hf = dict(home_form or fallback)
+        af = dict(away_form or fallback)
+
+        # 1. Venue-split: thuis-GF/GA voor thuisteam, uit-GF/GA voor uitteam
+        home_id  = (home_form or {}).get("team_id")
+        away_id  = (away_form or {}).get("team_id")
+        home_split: dict = {}
+        away_split: dict = {}
+        if home_id:
+            try:
+                home_split = soccer.get_team_split_stats(home_id, "home")
+                if home_split.get("games", 0) >= 5:
+                    hf["gf_avg"] = home_split["gf_avg"]
+                    hf["ga_avg"] = home_split["ga_avg"]
+            except Exception:
+                pass
+        if away_id:
+            try:
+                away_split = soccer.get_team_split_stats(away_id, "away")
+                if away_split.get("games", 0) >= 5:
+                    af["gf_avg"] = away_split["gf_avg"]
+                    af["ga_avg"] = away_split["ga_avg"]
+            except Exception:
+                pass
+
+        # 2. Form-multiplier op gf_avg (W=+0.04, D=0, L=−0.04, cap ±0.12)
+        home_fm = _soccer_form_multiplier(hf.get("form", ""))
+        away_fm = _soccer_form_multiplier(af.get("form", ""))
+        hf["gf_avg"] = round(hf.get("gf_avg", _SOCCER_LEAGUE_AVG) * (1.0 + home_fm), 3)
+        af["gf_avg"] = round(af.get("gf_avg", _SOCCER_LEAGUE_AVG) * (1.0 + away_fm), 3)
+
+        probs = _soccer_match_probs(hf, af)
+
+        # 3. H2H aanpassing (±3% op p_home als wr > 60% of < 40%)
+        h2h = {}
+        if home_id and away_id:
+            try:
+                h2h = soccer.get_h2h_results(home_id, away_id)
+            except Exception:
+                pass
+        _adj = _h2h_adj(h2h)
+        if _adj:
+            probs = _apply_h2h_3way(probs, _adj)
 
         scr_odds  = m.get("screenshot_odds") or {}
         b365      = {}
@@ -309,6 +458,9 @@ def analyze_soccer_matches(matches: list) -> list:
             "competition": competition,
             "home_form":   home_form,
             "away_form":   away_form,
+            "home_split":  home_split,
+            "away_split":  away_split,
+            "h2h":         h2h,
             "probs":       probs,
             "odds_bron":   odds_bron,
             "options":     options,
@@ -365,27 +517,35 @@ def analyze_nba_matches(matches: list) -> list:
         home_form = nba.get_team_form_for_match(home_name)
         away_form = nba.get_team_form_for_match(away_name)
 
-        # ── Last-10 stats ophalen en blenden met seizoensgemiddelden ──────────
-        # blended = (last10 × 0.60) + (season × 0.40)
-        # Fallback naar seizoensgemiddelde als last-10 niet beschikbaar is.
+        # ── Last-10 stats + venue-splits ophalen ──────────────────────────────
+        # Prioriteit: venue-split (≥5 games) → overall last-10 → seizoensgemiddelde
         home_last10: dict = {}
         away_last10: dict = {}
+        home_split:  dict = {}
+        away_split:  dict = {}
         try:
             home_last10 = nba.get_team_last10_stats(home_name)
+            home_split  = nba.get_team_split_last10_stats(home_name, "home")
         except Exception:
             pass
         try:
             away_last10 = nba.get_team_last10_stats(away_name)
+            away_split  = nba.get_team_split_last10_stats(away_name, "away")
         except Exception:
             pass
 
-        # Bouw blended form-dicts voor het Normal-distributie-model
-        hf = dict(home_form or {"pts_avg": _NBA_LEAGUE_PTS_AVG, "opp_pts_avg": _NBA_LEAGUE_PTS_AVG})
-        af = dict(away_form or {"pts_avg": _NBA_LEAGUE_PTS_AVG, "opp_pts_avg": _NBA_LEAGUE_PTS_AVG})
-        hf["pts_avg"]     = _blend(hf.get("pts_avg",     _NBA_LEAGUE_PTS_AVG), home_last10.get("last10_pts"))
-        hf["opp_pts_avg"] = _blend(hf.get("opp_pts_avg", _NBA_LEAGUE_PTS_AVG), home_last10.get("last10_opp_pts"))
-        af["pts_avg"]     = _blend(af.get("pts_avg",     _NBA_LEAGUE_PTS_AVG), away_last10.get("last10_pts"))
-        af["opp_pts_avg"] = _blend(af.get("opp_pts_avg", _NBA_LEAGUE_PTS_AVG), away_last10.get("last10_opp_pts"))
+        # Bouw blended form-dicts: venue-split > overall last-10 > seizoensgemiddelde
+        _nba_fb = {"pts_avg": _NBA_LEAGUE_PTS_AVG, "opp_pts_avg": _NBA_LEAGUE_PTS_AVG}
+        hf = dict(home_form or _nba_fb)
+        af = dict(away_form or _nba_fb)
+        hf["pts_avg"]     = _blend(hf.get("pts_avg",     _NBA_LEAGUE_PTS_AVG),
+                                    _split_or_overall(home_split, home_last10, "last10_pts"))
+        hf["opp_pts_avg"] = _blend(hf.get("opp_pts_avg", _NBA_LEAGUE_PTS_AVG),
+                                    _split_or_overall(home_split, home_last10, "last10_opp_pts"))
+        af["pts_avg"]     = _blend(af.get("pts_avg",     _NBA_LEAGUE_PTS_AVG),
+                                    _split_or_overall(away_split, away_last10, "last10_pts"))
+        af["opp_pts_avg"] = _blend(af.get("opp_pts_avg", _NBA_LEAGUE_PTS_AVG),
+                                    _split_or_overall(away_split, away_last10, "last10_opp_pts"))
 
         scr_odds  = m.get("screenshot_odds") or {}
         b365_h2h  = {}
@@ -409,6 +569,16 @@ def analyze_nba_matches(matches: list) -> list:
         spread_val = float(hs) if hs is not None else 0.0
         probs      = _nba_match_probs(hf, af, spread=spread_val)
 
+        # ── H2H aanpassing (±3% op p_home als wr > 60% of < 40%) ─────────────
+        h2h = {}
+        try:
+            h2h = nba.get_h2h_results(home_name, away_name)
+        except Exception:
+            pass
+        _adj = _h2h_adj(h2h)
+        if _adj:
+            probs = _apply_h2h_2way(probs, _adj)
+
         options = [
             _make_option("p_home", probs, home_ml, f"🏠 {home_name} wint"),
             _make_option("p_away", probs, away_ml, f"✈️ {away_name} wint"),
@@ -422,10 +592,13 @@ def analyze_nba_matches(matches: list) -> list:
             "home_team":   home_name,
             "away_team":   away_name,
             "time":        m.get("time"),
-            "home_form":   home_form,           # origineel (voor weergave)
-            "away_form":   away_form,            # origineel (voor weergave)
-            "home_last10": home_last10,          # last-10 stats data
+            "home_form":   home_form,
+            "away_form":   away_form,
+            "home_last10": home_last10,
             "away_last10": away_last10,
+            "home_split":  home_split,
+            "away_split":  away_split,
+            "h2h":         h2h,
             "probs":       probs,
             "odds_bron":   odds_bron,
             "options":     options,
@@ -531,6 +704,17 @@ def analyze_mlb_matches(matches: list) -> list:
             home_pitcher=home_pitcher,
             away_pitcher=away_pitcher,
         )
+
+        # ── H2H aanpassing (±3% op p_home als wr > 60% of < 40%) ─────────────
+        h2h = {}
+        try:
+            h2h = mlb.get_h2h_results(home_name, away_name)
+        except Exception:
+            pass
+        _adj = _h2h_adj(h2h)
+        if _adj:
+            probs = _apply_h2h_2way(probs, _adj)
+
         scr_odds  = m.get("screenshot_odds") or {}
         b365_h2h  = {}
         b365_sp   = {}
@@ -590,6 +774,7 @@ def analyze_mlb_matches(matches: list) -> list:
             "away_form":    away_form,
             "home_pitcher": home_pitcher,
             "away_pitcher": away_pitcher,
+            "h2h":          h2h,
             "probs":        probs,
             "odds_bron":    odds_bron,
             "options":      options,

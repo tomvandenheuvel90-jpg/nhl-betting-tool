@@ -427,6 +427,162 @@ def get_team_last10_stats(team_name: str) -> dict:
     return result
 
 
+# ─── Venue-split last-10 stats (voor home/away weging) ───────────────────────
+
+def get_team_split_last10_stats(team_name: str, venue: str) -> dict:
+    """
+    Haalt last-10 pts en opp_pts op voor uitsluitend thuis- (venue='home') of
+    uitwedstrijden (venue='away') via nba_api TeamGameLog.
+
+    Filtert op MATCHUP: 'vs.' = thuis, '@' = uit.
+    Geeft {} als minder dan 5 venue-specifieke wedstrijden beschikbaar zijn.
+    Geeft {"last10_pts": float, "last10_opp_pts": float, "last10_games": int}.
+    """
+    if not NBA_API_AVAILABLE:
+        return {}
+    venue     = venue.lower()
+    cache_key = f"nba_split_{venue}_{team_name.strip().lower().replace(' ', '_')}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    team = find_team(team_name)
+    if not team:
+        return {}
+    team_id = team.get("id")
+    if not team_id:
+        return {}
+
+    try:
+        from nba_api.stats.endpoints import teamgamelog
+        nba_limiter.wait()
+        season = _current_season()
+        log    = teamgamelog.TeamGameLog(
+            team_id=team_id,
+            season=season,
+            season_type_all_star="Regular Season",
+            timeout=30,
+        )
+        df = log.get_data_frames()[0]
+    except Exception as e:
+        print(f"  ⚠️  NBA split stats fout ({team_name}, {venue}): {e}")
+        return {}
+
+    if df is None or df.empty or "MATCHUP" not in df.columns:
+        return {}
+
+    # "BOS vs. MIA" = thuis;  "BOS @ MIA" = uit
+    if venue == "home":
+        filtered = df[df["MATCHUP"].str.contains(r"vs\.", na=False)]
+    else:
+        filtered = df[df["MATCHUP"].str.contains("@", na=False)]
+
+    if len(filtered) < 5:
+        return {}   # onvoldoende data → fallback naar overall in caller
+
+    recent = filtered.head(10)   # nba_api nieuwste eerst
+    if "PTS" not in recent.columns or "PLUS_MINUS" not in recent.columns:
+        return {}
+
+    pts_list = [float(v) for v in recent["PTS"].tolist()        if v is not None]
+    pm_list  = [float(v) for v in recent["PLUS_MINUS"].tolist() if v is not None]
+    if not pts_list or len(pts_list) != len(pm_list):
+        return {}
+
+    opp_pts_list = [p - pm for p, pm in zip(pts_list, pm_list)]
+    n      = len(pts_list)
+    result = {
+        "last10_pts":     round(sum(pts_list)     / n, 1),
+        "last10_opp_pts": round(sum(opp_pts_list) / n, 1),
+        "last10_games":   n,
+    }
+    cache_set(cache_key, result, ttl_hours=2)
+    print(f"  📊  NBA {venue}-split {team_name}: PTS {result['last10_pts']} | OPP {result['last10_opp_pts']} ({n} games)")
+    return result
+
+
+# ─── Head-to-head resultaten ──────────────────────────────────────────────────
+
+def get_h2h_results(home_name: str, away_name: str, n: int = 5) -> dict:
+    """
+    Haalt de laatste n head-to-head resultaten op via TeamGameLog van het thuisteam,
+    gefilterd op de tegenstander-afkorting in de MATCHUP-kolom.
+    Win/verlies vanuit het perspectief van home_name (WL-kolom = W/L voor het thuisteam).
+
+    Zoekt huidig seizoen eerst; als < n games, ook vorig seizoen.
+
+    Geeft:
+      {"home_wins": int, "away_wins": int, "draws": int,
+       "total": int, "home_win_rate": float}
+    of {} als geen data beschikbaar is.
+    """
+    if not NBA_API_AVAILABLE:
+        return {}
+    cache_key = (f"nba_h2h_{home_name.strip().lower().replace(' ','_')}"
+                 f"_{away_name.strip().lower().replace(' ','_')}")
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    home_team = find_team(home_name)
+    away_team = find_team(away_name)
+    if not home_team or not away_team:
+        return {}
+    away_abbrev = away_team.get("abbreviation", "")
+    if not away_abbrev:
+        return {}
+
+    def _fetch_wl(season_str: str) -> list:
+        from nba_api.stats.endpoints import teamgamelog
+        nba_limiter.wait()
+        log = teamgamelog.TeamGameLog(
+            team_id=home_team["id"],
+            season=season_str,
+            season_type_all_star="Regular Season",
+            timeout=30,
+        )
+        df = log.get_data_frames()[0]
+        if df is None or df.empty:
+            return []
+        if "MATCHUP" not in df.columns or "WL" not in df.columns:
+            return []
+        h2h_df = df[df["MATCHUP"].str.contains(away_abbrev, na=False)]
+        return h2h_df["WL"].tolist()
+
+    try:
+        season   = _current_season()
+        wl_list  = _fetch_wl(season)
+        if len(wl_list) < n:
+            prev_year   = int(season[:4]) - 1
+            prev_season = f"{prev_year}-{str(prev_year + 1)[-2:]}"
+            try:
+                wl_list += _fetch_wl(prev_season)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"  ⚠️  NBA H2H fout ({home_name} vs {away_name}): {e}")
+        return {}
+
+    wl_list = wl_list[:n]    # nba_api nieuwste eerst → neem eerste n
+    if not wl_list:
+        return {}
+
+    home_wins = wl_list.count("W")
+    away_wins = wl_list.count("L")
+    draws     = 0             # NBA heeft geen gelijkspel
+    total     = home_wins + away_wins
+    result    = {
+        "home_wins":     home_wins,
+        "away_wins":     away_wins,
+        "draws":         draws,
+        "total":         total,
+        "home_win_rate": round(home_wins / total, 3) if total > 0 else 0.5,
+    }
+    cache_set(cache_key, result, ttl_hours=4)
+    print(f"  🔁  NBA H2H {home_name} vs {away_name}: {home_wins}W-{away_wins}L ({total} games, wr={result['home_win_rate']})")
+    return result
+
+
 def get_today_games() -> list:
     """Geeft vandaag's NBA wedstrijden: [{home_team_id, away_team_id}]."""
     if not NBA_API_AVAILABLE:

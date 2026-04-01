@@ -552,6 +552,159 @@ def get_today_teams() -> list:
         return []
 
 
+# ─── Venue-split last-10 goals (voor home/away weging) ───────────────────────
+
+def get_team_split_last10_goals(team_abbrev: str, venue: str) -> dict:
+    """
+    Haalt last-10 goals-for/against op voor uitsluitend thuis- (venue='home') of
+    uitwedstrijden (venue='away') via de club-schedule-season API.
+
+    Geeft {} als minder dan 5 venue-specifieke wedstrijden beschikbaar zijn
+    (→ caller valt terug op overall last-10).
+    Geeft {"last10_gf_avg": float, "last10_ga_avg": float, "last10_games": int}.
+    """
+    if not team_abbrev:
+        return {}
+    venue     = venue.lower()
+    abbrev_up = team_abbrev.upper()
+    cache_key = f"nhl_split_{venue}_{abbrev_up}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    data  = _nhl_get(f"{NHL_BASE}/club-schedule-season/{abbrev_up}/{SEASON}")
+    games = data.get("games", [])
+    if not games:
+        return {}
+
+    # Filter op afgeronde wedstrijden + juiste venue
+    if venue == "home":
+        filtered = [
+            g for g in games
+            if g.get("homeTeam", {}).get("score") is not None
+            and g.get("awayTeam", {}).get("score") is not None
+            and str(g.get("homeTeam", {}).get("abbrev", "")).upper() == abbrev_up
+        ]
+    else:
+        filtered = [
+            g for g in games
+            if g.get("homeTeam", {}).get("score") is not None
+            and g.get("awayTeam", {}).get("score") is not None
+            and str(g.get("awayTeam", {}).get("abbrev", "")).upper() == abbrev_up
+        ]
+
+    if len(filtered) < 5:
+        return {}   # onvoldoende data → fallback naar overall in caller
+
+    recent  = filtered[-10:]
+    gf_list: list = []
+    ga_list: list = []
+    for g in recent:
+        h_score = g.get("homeTeam", {}).get("score")
+        a_score = g.get("awayTeam", {}).get("score")
+        if h_score is None or a_score is None:
+            continue
+        if venue == "home":
+            gf_list.append(float(h_score))
+            ga_list.append(float(a_score))
+        else:
+            gf_list.append(float(a_score))
+            ga_list.append(float(h_score))
+
+    if not gf_list:
+        return {}
+
+    n      = len(gf_list)
+    result = {
+        "last10_gf_avg": round(sum(gf_list) / n, 2),
+        "last10_ga_avg": round(sum(ga_list) / n, 2),
+        "last10_games":  n,
+    }
+    cache_set(cache_key, result, ttl_hours=2)
+    print(f"  📊  NHL {venue}-split {abbrev_up}: GF {result['last10_gf_avg']} | GA {result['last10_ga_avg']} ({n} games)")
+    return result
+
+
+# ─── Head-to-head resultaten ──────────────────────────────────────────────────
+
+def get_h2h_results(home_abbrev: str, away_abbrev: str, n: int = 5) -> dict:
+    """
+    Haalt de laatste n head-to-head resultaten op tussen twee NHL teams
+    (huidige seizoen; aangevuld met vorig seizoen als er < n wedstrijden zijn).
+
+    Win/verlies wordt berekend vanuit het perspectief van home_abbrev
+    (ongeacht of zij thuis of uit speelden in de H2H wedstrijd).
+
+    Geeft:
+      {"home_wins": int, "away_wins": int, "draws": int,
+       "total": int, "home_win_rate": float}
+    of {} als geen H2H data beschikbaar is.
+    """
+    if not home_abbrev or not away_abbrev:
+        return {}
+    h = home_abbrev.upper()
+    a = away_abbrev.upper()
+    cache_key = f"nhl_h2h_{h}_{a}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    def _fetch_season(season_str: str) -> list:
+        data  = _nhl_get(f"{NHL_BASE}/club-schedule-season/{h}/{season_str}")
+        found = []
+        for g in data.get("games", []):
+            ht       = str(g.get("homeTeam", {}).get("abbrev", "")).upper()
+            at       = str(g.get("awayTeam", {}).get("abbrev", "")).upper()
+            h_score  = g.get("homeTeam", {}).get("score")
+            a_score  = g.get("awayTeam", {}).get("score")
+            # Afgeronde H2H wedstrijd tussen deze twee teams
+            if h_score is None or a_score is None:
+                continue
+            if {ht, at} != {h, a}:
+                continue
+            found.append({"home_t": ht, "away_t": at,
+                           "home_s": float(h_score), "away_s": float(a_score)})
+        return found
+
+    games = _fetch_season(SEASON)
+    if len(games) < n:
+        prev_year   = int(SEASON[:4]) - 1
+        prev_season = f"{prev_year}{prev_year + 1}"
+        try:
+            games += _fetch_season(prev_season)
+        except Exception:
+            pass
+
+    games = games[-n:]   # neem de meest recente n
+    if not games:
+        return {}
+
+    home_wins = away_wins = draws = 0
+    for g in games:
+        if g["home_t"] == h:
+            # h was het thuisteam in deze H2H wedstrijd
+            if g["home_s"] > g["away_s"]:   home_wins += 1
+            elif g["home_s"] < g["away_s"]: away_wins += 1
+            else:                            draws     += 1
+        else:
+            # h was het uitteam in deze H2H wedstrijd
+            if g["away_s"] > g["home_s"]:   home_wins += 1
+            elif g["away_s"] < g["home_s"]: away_wins += 1
+            else:                            draws     += 1
+
+    total  = home_wins + away_wins + draws
+    result = {
+        "home_wins":     home_wins,
+        "away_wins":     away_wins,
+        "draws":         draws,
+        "total":         total,
+        "home_win_rate": round(home_wins / total, 3) if total > 0 else 0.5,
+    }
+    cache_set(cache_key, result, ttl_hours=4)
+    print(f"  🔁  NHL H2H {h} vs {a}: {home_wins}W-{away_wins}L-{draws}D ({total} games, wr={result['home_win_rate']})")
+    return result
+
+
 def get_team_players(team_abbrev: str, n: int = 8) -> list:
     """
     Geeft lijst van {name, id, team, position} voor skaters (geen goalies) in een team.
