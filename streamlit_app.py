@@ -384,7 +384,7 @@ with tab_dashboard:
             _dopa, _dopb, _dopc, _dopd, _dope = st.columns([3, 1, 1, 1, 1])
             _dopa.write(f"**{_dop.get('speler','')}** — {_dop.get('bet','')}")
             _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · €{_dop.get('inzet',0):.0f} · {_dop_dag}")
-            if _dopb.button("✅ Won",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
+            if _dopb.button("✅ Win",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
                 _dop_inzet_val = float(_dop.get("inzet", 10))
                 db.upsert_resultaat(_dop_id, _dop, "gewonnen", _dop_inzet_val)
                 if str(_dop_id).startswith("parlay_"):
@@ -394,7 +394,7 @@ with tab_dashboard:
                         "winst_verlies": round(_dop_inzet_val * (_dop_odds_val - 1), 2),
                     })
                 st.rerun()
-            if _dopc.button("❌ Verloor", key=f"dsh_lost_{_dop_id}", use_container_width=True):
+            if _dopc.button("❌ Loss", key=f"dsh_lost_{_dop_id}", use_container_width=True):
                 _dop_inzet_val = float(_dop.get("inzet", 10))
                 db.upsert_resultaat(_dop_id, _dop, "verloren", _dop_inzet_val)
                 if str(_dop_id).startswith("parlay_"):
@@ -1020,7 +1020,7 @@ with tab_bankroll:
             _oc1, _oc2, _oc3, _oc4, _oc5 = st.columns([3, 1, 1, 1, 1])
             _oc1.write(f"**{_op.get('speler','')}** — {_op.get('bet','')}  @ {_op.get('odds','—')} | €{_op.get('inzet',0):.2f}")
             _oc2.caption(_op.get("datum","")[:10])
-            if _oc3.button("✅ Won", key=f"opwon_{_op_id}"):
+            if _oc3.button("✅ Win", key=f"opwon_{_op_id}"):
                 _op_inzet_val = float(_op.get("inzet", 10))
                 _op_upd = dict(_op)
                 _op_upd["uitkomst"] = "gewonnen"
@@ -1032,7 +1032,7 @@ with tab_bankroll:
                         "winst_verlies": round(_op_inzet_val * (_op_odds_val - 1), 2),
                     })
                 st.rerun()
-            if _oc4.button("❌ Verloor", key=f"oplost_{_op_id}"):
+            if _oc4.button("❌ Loss", key=f"oplost_{_op_id}"):
                 _op_inzet_val = float(_op.get("inzet", 10))
                 _op_upd = dict(_op)
                 _op_upd["uitkomst"] = "verloren"
