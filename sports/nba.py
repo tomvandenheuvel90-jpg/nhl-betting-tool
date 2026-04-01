@@ -358,6 +358,75 @@ def get_team_form_for_match(team_name: str) -> dict:
     return result
 
 
+def get_team_last10_stats(team_name: str) -> dict:
+    """
+    Haalt pts en opp_pts op voor de laatste 10 afgeronde wedstrijden van een NBA team
+    via nba_api TeamGameLog.
+
+    opp_pts wordt afgeleid als: PTS - PLUS_MINUS (= gescoorde punten - marge = toegestane punten).
+
+    Geeft:
+      {"last10_pts": float, "last10_opp_pts": float, "last10_games": int}
+    of {} als data niet beschikbaar is (fallback naar seizoensgemiddelde).
+    """
+    if not NBA_API_AVAILABLE:
+        return {}
+
+    cache_key = f"nba_last10_{team_name.strip().lower().replace(' ', '_')}"
+    cached    = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    team = find_team(team_name)
+    if not team:
+        return {}
+    team_id = team.get("id")
+    if not team_id:
+        return {}
+
+    try:
+        from nba_api.stats.endpoints import teamgamelog
+        nba_limiter.wait()
+        season = _current_season()
+        log = teamgamelog.TeamGameLog(
+            team_id=team_id,
+            season=season,
+            season_type_all_star="Regular Season",
+            timeout=30,
+        )
+        df = log.get_data_frames()[0]
+    except Exception as e:
+        print(f"  ⚠️  NBA team game log fout ({team_name}): {e}")
+        return {}
+
+    if df is None or df.empty:
+        return {}
+
+    # nba_api geeft nieuwste games eerst — pak de eerste 10 rijen
+    recent_10 = df.head(10)
+    if "PTS" not in recent_10.columns or "PLUS_MINUS" not in recent_10.columns:
+        return {}
+
+    pts_list     = [float(v) for v in recent_10["PTS"].tolist()        if v is not None]
+    pm_list      = [float(v) for v in recent_10["PLUS_MINUS"].tolist() if v is not None]
+
+    if not pts_list or len(pts_list) != len(pm_list):
+        return {}
+
+    # PLUS_MINUS = team_pts - opp_pts → opp_pts = team_pts - PLUS_MINUS
+    opp_pts_list = [p - pm for p, pm in zip(pts_list, pm_list)]
+
+    n      = len(pts_list)
+    result = {
+        "last10_pts":     round(sum(pts_list)     / n, 1),
+        "last10_opp_pts": round(sum(opp_pts_list) / n, 1),
+        "last10_games":   n,
+    }
+    cache_set(cache_key, result, ttl_hours=2)
+    print(f"  📊  NBA last-10 {team_name}: PTS {result['last10_pts']} | OPP {result['last10_opp_pts']} ({n} games)")
+    return result
+
+
 def get_today_games() -> list:
     """Geeft vandaag's NBA wedstrijden: [{home_team_id, away_team_id}]."""
     if not NBA_API_AVAILABLE:

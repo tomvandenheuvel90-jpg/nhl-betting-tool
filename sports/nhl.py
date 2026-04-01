@@ -473,6 +473,75 @@ def get_team_form(team_name: str) -> dict:
     return result
 
 
+# ─── Last-10 goals (voor blended wedstrijd-model) ─────────────────────────────
+
+def get_team_last10_goals(team_abbrev: str) -> dict:
+    """
+    Haalt goals-for en goals-against op voor de laatste 10 afgeronde wedstrijden
+    van een NHL team via de club-schedule-season API.
+
+    Geeft:
+      {"last10_gf_avg": float, "last10_ga_avg": float, "last10_games": int}
+    of {} als data niet beschikbaar is (fallback naar seizoensgemiddelde).
+    """
+    if not team_abbrev:
+        return {}
+
+    cache_key = f"nhl_last10_{team_abbrev.upper()}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    data  = _nhl_get(f"{NHL_BASE}/club-schedule-season/{team_abbrev.upper()}/{SEASON}")
+    games = data.get("games", [])
+    if not games:
+        return {}
+
+    # Filter afgeronde wedstrijden: score aanwezig aan beide kanten
+    completed = [
+        g for g in games
+        if g.get("homeTeam", {}).get("score") is not None
+        and g.get("awayTeam", {}).get("score") is not None
+    ]
+    if not completed:
+        return {}
+
+    # Spellen staan chronologisch — pak de laatste 10
+    recent_10   = completed[-10:]
+    abbrev_up   = team_abbrev.upper()
+    gf_list: list = []
+    ga_list: list = []
+
+    for g in recent_10:
+        home        = g.get("homeTeam", {})
+        away        = g.get("awayTeam", {})
+        home_abbrev = str(home.get("abbrev", "")).upper()
+        away_abbrev = str(away.get("abbrev", "")).upper()
+        home_score  = home.get("score")
+        away_score  = away.get("score")
+        if home_score is None or away_score is None:
+            continue
+        if home_abbrev == abbrev_up:
+            gf_list.append(float(home_score))
+            ga_list.append(float(away_score))
+        elif away_abbrev == abbrev_up:
+            gf_list.append(float(away_score))
+            ga_list.append(float(home_score))
+
+    if not gf_list:
+        return {}
+
+    n      = len(gf_list)
+    result = {
+        "last10_gf_avg": round(sum(gf_list) / n, 2),
+        "last10_ga_avg": round(sum(ga_list) / n, 2),
+        "last10_games":  n,
+    }
+    cache_set(cache_key, result, ttl_hours=2)
+    print(f"  📊  NHL last-10 {abbrev_up}: GF {result['last10_gf_avg']} | GA {result['last10_ga_avg']} ({n} games)")
+    return result
+
+
 # ─── Auto-props helpers ───────────────────────────────────────────────────────
 
 def get_today_teams() -> list:

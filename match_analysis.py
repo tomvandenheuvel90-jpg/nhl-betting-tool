@@ -13,6 +13,24 @@ from sports import nhl, nba, mlb, soccer, odds_api
 
 # ─── Gedeelde helpers ─────────────────────────────────────────────────────────
 
+_BLEND_LAST10_WEIGHT = 0.60   # gewicht voor last-10 rolling average
+_BLEND_SEASON_WEIGHT = 0.40   # gewicht voor seizoensgemiddelde
+
+
+def _blend(season_val: float, last10_val, w_last10: float = _BLEND_LAST10_WEIGHT) -> float:
+    """
+    Blend seizoensgemiddelde met last-10 rolling average.
+
+      blended = (last10 × 0.60) + (season × 0.40)
+
+    Als last10_val None of 0 is (geen data beschikbaar), wordt alleen het
+    seizoensgemiddelde teruggegeven als fallback.
+    """
+    if last10_val is None or float(last10_val) <= 0:
+        return season_val
+    return round(float(last10_val) * w_last10 + float(season_val) * (1.0 - w_last10), 2)
+
+
 def _poisson_p(k: int, lam: float) -> float:
     """P(X = k) voor Poisson-verdeling."""
     if lam <= 0:
@@ -111,6 +129,32 @@ def analyze_nhl_matches(matches: list) -> list:
         except Exception:
             pass
 
+        # ── Last-10 goals ophalen en blenden met seizoensgemiddelden ──────────
+        # blended = (last10 × 0.60) + (season × 0.40)
+        # Fallback naar seizoensgemiddelde als last-10 niet beschikbaar is.
+        home_last10: dict = {}
+        away_last10: dict = {}
+        try:
+            home_abbrev = (home_form or {}).get("abbrev", "")
+            if home_abbrev:
+                home_last10 = nhl.get_team_last10_goals(home_abbrev)
+        except Exception:
+            pass
+        try:
+            away_abbrev = (away_form or {}).get("abbrev", "")
+            if away_abbrev:
+                away_last10 = nhl.get_team_last10_goals(away_abbrev)
+        except Exception:
+            pass
+
+        # Bouw blended form-dicts voor het Poisson-model
+        hf = dict(home_form or fallback)
+        af = dict(away_form or fallback)
+        hf["gf_avg"] = _blend(hf.get("gf_avg", _NHL_LEAGUE_GF_AVG), home_last10.get("last10_gf_avg"))
+        hf["ga_avg"] = _blend(hf.get("ga_avg", _NHL_LEAGUE_GF_AVG), home_last10.get("last10_ga_avg"))
+        af["gf_avg"] = _blend(af.get("gf_avg", _NHL_LEAGUE_GF_AVG), away_last10.get("last10_gf_avg"))
+        af["ga_avg"] = _blend(af.get("ga_avg", _NHL_LEAGUE_GF_AVG), away_last10.get("last10_ga_avg"))
+
         scr_odds  = m.get("screenshot_odds") or {}
         b365_odds = {}
         odds_bron = "screenshot"
@@ -127,8 +171,8 @@ def analyze_nhl_matches(matches: list) -> list:
             return float(v) if v else None
 
         probs = {}
-        if home_form or away_form:
-            probs = _nhl_match_probs(home_form or fallback, away_form or fallback)
+        if hf or af:
+            probs = _nhl_match_probs(hf, af)
 
         home_odds = _odds("home_odds", "home")
         draw_odds = _odds("draw_odds", "draw")
@@ -141,15 +185,17 @@ def analyze_nhl_matches(matches: list) -> list:
         ]
 
         results.append({
-            "home_team":  home_name,
-            "away_team":  away_name,
-            "time":       m.get("time"),
-            "home_form":  home_form,
-            "away_form":  away_form,
-            "probs":      probs,
-            "odds_bron":  odds_bron,
-            "options":    options,
-            "best":       _best_option(options),
+            "home_team":    home_name,
+            "away_team":    away_name,
+            "time":         m.get("time"),
+            "home_form":    home_form,          # origineel (voor weergave)
+            "away_form":    away_form,           # origineel (voor weergave)
+            "home_last10":  home_last10,         # last-10 goals data
+            "away_last10":  away_last10,
+            "probs":        probs,
+            "odds_bron":    odds_bron,
+            "options":      options,
+            "best":         _best_option(options),
         })
     return results
 
@@ -318,6 +364,29 @@ def analyze_nba_matches(matches: list) -> list:
 
         home_form = nba.get_team_form_for_match(home_name)
         away_form = nba.get_team_form_for_match(away_name)
+
+        # ── Last-10 stats ophalen en blenden met seizoensgemiddelden ──────────
+        # blended = (last10 × 0.60) + (season × 0.40)
+        # Fallback naar seizoensgemiddelde als last-10 niet beschikbaar is.
+        home_last10: dict = {}
+        away_last10: dict = {}
+        try:
+            home_last10 = nba.get_team_last10_stats(home_name)
+        except Exception:
+            pass
+        try:
+            away_last10 = nba.get_team_last10_stats(away_name)
+        except Exception:
+            pass
+
+        # Bouw blended form-dicts voor het Normal-distributie-model
+        hf = dict(home_form or {"pts_avg": _NBA_LEAGUE_PTS_AVG, "opp_pts_avg": _NBA_LEAGUE_PTS_AVG})
+        af = dict(away_form or {"pts_avg": _NBA_LEAGUE_PTS_AVG, "opp_pts_avg": _NBA_LEAGUE_PTS_AVG})
+        hf["pts_avg"]     = _blend(hf.get("pts_avg",     _NBA_LEAGUE_PTS_AVG), home_last10.get("last10_pts"))
+        hf["opp_pts_avg"] = _blend(hf.get("opp_pts_avg", _NBA_LEAGUE_PTS_AVG), home_last10.get("last10_opp_pts"))
+        af["pts_avg"]     = _blend(af.get("pts_avg",     _NBA_LEAGUE_PTS_AVG), away_last10.get("last10_pts"))
+        af["opp_pts_avg"] = _blend(af.get("opp_pts_avg", _NBA_LEAGUE_PTS_AVG), away_last10.get("last10_opp_pts"))
+
         scr_odds  = m.get("screenshot_odds") or {}
         b365_h2h  = {}
         b365_sp   = {}
@@ -338,7 +407,7 @@ def analyze_nba_matches(matches: list) -> list:
         h_sp_odds  = b365_sp.get("home_spread_odds")
         a_sp_odds  = b365_sp.get("away_spread_odds")
         spread_val = float(hs) if hs is not None else 0.0
-        probs      = _nba_match_probs(home_form or fallback, away_form or fallback, spread=spread_val)
+        probs      = _nba_match_probs(hf, af, spread=spread_val)
 
         options = [
             _make_option("p_home", probs, home_ml, f"🏠 {home_name} wint"),
@@ -350,16 +419,18 @@ def analyze_nba_matches(matches: list) -> list:
                                         f"✈️ {away_name} {as_:+.1f}" if as_ else f"✈️ {away_name} spread"))
 
         results.append({
-            "home_team":  home_name,
-            "away_team":  away_name,
-            "time":       m.get("time"),
-            "home_form":  home_form,
-            "away_form":  away_form,
-            "probs":      probs,
-            "odds_bron":  odds_bron,
-            "options":    options,
-            "best":       _best_option(options),
-            "spread":     hs,
+            "home_team":   home_name,
+            "away_team":   away_name,
+            "time":        m.get("time"),
+            "home_form":   home_form,           # origineel (voor weergave)
+            "away_form":   away_form,            # origineel (voor weergave)
+            "home_last10": home_last10,          # last-10 stats data
+            "away_last10": away_last10,
+            "probs":       probs,
+            "odds_bron":   odds_bron,
+            "options":     options,
+            "best":        _best_option(options),
+            "spread":      hs,
         })
     return results
 
