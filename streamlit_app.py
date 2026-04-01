@@ -237,6 +237,40 @@ with tab_dashboard:
     _dsh_resultaten  = db.load_resultaten()
     _dsh_favorieten  = db.load_favorieten()
     _dsh_history     = db.load_history()
+
+    # ── Gesettlede parlays samenvoegen ────────────────────────────────────────
+    # Parlays worden opgeslagen in de `parlays` tabel. Ze komen alleen in
+    # `resultaten` terecht via upsert_resultaat() bij settlement. Als dat (nog)
+    # niet is gebeurd — bijv. voor bestaande parlays of na een mislukte write —
+    # voegen we ze hier handmatig toe zodat Dashboard altijd volledig is.
+    _dsh_bestaande_parlay_ids = {
+        r.get("id", "") for r in _dsh_resultaten
+        if str(r.get("id", "")).startswith("parlay_")
+    }
+    for _dp in db.load_parlays():
+        if (_dp.get("uitkomst") or "open") not in ("gewonnen", "verloren"):
+            continue
+        _dp_res_id = f"parlay_{_dp['id']}"
+        if _dp_res_id in _dsh_bestaande_parlay_ids:
+            continue  # al aanwezig in resultaten, niet dubbel tellen
+        _dp_legs = _dp.get("props_json") or []
+        _dp_inzet = float(_dp.get("inzet") or 0)
+        _dp_odds  = float(_dp.get("gecombineerde_odds") or 1.0)
+        _dp_wl    = float(_dp.get("winst_verlies") or 0)
+        _dsh_resultaten.append({
+            "id":            _dp_res_id,
+            "datum":         (_dp.get("datum") or datetime.date.today().isoformat())[:10],
+            "speler":        f"🎰 Parlay ({len(_dp_legs)} legs)",
+            "bet":           ", ".join(str(l.get("player", "")) for l in _dp_legs[:3]) or "Parlay",
+            "sport":         "Parlay",
+            "odds":          _dp_odds,
+            "inzet":         _dp_inzet,
+            "uitkomst":      _dp["uitkomst"],
+            "winst_verlies": _dp_wl,
+            "ev_score":      float(_dp.get("ev_score") or 0),
+            "is_parlay":     True,
+        })
+
     _dsh_open        = [r for r in _dsh_resultaten if r.get("uitkomst") == "open"]
     _dsh_gedaan      = [r for r in _dsh_resultaten if r.get("uitkomst") in ("gewonnen","verloren")]
     _dsh_start_bk    = float(db.get_setting("start_bankroll") or 0.0)
