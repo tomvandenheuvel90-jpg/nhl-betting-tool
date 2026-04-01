@@ -261,15 +261,23 @@ with tab_dashboard:
         _dp_inzet = float(_dp.get("inzet") or 0)
         _dp_odds  = float(_dp.get("gecombineerde_odds") or 1.0)
         _dp_wl    = float(_dp.get("winst_verlies") or 0)
+        # Gesettlede parlays die niet in resultaten staan krijgen vandaag als datum
+        # zodat ze in het recente overzicht verschijnen en niet door een oude aanmaaKdatum wegvallen.
+        _dp_uitkomst = _dp.get("uitkomst") or "open"
+        _dp_datum = (
+            datetime.date.today().isoformat()
+            if _dp_uitkomst in ("gewonnen", "verloren")
+            else (_dp.get("datum") or datetime.date.today().isoformat())[:10]
+        )
         _dsh_resultaten.append({
             "id":            _dp_res_id,
-            "datum":         (_dp.get("datum") or datetime.date.today().isoformat())[:10],
+            "datum":         _dp_datum,
             "speler":        f"🎰 Parlay ({len(_dp_legs)} legs)",
             "bet":           ", ".join(str(l.get("player", "")) for l in _dp_legs[:3]) or "Parlay",
             "sport":         "Parlay",
             "odds":          _dp_odds,
             "inzet":         _dp_inzet,
-            "uitkomst":      _dp["uitkomst"],
+            "uitkomst":      _dp_uitkomst,
             "winst_verlies": _dp_wl,
             "ev_score":      float(_dp.get("ev_score") or 0),
             "is_parlay":     True,
@@ -386,7 +394,8 @@ with tab_dashboard:
             _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · €{_dop.get('inzet',0):.0f} · {_dop_dag}")
             if _dopb.button("✅ Win",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
                 _dop_inzet_val = float(_dop.get("inzet", 10))
-                db.upsert_resultaat(_dop_id, _dop, "gewonnen", _dop_inzet_val)
+                _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val)
                 if str(_dop_id).startswith("parlay_"):
                     _dop_odds_val = float(_dop.get("odds", 1.0))
                     db.update_parlay(str(_dop_id)[len("parlay_"):], {
@@ -396,7 +405,8 @@ with tab_dashboard:
                 st.rerun()
             if _dopc.button("❌ Loss", key=f"dsh_lost_{_dop_id}", use_container_width=True):
                 _dop_inzet_val = float(_dop.get("inzet", 10))
-                db.upsert_resultaat(_dop_id, _dop, "verloren", _dop_inzet_val)
+                _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                db.upsert_resultaat(_dop_id, _dop_fav, "verloren", _dop_inzet_val)
                 if str(_dop_id).startswith("parlay_"):
                     db.update_parlay(str(_dop_id)[len("parlay_"):], {
                         "uitkomst": "verloren",
@@ -413,7 +423,7 @@ with tab_dashboard:
 
     with _dcol_l:
         st.markdown("#### 📊 Laatste resultaten")
-        _dsh_recent = sorted(_dsh_gedaan, key=lambda r: r.get("datum",""), reverse=True)[:7]
+        _dsh_recent = sorted(_dsh_gedaan, key=lambda r: r.get("datum",""), reverse=True)[:15]
         if not _dsh_recent:
             st.info("Nog geen afgeronde weddenschappen.")
         else:
