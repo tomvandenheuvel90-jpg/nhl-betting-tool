@@ -1048,8 +1048,38 @@ with tab_bankroll:
     _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren")]
 
     # ── Parlays laden (één keer, hergebruikt voor per-sport en Parlay ROI) ────
-    _all_parlays_bk     = db.load_parlays()
-    _parlays_bk_map     = {p["id"]: p for p in _all_parlays_bk}
+    _all_parlays_bk = db.load_parlays()
+    _parlays_bk_map = {p["id"]: p for p in _all_parlays_bk}
+
+    # Gesettlede parlays die ontbreken in _gedaan toevoegen (zelfde aanpak als Dashboard).
+    # _gedaan komt uit resultaten; als upsert_resultaat ooit niet is uitgevoerd staan
+    # de parlays daar niet in en worden ze hier handmatig ingevuld.
+    _bk_bestaande_prl_ids = {
+        str(r.get("id", "")) for r in _gedaan
+        if str(r.get("id", "")).startswith("parlay_")
+    }
+    for _p in _all_parlays_bk:
+        if (_p.get("uitkomst") or "open") not in ("gewonnen", "verloren"):
+            continue
+        _p_res_id = f"parlay_{_p['id']}"
+        if _p_res_id in _bk_bestaande_prl_ids:
+            continue  # al aanwezig in resultaten, niet dubbel tellen
+        _p_legs  = _p.get("props_json") or []
+        _p_entry = {
+            "id":            _p_res_id,
+            "datum":         (_p.get("datum") or "")[:10],
+            "speler":        f"🎰 Parlay ({len(_p_legs)} legs)",
+            "bet":           ", ".join(str(l.get("player", "")) for l in _p_legs[:3]) or "Parlay",
+            "sport":         "Parlay",
+            "odds":          float(_p.get("gecombineerde_odds") or 1.0),
+            "inzet":         float(_p.get("inzet") or 0),
+            "uitkomst":      _p["uitkomst"],
+            "winst_verlies": float(_p.get("winst_verlies") or 0),
+            "ev_score":      float(_p.get("ev_score") or 0),
+            "is_parlay":     True,
+        }
+        if _bk_filter(_p_entry):  # respecteer actieve sport/periode/type filters
+            _gedaan.append(_p_entry)
 
     # _gedaan_sport: parlay-entries uitgebreid naar losse sport-legs voor per-sport stats
     # Elke leg krijgt inzet/P&L proportioneel toegewezen (inzet / aantal legs).
