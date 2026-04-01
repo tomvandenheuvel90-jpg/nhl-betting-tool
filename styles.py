@@ -174,6 +174,23 @@ label,
   box-shadow: 0 0 0 2px rgba(124,58,237,0.25) !important;
 }
 
+/* ── Number input – wrapper + stepper knoppen donker ── */
+[data-testid="stNumberInput"] > div > div,
+[data-testid="stNumberInput"] [data-baseweb="base-input"] {
+  background: #13132e !important;
+  border: 1px solid #2e2e56 !important;
+  border-radius: 8px !important;
+}
+[data-testid="stNumberInput"] button {
+  background: #13132e !important;
+  color: #c4b5fd !important;
+  border-color: #2e2e56 !important;
+}
+[data-testid="stNumberInput"] button:hover {
+  background: #1a1a3e !important;
+  color: #ffffff !important;
+}
+
 /* ── Selectbox dropdown list ── */
 [data-baseweb="popover"] {
   background: #13132e !important;
