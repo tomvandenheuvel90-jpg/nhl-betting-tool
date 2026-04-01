@@ -1586,16 +1586,20 @@ with tab_geplaatst:
                         )
 
                         for _b in _bets:
+                            _b_id   = _b.get("id","")
                             _b_uit  = _b.get("uitkomst","")
                             _b_icon = "✅" if _b_uit == "gewonnen" else ("❌" if _b_uit == "verloren" else "⏳")
                             _b_wl   = _b.get("winst_verlies",0)
                             _b_wl_s = f"€{_b_wl:+.2f}" if _b_uit != "open" else "—"
-                            _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns([3, 1, 1, 1, 1])
+                            _bc1, _bc2, _bc3, _bc4, _bc5, _bc6 = st.columns([3, 1, 1, 1, 1, 0.5])
                             _bc1.write(f"{_b_icon} **{_b.get('speler','')}** — {_b.get('bet','')}")
                             _bc2.write(f"@ {_b.get('odds','—')}")
                             _bc3.write(f"€{_b.get('inzet',0):.2f}")
                             _bc4.write(_b_wl_s)
                             _bc5.caption(_b.get("datum",""))
+                            if _bc6.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder weddenschap"):
+                                db.remove_resultaat(_b_id)
+                                st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
