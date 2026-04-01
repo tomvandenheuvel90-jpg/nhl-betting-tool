@@ -248,8 +248,8 @@ with tab_dashboard:
         if str(r.get("id", "")).startswith("parlay_")
     }
     for _dp in db.load_parlays():
-        if (_dp.get("uitkomst") or "open") not in ("gewonnen", "verloren"):
-            continue
+        # Alle parlays (open én gesettled) samenvoegen zodat open parlays
+        # zichtbaar zijn als open bets en gesettlede parlays niet ontbreken.
         _dp_res_id = f"parlay_{_dp['id']}"
         if _dp_res_id in _dsh_bestaande_parlay_ids:
             continue  # al aanwezig in resultaten, niet dubbel tellen
@@ -381,10 +381,23 @@ with tab_dashboard:
             _dopa.write(f"**{_dop.get('speler','')}** — {_dop.get('bet','')}")
             _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · €{_dop.get('inzet',0):.2f} · {_dop_dag}")
             if _dopb.button("✅ Won",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
-                db.upsert_resultaat(_dop_id, _dop, "gewonnen", float(_dop.get("inzet",10)))
+                _dop_inzet_val = float(_dop.get("inzet", 10))
+                db.upsert_resultaat(_dop_id, _dop, "gewonnen", _dop_inzet_val)
+                if str(_dop_id).startswith("parlay_"):
+                    _dop_odds_val = float(_dop.get("odds", 1.0))
+                    db.update_parlay(str(_dop_id)[len("parlay_"):], {
+                        "uitkomst": "gewonnen",
+                        "winst_verlies": round(_dop_inzet_val * (_dop_odds_val - 1), 2),
+                    })
                 st.rerun()
             if _dopc.button("❌ Verloor", key=f"dsh_lost_{_dop_id}", use_container_width=True):
-                db.upsert_resultaat(_dop_id, _dop, "verloren", float(_dop.get("inzet",10)))
+                _dop_inzet_val = float(_dop.get("inzet", 10))
+                db.upsert_resultaat(_dop_id, _dop, "verloren", _dop_inzet_val)
+                if str(_dop_id).startswith("parlay_"):
+                    db.update_parlay(str(_dop_id)[len("parlay_"):], {
+                        "uitkomst": "verloren",
+                        "winst_verlies": round(-_dop_inzet_val, 2),
+                    })
                 st.rerun()
     else:
         st.success("✅ Geen open weddenschappen — alles is up-to-date.")
@@ -973,6 +986,28 @@ with tab_bankroll:
 
     # ── Openstaande weddenschappen ───────────────────────────────────────────
     _openstaand = [r for r in db.load_resultaten() if r.get("uitkomst") == "open"]
+    # Open parlays toevoegen (staan niet in resultaten tabel)
+    _bk_open_prl_existing = {r.get("id", "") for r in _openstaand if str(r.get("id", "")).startswith("parlay_")}
+    for _bk_op_prl in db.load_parlays():
+        if (_bk_op_prl.get("uitkomst") or "open") != "open":
+            continue
+        _bk_op_prl_res_id = f"parlay_{_bk_op_prl['id']}"
+        if _bk_op_prl_res_id in _bk_open_prl_existing:
+            continue
+        _bk_op_prl_legs = _bk_op_prl.get("props_json") or []
+        _openstaand.append({
+            "id":            _bk_op_prl_res_id,
+            "datum":         (_bk_op_prl.get("datum") or datetime.date.today().isoformat())[:10],
+            "speler":        f"🎰 Parlay ({len(_bk_op_prl_legs)} legs)",
+            "bet":           ", ".join(str(l.get("player", "")) for l in _bk_op_prl_legs[:3]) or "Parlay",
+            "sport":         "Parlay",
+            "odds":          float(_bk_op_prl.get("gecombineerde_odds") or 1.0),
+            "inzet":         float(_bk_op_prl.get("inzet") or 0),
+            "uitkomst":      "open",
+            "winst_verlies": 0.0,
+            "ev_score":      float(_bk_op_prl.get("ev_score") or 0),
+            "is_parlay":     True,
+        })
     if _openstaand:
         st.markdown("#### ⏳ Openstaande weddenschappen")
         st.caption(f"{len(_openstaand)} bet(s) nog niet afgerond — klik op gewonnen of verloren om te registreren.")
@@ -982,17 +1017,34 @@ with tab_bankroll:
             _oc1.write(f"**{_op.get('speler','')}** — {_op.get('bet','')}  @ {_op.get('odds','—')} | €{_op.get('inzet',0):.2f}")
             _oc2.caption(_op.get("datum","")[:10])
             if _oc3.button("✅ Won", key=f"opwon_{_op_id}"):
+                _op_inzet_val = float(_op.get("inzet", 10))
                 _op_upd = dict(_op)
                 _op_upd["uitkomst"] = "gewonnen"
-                db.upsert_resultaat(_op_id, _op_upd, "gewonnen", float(_op.get("inzet", 10)))
+                db.upsert_resultaat(_op_id, _op_upd, "gewonnen", _op_inzet_val)
+                if str(_op_id).startswith("parlay_"):
+                    _op_odds_val = float(_op.get("odds", 1.0))
+                    db.update_parlay(str(_op_id)[len("parlay_"):], {
+                        "uitkomst": "gewonnen",
+                        "winst_verlies": round(_op_inzet_val * (_op_odds_val - 1), 2),
+                    })
                 st.rerun()
             if _oc4.button("❌ Verloor", key=f"oplost_{_op_id}"):
+                _op_inzet_val = float(_op.get("inzet", 10))
                 _op_upd = dict(_op)
                 _op_upd["uitkomst"] = "verloren"
-                db.upsert_resultaat(_op_id, _op_upd, "verloren", float(_op.get("inzet", 10)))
+                db.upsert_resultaat(_op_id, _op_upd, "verloren", _op_inzet_val)
+                if str(_op_id).startswith("parlay_"):
+                    db.update_parlay(str(_op_id)[len("parlay_"):], {
+                        "uitkomst": "verloren",
+                        "winst_verlies": round(-float(_op.get("inzet", 10)), 2),
+                    })
                 st.rerun()
             if _oc5.button("🗑️", key=f"opdel_{_op_id}", help="Verwijder"):
-                db.remove_resultaat(_op_id)
+                if str(_op_id).startswith("parlay_"):
+                    # Open parlay staat niet in resultaten → verwijder uit parlays tabel
+                    db.delete_parlay(str(_op_id)[len("parlay_"):])
+                else:
+                    db.remove_resultaat(_op_id)
                 st.rerun()
         st.markdown("---")
 
@@ -1625,6 +1677,33 @@ with tab_geplaatst:
 
     _alle_res_gp = db.load_resultaten()
 
+    # ── Open en ontbrekende parlays toevoegen ─────────────────────────────────
+    # Open parlays staan nooit in resultaten; gesettlede parlays die vóór de
+    # settlement-fix zijn opgeslagen kunnen ook ontbreken. Beide gevallen worden
+    # hier hersteld zodat de tab een compleet beeld geeft.
+    _gp_bestaande_parlay_ids = {
+        r.get("id", "") for r in _alle_res_gp
+        if str(r.get("id", "")).startswith("parlay_")
+    }
+    for _gpp in db.load_parlays():
+        _gpp_res_id = f"parlay_{_gpp['id']}"
+        if _gpp_res_id in _gp_bestaande_parlay_ids:
+            continue  # al aanwezig in resultaten, niet dubbel tellen
+        _gpp_legs = _gpp.get("props_json") or []
+        _alle_res_gp.append({
+            "id":            _gpp_res_id,
+            "datum":         (_gpp.get("datum") or datetime.date.today().isoformat())[:10],
+            "speler":        f"🎰 Parlay ({len(_gpp_legs)} legs)",
+            "bet":           ", ".join(str(l.get("player", "")) for l in _gpp_legs[:3]) or "Parlay",
+            "sport":         "Parlay",
+            "odds":          float(_gpp.get("gecombineerde_odds") or 1.0),
+            "inzet":         float(_gpp.get("inzet") or 0),
+            "uitkomst":      _gpp.get("uitkomst") or "open",
+            "winst_verlies": float(_gpp.get("winst_verlies") or 0),
+            "ev_score":      float(_gpp.get("ev_score") or 0),
+            "is_parlay":     True,
+        })
+
     if not _alle_res_gp:
         st.info("Nog geen weddenschappen geregistreerd. Voeg bets toe via de Shortlist of Bankroll tab.")
     else:
@@ -1740,11 +1819,17 @@ with tab_geplaatst:
                             _bc4.write(_b_wl_s)
                             _bc5.caption(_b.get("datum",""))
                             if _bc6.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder weddenschap"):
-                                db.remove_resultaat(_b_id)
-                                # Als het een parlay was: zet de parlay terug op 'open'
                                 if str(_b_id).startswith("parlay_"):
                                     _orig_prl_id = str(_b_id)[len("parlay_"):]
-                                    db.update_parlay(_orig_prl_id, {"uitkomst": "open", "winst_verlies": 0.0})
+                                    if _b.get("uitkomst") == "open":
+                                        # Open parlay staat niet in resultaten → verwijder uit parlays tabel
+                                        db.delete_parlay(_orig_prl_id)
+                                    else:
+                                        # Gesettled parlay staat in resultaten én parlays tabel
+                                        db.remove_resultaat(_b_id)
+                                        db.update_parlay(_orig_prl_id, {"uitkomst": "open", "winst_verlies": 0.0})
+                                else:
+                                    db.remove_resultaat(_b_id)
                                 st.rerun()
 
 
