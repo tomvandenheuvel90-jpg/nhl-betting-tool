@@ -121,9 +121,11 @@ label,
   transform: none !important;
 }
 
-/* ── Secondary / normal buttons ── */
+/* ── Secondary / normal buttons (klassiek + nieuwere Streamlit data-testid) ── */
 .stButton > button[kind="secondary"],
-.stButton > button:not([kind="primary"]) {
+.stButton > button:not([kind="primary"]),
+[data-testid="stBaseButton-secondary"],
+[data-testid="baseButton-secondary"] {
   background: #14142e !important;
   color: #c4b5fd !important;
   border: 1px solid #3e3e72 !important;
@@ -132,7 +134,9 @@ label,
   transition: all 0.2s ease !important;
 }
 .stButton > button[kind="secondary"]:hover,
-.stButton > button:not([kind="primary"]):hover {
+.stButton > button:not([kind="primary"]):hover,
+[data-testid="stBaseButton-secondary"]:hover,
+[data-testid="baseButton-secondary"]:hover {
   background: #1a1a3e !important;
   border-color: #7c3aed !important;
   color: #ffffff !important;
@@ -162,6 +166,19 @@ label,
   background: #13132e !important;
   border: 1px solid #2e2e56 !important;
   border-radius: 8px !important;
+  color: #e8eaf6 !important;
+}
+
+/* ── Selectbox – baseweb inner container + geselecteerde waarde ── */
+[data-baseweb="select"] > div:first-child,
+[data-baseweb="select"] [data-baseweb="input-container"],
+[data-baseweb="select-container"] > div {
+  background: #13132e !important;
+  border-color: #2e2e56 !important;
+  color: #e8eaf6 !important;
+}
+[data-baseweb="select"] [data-value],
+[data-baseweb="select"] span {
   color: #e8eaf6 !important;
 }
 .stTextInput > div > div > input::placeholder,
@@ -225,6 +242,7 @@ label,
   color: #e0d4ff !important;
 }
 [data-testid="stExpander"] > div > div {
+  background: #11112b !important;
   color: #e8eaf6 !important;
 }
 
