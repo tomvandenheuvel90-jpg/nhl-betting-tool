@@ -1456,11 +1456,39 @@ with tab_parlay:
                 _oc1, _oc2, _oc3 = st.columns(3)
                 if (_prl.get("uitkomst") or "open") == "open":
                     if _oc1.button("✅ Gewonnen", key=f"pwon_{_prl.get('id','')}"):
-                        _pw = _prl.get("inzet",10) * _prl.get("gecombineerde_odds",1) - _prl.get("inzet",10)
-                        db.update_parlay(_prl.get("id",""), {"uitkomst":"gewonnen","winst_verlies":round(_pw,2)})
+                        _prl_id    = _prl.get("id","")
+                        _prl_inzet = _prl.get("inzet", 10)
+                        _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
+                        _pw = round(_prl_inzet * _prl_odds - _prl_inzet, 2)
+                        db.update_parlay(_prl_id, {"uitkomst":"gewonnen","winst_verlies":_pw})
+                        # Sla ook op in resultaten zodat het zichtbaar is in Geplaatste Bets + Bankroll
+                        _prl_legs = _prl.get("legs", []) or []
+                        _prl_fav  = {
+                            "odds":    _prl_odds,
+                            "datum":   (_prl.get("datum") or datetime.date.today().isoformat())[:10],
+                            "speler":  f"🎰 Parlay ({len(_prl_legs)} legs)",
+                            "bet":     ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
+                            "sport":   "Parlay",
+                            "ev_score": float(_prl.get("ev_score") or 0.0),
+                        }
+                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "gewonnen", _prl_inzet)
                         st.rerun()
                     if _oc2.button("❌ Verloren", key=f"plost_{_prl.get('id','')}"):
-                        db.update_parlay(_prl.get("id",""), {"uitkomst":"verloren","winst_verlies":-_prl.get("inzet",10)})
+                        _prl_id    = _prl.get("id","")
+                        _prl_inzet = _prl.get("inzet", 10)
+                        _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
+                        db.update_parlay(_prl_id, {"uitkomst":"verloren","winst_verlies":round(-_prl_inzet,2)})
+                        # Sla ook op in resultaten zodat het zichtbaar is in Geplaatste Bets + Bankroll
+                        _prl_legs = _prl.get("legs", []) or []
+                        _prl_fav  = {
+                            "odds":    _prl_odds,
+                            "datum":   (_prl.get("datum") or datetime.date.today().isoformat())[:10],
+                            "speler":  f"🎰 Parlay ({len(_prl_legs)} legs)",
+                            "bet":     ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
+                            "sport":   "Parlay",
+                            "ev_score": float(_prl.get("ev_score") or 0.0),
+                        }
+                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "verloren", _prl_inzet)
                         st.rerun()
                 else:
                     _wv = _prl.get("winst_verlies", 0) or 0
@@ -1599,6 +1627,10 @@ with tab_geplaatst:
                             _bc5.caption(_b.get("datum",""))
                             if _bc6.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder weddenschap"):
                                 db.remove_resultaat(_b_id)
+                                # Als het een parlay was: zet de parlay terug op 'open'
+                                if str(_b_id).startswith("parlay_"):
+                                    _orig_prl_id = str(_b_id)[len("parlay_"):]
+                                    db.update_parlay(_orig_prl_id, {"uitkomst": "open", "winst_verlies": 0.0})
                                 st.rerun()
 
 
