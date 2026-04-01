@@ -324,13 +324,13 @@ with tab_dashboard:
     # ── KPI-kaartjes (gebruikt globale kpi_card helper) ───────────────────────
 
     # Rij 1: Bankroll · P&L week · ROI
-    _bk_val     = f"€{_dsh_huidig_saldo:.2f}" if _dsh_huidig_saldo is not None else "—"
-    _bk_sub     = f"start €{_dsh_start_bk:.2f}  ·  P&L {_dsh_total_wl:+.2f}" if _dsh_start_bk > 0 else "Stel startbankroll in via Bankroll tab"
+    _bk_val     = f"€{_dsh_huidig_saldo:.0f}" if _dsh_huidig_saldo is not None else "—"
+    _bk_sub     = f"start €{_dsh_start_bk:.0f}  ·  P&L {_dsh_total_wl:+.0f}" if _dsh_start_bk > 0 else "Stel startbankroll in via Bankroll tab"
     _bk_pos     = (True if _dsh_total_wl > 0 else False) if _dsh_start_bk > 0 and _dsh_total_wl != 0 else None
-    _wk_val     = f"€{_dsh_week_wl:+.2f}" if _dsh_week_gedaan else "—"
+    _wk_val     = f"€{_dsh_week_wl:+.0f}" if _dsh_week_gedaan else "—"
     _wk_sub     = f"{len(_dsh_week_gedaan)} bets deze week" if _dsh_week_gedaan else "Geen bets deze week"
     _wk_pos     = (True if _dsh_week_wl > 0 else False) if _dsh_week_gedaan and _dsh_week_wl != 0 else None
-    _roi_val    = f"{_dsh_roi:+.2f}%" if _dsh_gedaan else "—"
+    _roi_val    = f"{_dsh_roi:+.0f}%" if _dsh_gedaan else "—"
     _roi_sub    = f"over {len(_dsh_gedaan)} afgeronde bets" if _dsh_gedaan else ""
     _roi_pos    = (True if _dsh_roi > 0 else False) if _dsh_gedaan and _dsh_roi != 0 else None
 
@@ -340,7 +340,7 @@ with tab_dashboard:
     _kr3.markdown(kpi_card("📈", "ROI (totaal)", _roi_val, _roi_sub, _roi_pos, tooltip=_roi_val), unsafe_allow_html=True)
 
     # Rij 2: Win% · Streak · Open bets teller
-    _wr_val     = f"{_dsh_wr:.1f}%" if _dsh_gedaan else "—"
+    _wr_val     = f"{_dsh_wr:.0f}%" if _dsh_gedaan else "—"
     _wr_sub     = f"{_dsh_won} gewonnen / {len(_dsh_gedaan) - _dsh_won} verloren" if _dsh_gedaan else ""
     _wr_pos     = (True if _dsh_wr >= 55 else False) if _dsh_gedaan else None
     _streak_soort = "gewonnen" if _dsh_streak_type == "gewonnen" else ("verloren" if _dsh_streak_type == "verloren" else "")
@@ -383,7 +383,7 @@ with tab_dashboard:
                 _dop_dag = _dop.get("datum","")[:10]
             _dopa, _dopb, _dopc, _dopd, _dope = st.columns([3, 1, 1, 1, 1])
             _dopa.write(f"**{_dop.get('speler','')}** — {_dop.get('bet','')}")
-            _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · €{_dop.get('inzet',0):.2f} · {_dop_dag}")
+            _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · €{_dop.get('inzet',0):.0f} · {_dop_dag}")
             if _dopb.button("✅ Won",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
                 _dop_inzet_val = float(_dop.get("inzet", 10))
                 db.upsert_resultaat(_dop_id, _dop, "gewonnen", _dop_inzet_val)
@@ -420,7 +420,7 @@ with tab_dashboard:
             for _dr in _dsh_recent:
                 _dr_icon = "✅" if _dr.get("uitkomst") == "gewonnen" else "❌"
                 _dr_wl   = _dr.get("winst_verlies", 0)
-                _dr_wl_s = f"€{_dr_wl:+.2f}"
+                _dr_wl_s = f"€{_dr_wl:+.0f}"
                 _dr_kleur = "#4ade80" if _dr_wl >= 0 else "#f87171"
                 st.markdown(
                     f"<div style='display:flex;justify-content:space-between;align-items:center;"
