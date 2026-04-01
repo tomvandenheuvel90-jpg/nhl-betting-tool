@@ -787,12 +787,15 @@ with tab_favorieten:
                                       placeholder="bijv. Connor McDavid of Yankees")
         _m_sport   = _mf2.selectbox("Sport", ["NHL","NBA","MLB","Voetbal","Overig"],
                                      key="m_sport")
+        _bet_types  = ["Player Prop", "Match Result", "Odds Boost", "Other"]
         _mf3, _mf4 = st.columns(2)
-        _m_bet     = _mf3.text_input("Bet type", key="m_bet",
-                                      placeholder="bijv. Anytime Goal Scorer")
+        _m_bet_cat = _mf3.selectbox("Bet type", _bet_types, key="m_bet_cat")
         _m_odds    = _mf4.number_input("Odds", min_value=1.01, max_value=50.0,
                                         value=2.00, step=0.05, format="%.2f",
                                         key="m_odds")
+        _m_bet_det = st.text_input("Details", key="m_bet_det",
+                                    placeholder="bijv. Anytime Goal Scorer, Over 2.5 goals, Colorado Avalanche to win")
+        _m_bet     = f"{_m_bet_cat} — {_m_bet_det.strip()}" if _m_bet_det.strip() else _m_bet_cat
         _mf5, _mf6, _mf7 = st.columns(3)
         _m_inzet   = _mf5.number_input("Inzet (€)", min_value=0.10, value=10.0,
                                          step=1.0, format="%.2f", key="m_inzet")
@@ -802,7 +805,7 @@ with tab_favorieten:
                                         value=0.0, step=0.01, format="%.3f",
                                         key="m_ev")
         if st.button("➕ Toevoegen aan favorieten", key="m_add_fav",
-                     disabled=not (_m_speler and _m_bet)):
+                     disabled=not _m_speler):
             _m_bet_obj = {
                 "player":   _m_speler,
                 "bet_type": _m_bet,
@@ -1260,12 +1263,15 @@ with tab_parlay:
                                   placeholder="bijv. Auston Matthews")
     _p_sport   = _ph2.selectbox("Sport", _sports,
                                  index=_sport_idx, key=f"p_sport_{_fv}")
+    _bet_types  = ["Player Prop", "Match Result", "Odds Boost", "Other"]
     _ph3, _ph4 = st.columns(2)
-    _p_bet     = _ph3.text_input("Bet type", key=f"p_bet_{_fv}",
-                                  placeholder="bijv. Anytime Goal Scorer")
+    _p_bet_cat = _ph3.selectbox("Bet type", _bet_types, key=f"p_bet_cat_{_fv}")
     _p_odds    = _ph4.number_input("Odds", min_value=1.01, max_value=50.0,
                                     value=2.00, step=0.05, format="%.2f",
                                     key=f"p_odds_{_fv}")
+    _p_bet_det = st.text_input("Details", key=f"p_bet_det_{_fv}",
+                                placeholder="bijv. Anytime Goal Scorer, Over 2.5 goals, Colorado Avalanche to win")
+    _p_bet     = f"{_p_bet_cat} — {_p_bet_det.strip()}" if _p_bet_det.strip() else _p_bet_cat
 
     # Hit rate: echt optioneel — vink aan om in te vullen
     _p_use_hr = st.checkbox("Hit rate opgeven", key=f"p_use_hr_{_fv}", value=False,
@@ -1278,8 +1284,7 @@ with tab_parlay:
 
     _padd_col, _pwis_col = st.columns([3, 1])
     if _padd_col.button("➕ Voeg toe aan parlay", key="p_add_leg",
-                        type="primary", use_container_width=True,
-                        disabled=not _p_bet):
+                        type="primary", use_container_width=True):
         st.session_state.parlay_last_sport = _p_sport
         st.session_state.parlay_legs.append({
             "player":   _p_speler,
