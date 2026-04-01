@@ -216,12 +216,16 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Banner (optioneel SVG-asset)
-try:
-    with open("assets/banner.svg", "r") as _f:
-        st.markdown(_f.read(), unsafe_allow_html=True)
-except FileNotFoundError:
-    pass
+# Banner — JPG heeft voorrang boven SVG
+import os as _os
+if _os.path.exists("assets/banner.jpg"):
+    st.image("assets/banner.jpg", use_container_width=True)
+elif _os.path.exists("assets/banner.svg"):
+    try:
+        with open("assets/banner.svg", "r") as _f:
+            st.markdown(_f.read(), unsafe_allow_html=True)
+    except Exception:
+        pass
 
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 
