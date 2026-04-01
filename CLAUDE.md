@@ -13,7 +13,7 @@ berekent de Expected Value (EV) per prop, en beheert een bet slip / parlay build
 ## Architecture
 
 ### Entry point
-- **`streamlit_app.py`** (±1730 regels) — Enige entry point. Start met `streamlit run streamlit_app.py`.
+- **`streamlit_app.py`** (±1780 regels) — Enige entry point. Start met `streamlit run streamlit_app.py`.
   Bevat de volledige UI logica in 7 tabs:
   | Tab | Inhoud |
   |-----|--------|
@@ -29,7 +29,7 @@ berekent de Expected Value (EV) per prop, en beheert een bet slip / parlay build
 | Bestand | Doel |
 |---------|------|
 | **`analysis.py`** (777 r.) | Claude Vision API-calls (`extract_bets()`), HEIC→JPEG conversie, JSON-repair, auto-prop generatie per sport, Flashscore-integratie, Football-Data API form-fetching |
-| **`match_analysis.py`** (528 r.) | Sport-specifieke kansmodellen: NHL (Poisson), NBA (Normal dist.), MLB (Poisson + pitcher ERA), Soccer (Poisson + xG). Geeft EV + rating per optie terug. |
+| **`match_analysis.py`** (±620 r.) | Sport-specifieke kansmodellen: NHL (Poisson), NBA (Normal dist.), MLB (Poisson + pitcher ERA), Soccer (Poisson + xG). Geeft EV + rating per optie terug. Bevat weighted blending, home/away splits, H2H-factor en soccer form multiplier (zie Win Probability Models). |
 | **`scorer.py`** (276 r.) | Composite scorer: Linemate HR 35% + seizoen HR 35% + tegenstander 20% + betrouwbaarheid 10%. Functies: `composite_score()`, `ev()`, `rating()` |
 | **`analyze_bets.py`** (200 r.) | CLI-tool voor standalone analyse (niet gebruikt in UI) |
 | **`analyze_bets_v2.py`** (552 r.) | Verbeterde CLI-pipeline met Flashscore + opponent stats (niet gebruikt in UI) |
@@ -47,6 +47,18 @@ berekent de Expected Value (EV) per prop, en beheert een bet slip / parlay build
 | `sports/cache.py` | In-memory cache met TTL | — | — |
 | `sports/rate_limiter.py` | API rate-limiting per sport | — | — |
 | `sports/moneypuck_local.py` | MoneyPuck lokale CSV-utilities, Poisson hit rate berekening | — | — |
+
+**Toegevoegde functies per sports-module (recente uitbreidingen):**
+| Module | Functie | Doel |
+|--------|---------|------|
+| `sports/nhl.py` | `get_team_split_last10_goals(abbrev, venue)` | Laatste 10 thuis- of uitwedstrijden, goals voor/tegen. Cache 2u. |
+| `sports/nhl.py` | `get_h2h_results(home_abbrev, away_abbrev)` | Laatste 5 onderlinge duels (huidig + vorig seizoen). Cache 4u. |
+| `sports/nba.py` | `get_team_split_last10_stats(team_name, venue)` | Laatste 10 thuis- of uitwedstrijden via TeamGameLog. Cache 2u. |
+| `sports/nba.py` | `get_h2h_results(home_name, away_name)` | Laatste 5 H2H via TeamGameLog MATCHUP-kolom. Cache 4u. |
+| `sports/mlb.py` | `_find_team_id(team_name)` | Zoekt team-ID op via standings API. |
+| `sports/mlb.py` | `get_h2h_results(home_name, away_name)` | Laatste 5 H2H via schedule API. Cache 4u. |
+| `sports/soccer.py` | `get_team_split_stats(team_id, venue)` | Laatste 10 thuis- of uitwedstrijden via `/teams/{id}/matches`. Cache 2u. |
+| `sports/soccer.py` | `get_h2h_results(home_team_id, away_team_id)` | Laatste 5 H2H via matches-endpoint. Cache 4u. |
 
 **Download-scripts (lokaal draaien om CSV's te vullen):**
 - `download_mlb.py` → `mlb_data/{year}/hitters.csv`, `pitchers.csv`, `games.csv`
@@ -80,7 +92,6 @@ Geschiedenis wordt gesnoeid na 7 dagen, tenzij gekoppeld aan een geplaatste wedd
 | **`prompts.py`** | Constanten: `EXTRACT_PROMPT` (Vision JSON-extractie), `FLASHSCORE_PROMPT` (NL-analyse), `SCENARIO_WEIGHTS` (3 analyse-scenario's), `_REF_ODDS` (referentie-odds per bet type), `SOCCER_COMPS`, `_NHL_TEAM_KEYWORDS` |
 | **`prompts/analyse_prompt.txt`** | Legacy tekstprompt voor Flashscore (niet primair in gebruik) |
 | **`moneypuck_app.py`** | Zelfstandige MoneyPuck viewer (los van de main app) |
-| **`scorer.py`** | Zie boven |
 
 ### Assets & config
 - `assets/banner.svg` — SVG-logo/banner voor de UI header
@@ -114,6 +125,64 @@ db.save_*()  →  Supabase (of lokale JSON-fallback)
 
 ---
 
+## Win Probability Models
+
+### Weighted Blending (NHL + NBA)
+Statistieken worden gecombineerd als gewogen gemiddelde van recente form en seizoensgemiddelden:
+
+```
+blended = last10 × 0.60 + season × 0.40
+```
+
+Fallback: als `last10` ontbreekt of 0 is, wordt uitsluitend het seizoensgemiddelde gebruikt.
+Geïmplementeerd via de `_blend(season, last10)` helper in `match_analysis.py`.
+
+### Home/Away Splits (NHL, NBA, Soccer)
+Voor de thuisploeg worden de laatste 10 **thuis**wedstrijden gebruikt; voor de uitploeg de laatste 10
+**uit**wedstrijden. Als er minder dan 5 venue-specifieke wedstrijden beschikbaar zijn, wordt de
+algemene last-10 als fallback gebruikt.
+
+```
+_split_or_overall(split_dict, overall_dict, key)
+→ split_dict[key]   als split_dict["last10_games"] >= 5
+→ overall_dict[key] anders
+```
+
+MLB heeft geen splits (geen rolling per-game data beschikbaar via de gratis API).
+
+### Head-to-Head Factor (alle 4 sporten)
+Haalt de laatste 5 onderlinge duels op (huidig seizoen, aangevuld met vorig seizoen indien nodig).
+Past de thuiswinst-kans aan op basis van het H2H win percentage:
+
+| H2H win rate thuisploeg | Aanpassing |
+|-------------------------|------------|
+| > 60% | +3% op `p_home` |
+| < 40% | −3% op `p_home` |
+| 40–60% | geen aanpassing |
+
+Minimaal 3 H2H wedstrijden vereist; bij minder wordt de factor overgeslagen.
+Bij 3-way odds (NHL, Soccer): resterende kans wordt proportioneel herverdeeld over draw + away.
+Bij 2-way odds (NBA, MLB): direct omgezet via `p_away = 1 - p_home`.
+
+```python
+_H2H_ADJ_PCT   = 0.03   # 3% maximale aanpassing
+_H2H_MIN_GAMES = 3
+```
+
+### Soccer Form Multiplier
+De recentste 5 wedstrijden (WWDLW-string) beïnvloeden de verwachte doelgemiddelden:
+
+| Resultaat | Effect op gf_avg |
+|-----------|-----------------|
+| W | +0.04 |
+| D | ±0.00 |
+| L | −0.04 |
+
+Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
+`gf_avg *= (1 + form_multiplier)`
+
+---
+
 ## Key Features Built
 - MLB pitcher stat blending (seizoen CSV + huidige ERA, pitcher-gewicht 0.65)
 - Dynamic NBA home court advantage (+3 verwacht puntverschil)
@@ -121,10 +190,16 @@ db.save_*()  →  Supabase (of lokale JSON-fallback)
 - NHL roster optimizations + 3-way odds
 - EV-berekening met composite scorer (meerdere bug fixes toegepast)
 - MLB run line corrections (±1.5 Poisson kans)
-- Player-lookup scoping: `enrich_bet()` voert speler-API-calls **alleen** uit bij echte player props (shots, goals, hits, enz.). Team-niveau bets (Moneyline, Puck Line, Run Line, Spread, Totals, 1X2, enz.) triggeren géén roster- of spelersdata-opvraag — die analyse loopt uitsluitend via `analyze_*_matches()` met team-form data. Geldt voor alle vier sporten (NHL, NBA, MLB, Soccer).
+- **Weighted blend last-10 + seizoen** voor NHL en NBA: `last10 × 0.60 + season × 0.40`
+- **Home/away splits**: thuisploeg gebruikt laatste 10 thuiswedstrijden, uitploeg laatste 10 uitwedstrijden (NHL, NBA, Soccer). Fallback naar overall last-10 bij <5 games.
+- **Head-to-head factor**: ±3% aanpassing op thuiswinst-kans op basis van laatste 5 H2H resultaten, alle 4 sporten.
+- **Soccer form string**: WWDLW-reeks beïnvloedt Poisson-model via gf_avg multiplier (W=+0.04, L=−0.04, cap ±0.12).
+- **Player-lookup scoping**: `enrich_bet()` voert speler-API-calls **alleen** uit bij echte player props (shots, goals, hits, enz.). Team-niveau bets (Moneyline, Puck Line, Run Line, Spread, Totals, 1X2, enz.) triggeren géén roster- of spelersdata-opvraag — die analyse loopt uitsluitend via `analyze_*_matches()` met team-form data. Geldt voor alle vier sporten (NHL, NBA, MLB, Soccer).
 - Parlay Builder: handmatig props toevoegen, hit rate optioneel (checkbox), form reset na toevoegen, sport onthouden
 - Hit rate per parlay-leg is volledig optioneel — EV toont "—" als niet alle legs een HR hebben
-- Geplaatste Bets tab: verwijderknop (🗑️) per weddenschap voor het verwijderen van duplicaten
+- **Parlay settlement fix**: ✅ Gewonnen / ❌ Verloren op een parlay schrijft nu ook naar de `resultaten` tabel via `upsert_resultaat()` met id `parlay_{id}`. Hierdoor verschijnt de parlay in 📋 Geplaatste Bets en telt de P&L mee in de Bankroll.
+- **Delete bet uit geschiedenis**: 🗑️ knop in 📋 Geplaatste Bets werkt voor alle bets (open, gewonnen, verloren). Bij verwijderen van een parlay-entry wordt de parlay in de `parlays` tabel automatisch teruggezet op status `"open"`, zodat hij opnieuw gesettled kan worden.
+- **Handmatig bet invoerformulier — Bet type dropdown**: vrij tekstveld vervangen door dropdown (Player Prop / Match Result / Odds Boost / Other) met een vrij tekstveld "Details" eronder. Geldt voor zowel de ⭐ Shortlist als de 🎯 Parlay Builder invoerformulieren. Opgeslagen waarde: `"Player Prop — Anytime Goal Scorer"` (of alleen de categorie als Details leeg is).
 
 ---
 
@@ -137,9 +212,10 @@ db.save_*()  →  Supabase (of lokale JSON-fallback)
 ---
 
 ## Outstanding / TODO
-- [ ] Bet type filter in Bankroll/Geplaatst tabs uitbreiden
+- [ ] Bet type filter in Bankroll/Geplaatst tabs uitbreiden (bijv. filteren op Player Prop vs. Match Result)
 - [ ] Parlay: leg-niveau odds aanpassen in opgeslagen parlays
 - [ ] Automatisch duplicaten detecteren bij toevoegen van een bet
+- [ ] Parlays die vóór de settlement-fix zijn opgeslagen staan nog niet in `resultaten` — eventueel handmatig herstellen via db.py
 
 ---
 
@@ -151,3 +227,6 @@ db.save_*()  →  Supabase (of lokale JSON-fallback)
 - **Database:** db.py heeft altijd een lokale JSON-fallback; test bij wijzigingen beide paden
 - **API-kosten:** TheOddsAPI is betaald en bijgehouden in `odds_api_usage.json`; Claude Haiku wordt gebruikt voor goedkope Vision-extractie
 - **HEIC-ondersteuning:** pillow-heif is vereist voor iPhone-screenshots; zit in requirements.txt
+- **Cache TTL:** splits/last-10 = 2u, H2H = 4u, seizoensdata = 6u — bewust kort gehouden zodat dagelijkse wedstrijden opgepikt worden
+- **H2H fallback:** als er minder dan `_H2H_MIN_GAMES` (= 3) onderlinge duels zijn, wordt de H2H-factor stilletjes overgeslagen (geen error, geen aanpassing)
+- **Split fallback:** als er minder dan 5 venue-specifieke wedstrijden beschikbaar zijn, gebruikt `_split_or_overall()` de algemene last-10; als die ook ontbreekt, valt `_blend()` terug op het seizoensgemiddelde
