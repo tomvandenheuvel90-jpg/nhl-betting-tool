@@ -189,10 +189,12 @@ if not ANTHROPIC_AVAILABLE:
 # ─── Session state ────────────────────────────────────────────────────────────
 
 for _k, _v in [
-    ("uploader_key",   0),
-    ("last_analysis",  None),
-    ("parlay_legs",    []),
-    ("just_analyzed",  False),
+    ("uploader_key",      0),
+    ("last_analysis",     None),
+    ("parlay_legs",       []),
+    ("just_analyzed",     False),
+    ("parlay_form_ver",   0),
+    ("parlay_last_sport", "NHL"),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -1247,30 +1249,50 @@ with tab_parlay:
 
     # ── Handmatig prop toevoegen (altijd zichtbaar, bovenaan) ─────────────────
     st.markdown("#### ➕ Prop toevoegen aan parlay")
+
+    _fv     = st.session_state.parlay_form_ver
+    _sports = ["NHL", "NBA", "MLB", "Voetbal", "Overig"]
+    _sport_idx = _sports.index(st.session_state.parlay_last_sport) \
+                 if st.session_state.parlay_last_sport in _sports else 0
+
     _ph1, _ph2 = st.columns(2)
-    _p_speler  = _ph1.text_input("Speler / Team", key="p_speler",
+    _p_speler  = _ph1.text_input("Speler / Team (optioneel)", key=f"p_speler_{_fv}",
                                   placeholder="bijv. Auston Matthews")
-    _p_sport   = _ph2.selectbox("Sport", ["NHL","NBA","MLB","Voetbal","Overig"],
-                                 key="p_sport")
-    _ph3, _ph4, _ph5 = st.columns(3)
-    _p_bet     = _ph3.text_input("Bet type", key="p_bet",
+    _p_sport   = _ph2.selectbox("Sport", _sports,
+                                 index=_sport_idx, key=f"p_sport_{_fv}")
+    _ph3, _ph4 = st.columns(2)
+    _p_bet     = _ph3.text_input("Bet type", key=f"p_bet_{_fv}",
                                   placeholder="bijv. Anytime Goal Scorer")
     _p_odds    = _ph4.number_input("Odds", min_value=1.01, max_value=50.0,
                                     value=2.00, step=0.05, format="%.2f",
-                                    key="p_odds")
-    _p_hr      = _ph5.number_input("Hit rate % (optioneel)", min_value=0, max_value=100,
-                                    value=50, step=1, key="p_hr",
-                                    help="Schatting van de kans dat de prop slaagt. Gebruik 50% als je het niet weet.")
-    if st.button("➕ Voeg toe aan parlay", key="p_add_leg",
-                 type="primary", use_container_width=True,
-                 disabled=not (_p_speler and _p_bet)):
+                                    key=f"p_odds_{_fv}")
+
+    # Hit rate: echt optioneel — vink aan om in te vullen
+    _p_use_hr = st.checkbox("Hit rate opgeven", key=f"p_use_hr_{_fv}", value=False,
+                            help="Laat uitgevinkt als je de hit rate niet weet of wilt meenemen.")
+    _p_hr_val = None
+    if _p_use_hr:
+        _p_hr_val = st.number_input("Hit rate %", min_value=0, max_value=100,
+                                     value=50, step=1, key=f"p_hr_{_fv}",
+                                     help="Schatting van de kans dat de prop slaagt.")
+
+    _padd_col, _pwis_col = st.columns([3, 1])
+    if _padd_col.button("➕ Voeg toe aan parlay", key="p_add_leg",
+                        type="primary", use_container_width=True,
+                        disabled=not _p_bet):
+        st.session_state.parlay_last_sport = _p_sport
         st.session_state.parlay_legs.append({
             "player":   _p_speler,
             "sport":    _p_sport,
             "bet_type": _p_bet,
             "odds":     float(_p_odds),
-            "hit_rate": float(_p_hr) / 100,
+            "hit_rate": float(_p_hr_val) / 100 if _p_hr_val is not None else None,
         })
+        st.session_state.parlay_form_ver += 1
+        st.rerun()
+    if _pwis_col.button("🗑️ Wissen", key="p_clear_form", use_container_width=True,
+                        help="Leeg het formulier"):
+        st.session_state.parlay_form_ver += 1
         st.rerun()
 
     # ── Props uit analyse (optioneel, ingeklapt) ──────────────────────────────
@@ -1326,7 +1348,9 @@ with tab_parlay:
                 key=f"pleg_odds_{_li}",
             )
             st.session_state.parlay_legs[_li]["odds"] = _new_odds
-            _lc3.caption(f"HR: {_leg.get('hit_rate',0)*100:.0f}%")
+            _hr_val = _leg.get("hit_rate")
+            _hr_lbl = f"{_hr_val*100:.0f}%" if _hr_val is not None else "—"
+            _lc3.caption(f"HR: {_hr_lbl}")
             if _lc4.button("🗑️", key=f"rmleg_{_li}"):
                 legs_to_remove.append(_li)
         for _idx in sorted(legs_to_remove, reverse=True):
@@ -1337,22 +1361,34 @@ with tab_parlay:
         _legs      = st.session_state.parlay_legs
         _comb_odds = 1.0
         _hit_ch    = 1.0
+        _no_hr_cnt = 0
         for _leg in _legs:
             _comb_odds *= float(_leg.get("odds", 1.5))
-            _hit_ch    *= float(_leg.get("hit_rate", 0.5))
-        _p_ev  = _hit_ch * (_comb_odds - 1) - (1 - _hit_ch)
+            _hr = _leg.get("hit_rate")
+            if _hr is not None:
+                _hit_ch *= float(_hr)
+            else:
+                _no_hr_cnt += 1
+
+        _hit_ch_known = _no_hr_cnt == 0   # alle legs hebben een hit rate
+        _p_ev  = _hit_ch * (_comb_odds - 1) - (1 - _hit_ch) if _hit_ch_known else None
         _inzet = st.number_input("💰 Inzet (€)", min_value=1.0, max_value=10000.0,
                                   value=10.0, step=1.0, key="parlay_inzet")
         _winst = _inzet * _comb_odds - _inzet
-        _ev_s2 = f"+{_p_ev:.3f}" if _p_ev >= 0 else f"{_p_ev:.3f}"
+        _ev_s2 = (f"+{_p_ev:.3f}" if _p_ev >= 0 else f"{_p_ev:.3f}") if _p_ev is not None else "—"
+
+        if _no_hr_cnt > 0:
+            st.caption(f"ℹ️ {_no_hr_cnt} leg(s) zonder hit rate — hit kans en EV worden niet berekend.")
 
         _mc1, _mc2, _mc3, _mc4 = st.columns(4)
         _mc1.metric("Gecombineerde Odds", f"{_comb_odds:.2f}")
-        _mc2.metric("Hit Kans",           f"{_hit_ch*100:.1f}%")
+        _mc2.metric("Hit Kans",           f"{_hit_ch*100:.1f}%" if _hit_ch_known else "—")
         _mc3.metric("Parlay EV",          _ev_s2)
         _mc4.metric(f"Winst bij €{_inzet:.0f}", f"€{_winst:.2f}")
 
-        if _p_ev < 0:
+        if _p_ev is None:
+            st.info("ℹ️ Voeg hit rates toe aan alle legs om EV te berekenen.")
+        elif _p_ev < 0:
             st.warning(f"⚠️ Negatieve EV ({_ev_s2}) — verliesgevend op lange termijn.")
         else:
             st.success(f"✅ Positieve EV ({_ev_s2})")
@@ -1364,8 +1400,8 @@ with tab_parlay:
                 "datum":              datetime.datetime.now().isoformat(),
                 "props_json":         list(_legs),
                 "gecombineerde_odds": round(_comb_odds, 4),
-                "hit_kans":           round(_hit_ch, 6),
-                "ev_score":           round(_p_ev, 6),
+                "hit_kans":           round(_hit_ch, 6) if _hit_ch_known else None,
+                "ev_score":           round(_p_ev, 6) if _p_ev is not None else None,
                 "inzet":              float(_inzet),
                 "uitkomst":           "open",
                 "winst_verlies":      0.0,
@@ -1391,7 +1427,9 @@ with tab_parlay:
             if isinstance(_prl_lj, str):
                 try: _prl_lj = json.loads(_prl_lj)
                 except Exception: _prl_lj = {}
-            _prl_ev_s = f"+{_prl.get('ev_score',0):.3f}" if (_prl.get('ev_score') or 0) >= 0 else f"{_prl.get('ev_score',0):.3f}"
+            _prl_ev_raw = _prl.get("ev_score")
+            _prl_ev_s = (f"+{_prl_ev_raw:.3f}" if _prl_ev_raw >= 0 else f"{_prl_ev_raw:.3f}") \
+                        if _prl_ev_raw is not None else "—"
             with st.expander(
                 f"🎯 {len(_prl_legs)} legs · Odds {_prl.get('gecombineerde_odds',0):.2f}"
                 f" · EV {_prl_ev_s} · {(_prl.get('uitkomst') or 'open').upper()}"
