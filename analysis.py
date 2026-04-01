@@ -590,6 +590,56 @@ def generate_auto_props(matches: list, progress_cb=None) -> list:
     return all_props
 
 
+# ─── Team-bet detectie ────────────────────────────────────────────────────────
+
+# Trefwoorden die wijzen op een team-niveau bet (moneyline, spread, totals, enz.)
+# Bij deze bet types is spelerdata NIET nodig; enrich_bet() slaat de lookup over.
+_TEAM_BET_KEYWORDS: frozenset = frozenset({
+    "win",           # "Panthers Win", "To Win"
+    "moneyline",     # "Moneyline"
+    " ml",           # " ML" (met spatie om "html" te vermijden)
+    "to win",
+    "game winner",
+    "puck line",     # NHL
+    "run line",      # MLB
+    "spread",        # NBA / MLB
+    "handicap",
+    "regulation win",
+    "overtime win",
+    "period",        # "1st Period", "3rd Period Winner"
+    "first half",    # Soccer / NBA
+    "second half",
+    "half time",
+    "total goals",   # Soccer
+    "game total",
+    "over/under",
+    "double chance", # Soccer
+    "draw",          # Soccer
+    "both teams",    # Soccer BTTS
+    "clean sheet",   # Soccer
+})
+
+
+def _is_team_bet(player_name: str, bet_type: str,
+                 extra_team_keywords: set = None) -> bool:
+    """
+    Geeft True als dit een team-niveau bet is (geen spelerdata nodig).
+
+    Criteria (één ervan is genoeg):
+    - player_name is leeg
+    - bet_type bevat een trefwoord uit _TEAM_BET_KEYWORDS
+    - player_name komt overeen met een bekend team-trefwoord (optioneel meegegeven)
+    """
+    if not player_name:
+        return True
+    bt = bet_type.lower()
+    if any(kw in bt for kw in _TEAM_BET_KEYWORDS):
+        return True
+    if extra_team_keywords and any(kw in player_name.lower() for kw in extra_team_keywords):
+        return True
+    return False
+
+
 # ─── Bet verrijken ────────────────────────────────────────────────────────────
 
 def enrich_bet(bet: dict, cache: dict,
@@ -621,28 +671,46 @@ def enrich_bet(bet: dict, cache: dict,
     else:
         try:
             if sport == "NHL":
-                player_id, team = nhl.find_player(player_name)
-                if player_id:
-                    player_stats  = nhl.get_player_stats(player_id)
-                    opponent_name = nhl.get_opponent(team) if team else None
-                    if opponent_name:
-                        opponent_stats = nhl.get_team_defense(opponent_name)
+                # Alleen spelerdata ophalen voor echte player props (shots, goals,
+                # assists, hits, enz.). Team-niveau bets (Moneyline, Puck Line,
+                # Regulation Win, enz.) lopen via analyze_nhl_matches() en hebben
+                # géén spelersdata nodig. _all_rosters() laadt 32 teamroosters
+                # via losse API-calls en mag hiervoor NIET getriggerd worden.
+                if not _is_team_bet(player_name, bet_type, _NHL_TEAM_KEYWORDS):
+                    player_id, team = nhl.find_player(player_name)
+                    if player_id:
+                        player_stats  = nhl.get_player_stats(player_id)
+                        opponent_name = nhl.get_opponent(team) if team else None
+                        if opponent_name:
+                            opponent_stats = nhl.get_team_defense(opponent_name)
             elif sport == "NBA":
-                player = nba.find_player(player_name)
-                if player:
-                    player_stats = nba.get_player_stats(player["id"])
+                # Alleen spelerdata ophalen voor player props (Points, Rebounds,
+                # Assists, enz.). Team moneyline / spread / totals lopen via
+                # analyze_nba_matches() met alleen team-form data.
+                if not _is_team_bet(player_name, bet_type):
+                    player = nba.find_player(player_name)
+                    if player:
+                        player_stats = nba.get_player_stats(player["id"])
             elif sport == "MLB":
-                player = mlb.find_player(player_name)
-                if player:
-                    pos_code = player.get("primaryPosition", {}).get("code", "")
-                    pos_type = "pitching" if pos_code == "1" else "hitting"
-                    player_stats = mlb.get_player_stats(player.get("id"), position_type=pos_type)
+                # Alleen spelerdata ophalen voor player props (Hits, Home Runs,
+                # Strikeouts, enz.). Moneyline / Run Line / Game Total lopen via
+                # analyze_mlb_matches() met team-form + pitcher data.
+                if not _is_team_bet(player_name, bet_type):
+                    player = mlb.find_player(player_name)
+                    if player:
+                        pos_code = player.get("primaryPosition", {}).get("code", "")
+                        pos_type = "pitching" if pos_code == "1" else "hitting"
+                        player_stats = mlb.get_player_stats(player.get("id"), position_type=pos_type)
             elif sport in SOCCER_COMPS:
-                comp = sport if sport != "VOETBAL" else "EPL"
-                player = soccer.find_player(player_name, team_hint=team_hint, competition=comp)
-                if player:
-                    player_stats   = soccer.get_player_stats(player.get("id"), player.get("team_id"), comp)
-                    opponent_stats = soccer.get_team_defense(player.get("team_id")) if player.get("team_id") else {}
+                # Alleen spelerdata ophalen voor player props (Goals, Assists,
+                # Shots on Target, enz.). Team-bets (1X2, BTTS, Over/Under)
+                # lopen via analyze_soccer_matches() met team-form data.
+                if not _is_team_bet(player_name, bet_type):
+                    comp = sport if sport != "VOETBAL" else "EPL"
+                    player = soccer.find_player(player_name, team_hint=team_hint, competition=comp)
+                    if player:
+                        player_stats   = soccer.get_player_stats(player.get("id"), player.get("team_id"), comp)
+                        opponent_stats = soccer.get_team_defense(player.get("team_id")) if player.get("team_id") else {}
         except Exception as exc:
             _log.warning(f"[enrich_bet] Datafout voor {player_name}: {exc}")
 

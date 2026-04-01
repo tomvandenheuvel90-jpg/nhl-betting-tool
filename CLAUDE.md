@@ -121,6 +121,7 @@ db.save_*()  →  Supabase (of lokale JSON-fallback)
 - NHL roster optimizations + 3-way odds
 - EV-berekening met composite scorer (meerdere bug fixes toegepast)
 - MLB run line corrections (±1.5 Poisson kans)
+- Player-lookup scoping: `enrich_bet()` voert speler-API-calls **alleen** uit bij echte player props (shots, goals, hits, enz.). Team-niveau bets (Moneyline, Puck Line, Run Line, Spread, Totals, 1X2, enz.) triggeren géén roster- of spelersdata-opvraag — die analyse loopt uitsluitend via `analyze_*_matches()` met team-form data. Geldt voor alle vier sporten (NHL, NBA, MLB, Soccer).
 - Parlay Builder: handmatig props toevoegen, hit rate optioneel (checkbox), form reset na toevoegen, sport onthouden
 - Hit rate per parlay-leg is volledig optioneel — EV toont "—" als niet alle legs een HR hebben
 - Geplaatste Bets tab: verwijderknop (🗑️) per weddenschap voor het verwijderen van duplicaten
