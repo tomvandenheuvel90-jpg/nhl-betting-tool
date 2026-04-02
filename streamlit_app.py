@@ -954,6 +954,27 @@ with tab_favorieten:
                     db.remove_resultaat(_fid)
                     st.rerun()
 
+                # ── Doorsturen naar Parlay Builder ────────────────────────────
+                if st.button("🎯 Voeg toe aan Parlay Builder",
+                             key=f"fav_to_parlay_{_fid}_{_idx}",
+                             use_container_width=True):
+                    _already = any(
+                        l.get("player") == _fav.get("speler") and
+                        l.get("bet_type") == _fav.get("bet")
+                        for l in st.session_state.parlay_legs
+                    )
+                    if _already:
+                        st.warning("⚠️ Deze prop zit al in je Parlay Builder.")
+                    else:
+                        st.session_state.parlay_legs.append({
+                            "player":   _fav.get("speler", ""),
+                            "sport":    _fav.get("sport", ""),
+                            "bet_type": _fav.get("bet", ""),
+                            "odds":     float(_fav.get("odds") or 1.5),
+                            "hit_rate": None,
+                        })
+                        st.success(f"✅ Toegevoegd aan Parlay Builder — ga naar 🎯 tab")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — BANKROLL
