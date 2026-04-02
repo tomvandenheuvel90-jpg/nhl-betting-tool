@@ -208,21 +208,134 @@ label,
   color: #ffffff !important;
 }
 
-/* ── Selectbox dropdown list ── */
-[data-baseweb="popover"] {
+/* ══════════════════════════════════════════════════════════
+   DROPDOWN / SELECTBOX / MULTISELECT — comprehensive dark fix
+   Streamlit renders popovers in a portal at the document root,
+   so we need to target every wrapper layer explicitly.
+   ══════════════════════════════════════════════════════════ */
+
+/* ── Selectbox closed-state container ── */
+[data-baseweb="select"] > div:first-child {
   background: #13132e !important;
-}
-[data-baseweb="menu"] {
-  background: #13132e !important;
-  border: 1px solid #2e2e56 !important;
-}
-[data-baseweb="option"] {
-  background: #13132e !important;
+  border-color: #2e2e56 !important;
   color: #e8eaf6 !important;
 }
-[data-baseweb="option"]:hover {
+
+/* ── Dropdown arrow / chevron icon ── */
+[data-baseweb="select"] svg,
+[data-baseweb="select"] [data-testid="stSelectboxVirtualDropdown"] svg {
+  fill: #a8aace !important;
+  color: #a8aace !important;
+}
+
+/* ── Popover portal — all wrapper layers ── */
+[data-baseweb="popover"],
+[data-baseweb="popover"] > div,
+[data-baseweb="popover"] > div > div,
+[data-baseweb="popover"] > div > div > div {
+  background: #13132e !important;
+  border-color: #2e2e56 !important;
+  border-radius: 8px !important;
+}
+
+/* ── Menu / list container inside popover ── */
+[data-baseweb="menu"],
+[data-baseweb="list"],
+[role="listbox"],
+ul[data-baseweb="menu"],
+ul[role="listbox"] {
+  background: #13132e !important;
+  border: 1px solid #2e2e56 !important;
+  border-radius: 8px !important;
+  color: #e8eaf6 !important;
+}
+
+/* ── Individual option items ── */
+[data-baseweb="option"],
+[role="option"],
+li[role="option"],
+[data-baseweb="menu-item"] {
+  background: #13132e !important;
+  color: #e8eaf6 !important;
+  transition: background 0.15s ease !important;
+}
+
+/* ── Hover state ── */
+[data-baseweb="option"]:hover,
+[role="option"]:hover,
+li[role="option"]:hover,
+[data-baseweb="menu-item"]:hover {
   background: #1a1a3e !important;
   color: #c4b5fd !important;
+  cursor: pointer !important;
+}
+
+/* ── Highlighted / keyboard-focused option ── */
+[data-baseweb="option"][aria-selected="true"],
+[role="option"][aria-selected="true"],
+li[role="option"][aria-selected="true"],
+[data-baseweb="option"][data-highlighted],
+[data-baseweb="option"].highlighted {
+  background: #20205a !important;
+  color: #c4b5fd !important;
+}
+
+/* ── "No results" placeholder inside dropdown ── */
+[data-baseweb="menu"] p,
+[data-baseweb="popover"] p {
+  color: #a8aace !important;
+  background: transparent !important;
+}
+
+/* ══════════════════════════════════════════════════════════
+   MULTISELECT — tag pills + input area
+   ══════════════════════════════════════════════════════════ */
+
+/* Container / input area */
+[data-baseweb="base-input"],
+[data-testid="stMultiSelect"] [data-baseweb="base-input"] {
+  background: #13132e !important;
+  color: #e8eaf6 !important;
+  border-color: #2e2e56 !important;
+}
+
+/* Selected tag pills */
+[data-baseweb="tag"] {
+  background: #1a1a3e !important;
+  border: 1px solid #3e3e72 !important;
+  border-radius: 6px !important;
+  color: #c4b5fd !important;
+}
+[data-baseweb="tag"] span,
+[data-baseweb="tag"] [data-testid="stMultiSelectTag"] {
+  color: #c4b5fd !important;
+}
+
+/* × remove button on tags */
+[data-baseweb="tag"] button,
+[data-baseweb="tag"] [aria-label*="remove"],
+[data-baseweb="tag"] svg {
+  color: #a8aace !important;
+  fill: #a8aace !important;
+}
+[data-baseweb="tag"] button:hover {
+  color: #f87171 !important;
+  fill: #f87171 !important;
+}
+
+/* Multiselect placeholder text */
+[data-testid="stMultiSelect"] input::placeholder {
+  color: #6868a0 !important;
+}
+
+/* ══════════════════════════════════════════════════════════
+   SIDEBAR dropdowns — same dark treatment
+   ══════════════════════════════════════════════════════════ */
+[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
+[data-testid="stSidebar"] [data-baseweb="base-input"] {
+  background: #0f0f2a !important;
+  border-color: #2e2e56 !important;
+  color: #e8eaf6 !important;
 }
 
 /* ── Expanders ── */
