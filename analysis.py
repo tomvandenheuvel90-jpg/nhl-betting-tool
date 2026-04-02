@@ -753,11 +753,13 @@ def enrich_bet(bet: dict, cache: dict,
         "composite":      score["composite"],
         "ev":             ev_score,
         "rating":         rat,
-        "opponent":       opponent_name,
+        "opponent":       opponent_name or bet.get("opponent"),
         "gaa":            opponent_stats.get("goals_against_avg"),
         "source":         player_stats.get("source", ""),
         "bet365":         {},
         "no_linemate_hr": not _hr_ok,
+        # Extra context uit de Linemate Trends-weergave (meerdere statistiekregels per prop)
+        "trend_stats":    bet.get("trend_stats", []),
     }
 
 

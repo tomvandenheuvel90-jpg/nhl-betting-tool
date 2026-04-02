@@ -451,6 +451,28 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
         if info_parts:
             st.caption(" · ".join(info_parts))
 
+        # Trend stats (Linemate Trends-weergave: meerdere statistiekregels per prop)
+        _ts = bet.get("trend_stats") or []
+        if _ts:
+            _ts_rows = "".join(
+                f"<div style='display:flex;justify-content:space-between;"
+                f"padding:3px 0;border-bottom:1px solid #1e1e40;'>"
+                f"<span style='color:#a8aace;font-size:0.78rem;'>{_t.get('label','')}</span>"
+                f"<span style='color:#c4b5fd;font-size:0.78rem;font-weight:600;'>"
+                f"{int((_t.get('hit_rate') or 0)*100)}%"
+                f"<span style='color:#6868a0;font-weight:400;margin-left:4px;'>{_t.get('sample','')}</span>"
+                f"</span></div>"
+                for _t in _ts
+            )
+            st.markdown(
+                f"<div style='background:#0d0d24;border-radius:8px;padding:8px 12px;"
+                f"margin:8px 0;border:1px solid #1e1e40;'>"
+                f"<div style='font-size:0.72rem;color:#6868a0;margin-bottom:4px;'>"
+                f"📊 Linemate trend statistieken</div>"
+                f"{_ts_rows}</div>",
+                unsafe_allow_html=True,
+            )
+
         # Odds aanpassen
         _adj_key     = "adj_" + db.make_fav_id(bet["player"], bet["bet_type"])
         _stored_odds = st.session_state.get(_adj_key)
