@@ -195,6 +195,8 @@ for _k, _v in [
     ("just_analyzed",     False),
     ("parlay_form_ver",   0),
     ("parlay_last_sport", "NHL"),
+    ("bk_view",           "7 Dagen"),
+    ("bk_selected_day",   None),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -958,457 +960,781 @@ with tab_favorieten:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_bankroll:
-    st.markdown("### 📊 Bankroll Tracker")
-
     import pandas as pd
+    from collections import defaultdict as _defaultdict
 
-    # ── Weddenschap toevoegen ────────────────────────────────────────────────
-    with st.expander("➕ Weddenschap toevoegen", expanded=True):
-        st.caption("Voeg een weddenschap toe — zowel al gezette bets (open) als afgeronde bets (gewonnen/verloren).")
-        _db1, _db2, _db3 = st.columns(3)
-        _db4, _db5, _db6 = st.columns(3)
-        _db_speler   = _db1.text_input("Speler / Team", key="db_speler",
-                                        placeholder="bijv. Connor McDavid")
-        _db_sport    = _db2.selectbox("Sport", ["NHL","NBA","MLB","Voetbal","Overig"], key="db_sport")
-        _db_bet      = _db3.text_input("Bet type", key="db_bet",
-                                        placeholder="bijv. Anytime Goal Scorer")
-        _db_odds     = _db4.number_input("Odds", min_value=1.01, max_value=50.0,
-                                          value=1.90, step=0.05, format="%.2f", key="db_odds")
-        _db_inzet    = _db5.number_input("Inzet (€)", min_value=0.10, max_value=5000.0,
-                                          value=10.0, step=1.0, format="%.2f", key="db_inzet")
-        _db_uitkomst = _db6.selectbox(
-            "Uitkomst",
-            ["open (nog niet gespeeld)", "gewonnen", "verloren"],
-            key="db_uitkomst",
-            help="Kies 'open' als je de bet al geplaatst hebt maar de uitkomst nog onbekend is.",
-        )
-        _db_datum    = st.date_input("Datum", value=datetime.date.today(), key="db_datum")
-        if st.button("💾 Opslaan", key="btn_db_save", use_container_width=True, type="primary"):
-            if _db_speler and _db_bet:
-                _db_uitkomst_clean = "open" if _db_uitkomst.startswith("open") else _db_uitkomst
-                db.add_direct_bet(
-                    speler=_db_speler, sport=_db_sport, bet_type=_db_bet,
-                    odds=float(_db_odds), inzet=float(_db_inzet),
-                    uitkomst=_db_uitkomst_clean, datum=_db_datum.isoformat(),
-                )
-                st.success("✅ Weddenschap opgeslagen!")
-                st.rerun()
-            else:
-                st.warning("Vul minimaal speler/team en bet type in.")
+    _bk_today = datetime.date.today()
 
-    st.markdown("---")
+    # ── Zet standaard geselecteerde dag ──────────────────────────────────────
+    if st.session_state.bk_selected_day is None:
+        st.session_state.bk_selected_day = _bk_today.isoformat()
 
-    # ── Openstaande weddenschappen ───────────────────────────────────────────
-    _openstaand = [r for r in db.load_resultaten() if r.get("uitkomst") == "open"]
-    # Open parlays toevoegen (staan niet in resultaten tabel)
-    _bk_open_prl_existing = {r.get("id", "") for r in _openstaand if str(r.get("id", "")).startswith("parlay_")}
-    for _bk_op_prl in db.load_parlays():
-        if (_bk_op_prl.get("uitkomst") or "open") != "open":
+    # ── Laad alle data één keer ───────────────────────────────────────────────
+    _bk_all_raw      = db.load_resultaten()
+    _all_parlays_bk  = db.load_parlays()
+    _parlays_bk_map  = {p["id"]: p for p in _all_parlays_bk}
+
+    # Gesettlede parlays die (nog) niet in resultaten staan toevoegen
+    _bk_settled_ids = {str(r.get("id","")) for r in _bk_all_raw
+                       if r.get("uitkomst") in ("gewonnen","verloren")}
+    _bk_all_settled = [r for r in _bk_all_raw
+                       if r.get("uitkomst") in ("gewonnen","verloren")]
+    for _bkp in _all_parlays_bk:
+        if (_bkp.get("uitkomst") or "open") not in ("gewonnen","verloren"):
             continue
-        _bk_op_prl_res_id = f"parlay_{_bk_op_prl['id']}"
-        if _bk_op_prl_res_id in _bk_open_prl_existing:
+        _bkp_id = f"parlay_{_bkp['id']}"
+        if _bkp_id in _bk_settled_ids:
             continue
-        _bk_op_prl_legs = _bk_op_prl.get("props_json") or []
-        _openstaand.append({
-            "id":            _bk_op_prl_res_id,
-            "datum":         (_bk_op_prl.get("datum") or datetime.date.today().isoformat())[:10],
-            "speler":        f"🎰 Parlay ({len(_bk_op_prl_legs)} legs)",
-            "bet":           ", ".join(str(l.get("player", "")) for l in _bk_op_prl_legs[:3]) or "Parlay",
+        _bkp_legs = _bkp.get("props_json") or []
+        _bk_all_settled.append({
+            "id":            _bkp_id,
+            "datum":         (_bkp.get("datum") or "")[:10],
+            "speler":        f"🎰 Parlay ({len(_bkp_legs)} legs)",
+            "bet":           ", ".join(str(l.get("player","")) for l in _bkp_legs[:3]) or "Parlay",
             "sport":         "Parlay",
-            "odds":          float(_bk_op_prl.get("gecombineerde_odds") or 1.0),
-            "inzet":         float(_bk_op_prl.get("inzet") or 0),
-            "uitkomst":      "open",
-            "winst_verlies": 0.0,
-            "ev_score":      float(_bk_op_prl.get("ev_score") or 0),
+            "odds":          float(_bkp.get("gecombineerde_odds") or 1.0),
+            "inzet":         float(_bkp.get("inzet") or 0),
+            "uitkomst":      _bkp["uitkomst"],
+            "winst_verlies": float(_bkp.get("winst_verlies") or 0),
+            "ev_score":      float(_bkp.get("ev_score") or 0),
             "is_parlay":     True,
         })
-    if _openstaand:
-        st.markdown("#### ⏳ Openstaande weddenschappen")
-        st.caption(f"{len(_openstaand)} bet(s) nog niet afgerond — klik op gewonnen of verloren om te registreren.")
-        for _op in sorted(_openstaand, key=lambda r: r.get("datum",""), reverse=True):
-            _op_id = _op.get("id","")
-            _oc1, _oc2, _oc3, _oc4, _oc5 = st.columns([3, 1, 1, 1, 1])
-            _oc1.write(f"**{_op.get('speler','')}** — {_op.get('bet','')}  @ {_op.get('odds','—')} | €{_op.get('inzet',0):.2f}")
-            _oc2.caption(_op.get("datum","")[:10])
-            if _oc3.button("✅ Win", key=f"opwon_{_op_id}"):
-                _op_inzet_val = float(_op.get("inzet", 10))
-                _op_upd = dict(_op)
-                _op_upd["uitkomst"] = "gewonnen"
-                db.upsert_resultaat(_op_id, _op_upd, "gewonnen", _op_inzet_val)
-                if str(_op_id).startswith("parlay_"):
-                    _op_odds_val = float(_op.get("odds", 1.0))
-                    db.update_parlay(str(_op_id)[len("parlay_"):], {
-                        "uitkomst": "gewonnen",
-                        "winst_verlies": round(_op_inzet_val * (_op_odds_val - 1), 2),
-                    })
-                st.rerun()
-            if _oc4.button("❌ Loss", key=f"oplost_{_op_id}"):
-                _op_inzet_val = float(_op.get("inzet", 10))
-                _op_upd = dict(_op)
-                _op_upd["uitkomst"] = "verloren"
-                db.upsert_resultaat(_op_id, _op_upd, "verloren", _op_inzet_val)
-                if str(_op_id).startswith("parlay_"):
-                    db.update_parlay(str(_op_id)[len("parlay_"):], {
-                        "uitkomst": "verloren",
-                        "winst_verlies": round(-float(_op.get("inzet", 10)), 2),
-                    })
-                st.rerun()
-            if _oc5.button("🗑️", key=f"opdel_{_op_id}", help="Verwijder"):
-                if str(_op_id).startswith("parlay_"):
-                    # Open parlay staat niet in resultaten → verwijder uit parlays tabel
-                    db.delete_parlay(str(_op_id)[len("parlay_"):])
-                else:
-                    db.remove_resultaat(_op_id)
-                st.rerun()
-        st.markdown("---")
 
-    # ── Startbankroll instelling ─────────────────────────────────────────────
+    # Bets gegroepeerd per datum
+    _bets_by_date: dict = _defaultdict(list)
+    for _bkr in _bk_all_settled:
+        _bkd = (_bkr.get("datum") or "")[:10]
+        if _bkd:
+            _bets_by_date[_bkd].append(_bkr)
+
+    # Globale totalen
+    _bk_total_wl   = sum(r.get("winst_verlies",0) for r in _bk_all_settled)
     _start_bk_saved = float(db.get_setting("start_bankroll") or 0.0)
-    with st.expander("⚙️ Bankroll instellingen", expanded=(_start_bk_saved == 0)):
-        _start_bk_input = st.number_input(
-            "Startbankroll (€)", min_value=0.0, max_value=100000.0,
-            value=_start_bk_saved, step=10.0, format="%.2f", key="start_bk_input",
-            help="Stel je beginkapitaal in. De app berekent dan je huidig saldo en groei%."
-        )
-        if st.button("💾 Opslaan", key="btn_start_bk"):
-            db.set_setting("start_bankroll", float(_start_bk_input))
-            _start_bk_saved = float(_start_bk_input)
-            st.success("Startbankroll opgeslagen!")
-            st.rerun()
+    _bk_balance    = _start_bk_saved + _bk_total_wl if _start_bk_saved > 0 else None
 
+    # ── HEADER ───────────────────────────────────────────────────────────────
+    _7d_cutoff = (_bk_today - datetime.timedelta(days=6)).isoformat()
+    _7d_wl     = sum(r.get("winst_verlies",0) for r in _bk_all_settled
+                     if (r.get("datum") or "")[:10] >= _7d_cutoff)
+    _7d_color  = "#4ade80" if _7d_wl >= 0 else "#f87171"
+    _7d_pill   = f"{'+ ' if _7d_wl >= 0 else ''}€{_7d_wl:+.2f}  laatste 7 dagen"
+
+    if _bk_balance is not None:
+        _bal_display = f"€{_bk_balance:,.2f}"
+    elif _bk_all_settled:
+        _bal_display = f"€{_bk_total_wl:+.2f} P&L"
+    else:
+        _bal_display = "—"
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#12103a 0%,#1e1860 100%);
+      border:1px solid #3a2a70;border-radius:14px;padding:1.3rem 1.6rem;
+      margin-bottom:1.1rem;box-shadow:0 4px 24px rgba(124,58,237,0.20);">
+      <div style="font-size:0.75rem;color:#8888b8;text-transform:uppercase;
+        letter-spacing:1.2px;margin-bottom:4px;">Total Balance</div>
+      <div style="font-size:2.4rem;font-weight:800;color:#c4b5fd;letter-spacing:-1px;
+        line-height:1.1;">{_bal_display}</div>
+      <div style="margin-top:10px;">
+        <span style="background:{'rgba(74,222,128,0.13)' if _7d_wl >= 0 else 'rgba(248,113,113,0.13)'};
+          border:1px solid {_7d_color};color:{_7d_color};
+          padding:4px 14px;border-radius:20px;font-size:0.82rem;font-weight:600;
+          letter-spacing:0.2px;">{_7d_pill}</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── PERIOD SWITCHER ───────────────────────────────────────────────────────
+    _view_options = ["7 Dagen", "Maand", "All Time"]
+    _cur_view_idx = _view_options.index(st.session_state.bk_view) \
+                    if st.session_state.bk_view in _view_options else 0
+    _selected_view = st.radio(
+        "Periode",
+        _view_options,
+        index=_cur_view_idx,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="bk_view_radio",
+    )
+    st.session_state.bk_view = _selected_view
     st.markdown("---")
 
-    # ── Filters ──────────────────────────────────────────────────────────────
-    st.markdown("#### 🔎 Filters")
-    _bkf1, _bkf2, _bkf3, _bkf4 = st.columns(4)
-    _bk_sport  = _bkf1.selectbox("Sport",    ["Alles","NHL","NBA","MLB","Voetbal"], key="bk_sport")
-    _bk_btype  = _bkf2.selectbox("Bet type", ["Alles","Goals","Assists","Shots on Goal",
-                                               "Blocked Shots","Hits","Points","Home Runs",
-                                               "Strikeouts","Over/Under"], key="bk_btype")
-    _bk_period = _bkf3.selectbox("Periode",  ["Alles","Laatste 7 dagen","Laatste 30 dagen"], key="bk_period")
-    _bk_kind   = _bkf4.selectbox("Type",     ["Alles","Singles","Parlays"], key="bk_kind")
-    st.markdown("---")
+    # ════════════════════════════════════════════════════════════
+    # VIEW: 7 DAGEN
+    # ════════════════════════════════════════════════════════════
+    if _selected_view == "7 Dagen":
+        # Bouw de 7 dag-objecten
+        _week_days = []
+        for _di in range(6, -1, -1):
+            _wd = _bk_today - datetime.timedelta(days=_di)
+            _wd_str  = _wd.isoformat()
+            _wd_bets = _bets_by_date.get(_wd_str, [])
+            _wd_pnl  = sum(r.get("winst_verlies",0) for r in _wd_bets)
+            _week_days.append({
+                "date":    _wd_str,
+                "dayname": _wd.strftime("%a"),
+                "day_num": _wd.day,
+                "pnl":     _wd_pnl,
+                "bets":    _wd_bets,
+            })
 
-    _today_bk = datetime.date.today()
+        # Zorg dat geselecteerde dag binnen het window valt
+        _sel_day = st.session_state.bk_selected_day
+        if _sel_day not in [d["date"] for d in _week_days]:
+            _sel_day = _bk_today.isoformat()
+            st.session_state.bk_selected_day = _sel_day
 
-    def _bk_filter(r: dict) -> bool:
-        if _bk_sport != "Alles" and _bk_sport.lower() not in (r.get("sport","") or "").lower():
-            return False
-        if _bk_btype != "Alles" and _bk_btype.lower() not in (r.get("bet_type","") or "").lower():
-            return False
-        if _bk_period != "Alles":
+        # Per-knop CSS injecteren via markeerspan + sibling-selector
+        _day_css_parts = ["<style>"]
+        for _di2, _wd2 in enumerate(_week_days):
+            _wpnl = _wd2["pnl"]
+            _wsel = (_wd2["date"] == _sel_day)
+            if _wpnl > 0:
+                _wbg = "rgba(74,222,128,0.13)"; _wbc = "#4ade80"
+            elif _wpnl < 0 and _wd2["bets"]:
+                _wbg = "rgba(248,113,113,0.13)"; _wbc = "#f87171"
+            else:
+                _wbg = "#11112b"; _wbc = "#2e2e56"
+            _wborder = "2px solid #7c3aed" if _wsel else f"1px solid {_wbc}"
+            _day_css_parts.append(f"""
+            [data-testid="stMarkdownContainer"]:has(span.bkdm{_di2})
+            ~ [data-testid="stButton"] button {{
+                background: {_wbg} !important;
+                border: {_wborder} !important;
+                min-height: 82px !important;
+                white-space: pre-wrap !important;
+                line-height: 1.6 !important;
+                font-size: 0.78rem !important;
+                padding: 6px 2px !important;
+                font-weight: 600 !important;
+            }}""")
+        _day_css_parts.append("</style>")
+        st.markdown("".join(_day_css_parts), unsafe_allow_html=True)
+
+        # 7 dag-knoppen in columns
+        _dcols = st.columns(7)
+        for _di3, (_dc, _wd3) in enumerate(zip(_dcols, _week_days)):
+            with _dc:
+                _dp = _wd3["pnl"]
+                _dp_str = (f"+€{int(abs(_dp))}" if _dp > 0
+                           else f"-€{int(abs(_dp))}" if _dp < 0
+                           else "—")
+                st.markdown(f'<span class="bkdm{_di3}"></span>', unsafe_allow_html=True)
+                if st.button(
+                    f"{_wd3['dayname']}\n{_wd3['day_num']}\n{_dp_str}",
+                    key=f"bk_day_{_di3}",
+                    use_container_width=True,
+                ):
+                    st.session_state.bk_selected_day = _wd3["date"]
+                    st.rerun()
+
+        # Stat-kaartjes
+        _7d_bets_all = [b for _wd4 in _week_days for b in _wd4["bets"]]
+        _7d_won_n    = sum(1 for b in _7d_bets_all if b.get("uitkomst") == "gewonnen")
+        _7d_n        = len(_7d_bets_all)
+        _7d_wr       = (_7d_won_n / _7d_n * 100) if _7d_n > 0 else 0.0
+        _7d_pnl_sum  = sum(b.get("winst_verlies",0) for b in _7d_bets_all)
+
+        st.markdown("")
+        _sc1, _sc2, _sc3 = st.columns(3)
+        _sc1.markdown(kpi_card("💰", "Week P&L",
+            f"€{_7d_pnl_sum:+.2f}",
+            positive=(_7d_pnl_sum > 0) if _7d_pnl_sum != 0 else None,
+            tooltip=f"€{_7d_pnl_sum:+.4f}"), unsafe_allow_html=True)
+        _sc2.markdown(kpi_card("🎯", "Bets",
+            str(_7d_n), "in periode"), unsafe_allow_html=True)
+        _sc3.markdown(kpi_card("📊", "Win rate",
+            f"{_7d_wr:.0f}%",
+            f"{_7d_won_n} gewonnen",
+            positive=(_7d_wr >= 50) if _7d_n > 0 else None), unsafe_allow_html=True)
+
+        # Dag-detail
+        st.markdown("---")
+        _sel_info = next((d for d in _week_days if d["date"] == _sel_day), None)
+        if _sel_info:
             try:
-                rd   = datetime.date.fromisoformat((r.get("datum") or "")[:10])
-                days = 7 if "7" in _bk_period else 30
-                if (_today_bk - rd).days > days:
-                    return False
+                _sel_dt  = datetime.date.fromisoformat(_sel_day)
+                _day_lbl = _sel_dt.strftime("%A %-d %b")
             except Exception:
-                pass
-        # Detecteer parlay via id-prefix (robuust voor bestaande records zonder is_parlay=True)
-        _r_is_parlay = str(r.get("id","")).startswith("parlay_") or bool(r.get("is_parlay"))
-        if _bk_kind == "Singles" and _r_is_parlay: return False
-        if _bk_kind == "Parlays" and not _r_is_parlay: return False
-        return True
+                _day_lbl = _sel_day
+            _day_tot   = _sel_info["pnl"]
+            _day_color = "#4ade80" if _day_tot > 0 else "#f87171" if _day_tot < 0 else "#a8aace"
 
-    _alle_res = [r for r in db.load_resultaten() if _bk_filter(r)]
-    _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren")]
+            _ddh1, _ddh2 = st.columns([3, 1])
+            _ddh1.markdown(f"**{_day_lbl}**")
+            _ddh2.markdown(
+                f"<div style='text-align:right;color:{_day_color};"
+                f"font-weight:700;font-size:1rem;'>€{_day_tot:+.2f}</div>",
+                unsafe_allow_html=True)
 
-    # ── Parlays laden (één keer, hergebruikt voor per-sport en Parlay ROI) ────
-    _all_parlays_bk = db.load_parlays()
-    _parlays_bk_map = {p["id"]: p for p in _all_parlays_bk}
-
-    # Gesettlede parlays die ontbreken in _gedaan toevoegen (zelfde aanpak als Dashboard).
-    # _gedaan komt uit resultaten; als upsert_resultaat ooit niet is uitgevoerd staan
-    # de parlays daar niet in en worden ze hier handmatig ingevuld.
-    _bk_bestaande_prl_ids = {
-        str(r.get("id", "")) for r in _gedaan
-        if str(r.get("id", "")).startswith("parlay_")
-    }
-    for _p in _all_parlays_bk:
-        if (_p.get("uitkomst") or "open") not in ("gewonnen", "verloren"):
-            continue
-        _p_res_id = f"parlay_{_p['id']}"
-        if _p_res_id in _bk_bestaande_prl_ids:
-            continue  # al aanwezig in resultaten, niet dubbel tellen
-        _p_legs  = _p.get("props_json") or []
-        _p_entry = {
-            "id":            _p_res_id,
-            "datum":         (_p.get("datum") or "")[:10],
-            "speler":        f"🎰 Parlay ({len(_p_legs)} legs)",
-            "bet":           ", ".join(str(l.get("player", "")) for l in _p_legs[:3]) or "Parlay",
-            "sport":         "Parlay",
-            "odds":          float(_p.get("gecombineerde_odds") or 1.0),
-            "inzet":         float(_p.get("inzet") or 0),
-            "uitkomst":      _p["uitkomst"],
-            "winst_verlies": float(_p.get("winst_verlies") or 0),
-            "ev_score":      float(_p.get("ev_score") or 0),
-            "is_parlay":     True,
-        }
-        if _bk_filter(_p_entry):  # respecteer actieve sport/periode/type filters
-            _gedaan.append(_p_entry)
-
-    # _gedaan_sport: parlay-entries uitgebreid naar losse sport-legs voor per-sport stats
-    # Elke leg krijgt inzet/P&L proportioneel toegewezen (inzet / aantal legs).
-    def _expand_parlay_legs(gedaan, parlays_map):
-        result = []
-        for r in gedaan:
-            r_id = str(r.get("id", ""))
-            if r_id.startswith("parlay_"):
-                prl = parlays_map.get(r_id[len("parlay_"):], {})
-                legs = prl.get("props_json") or []
-                n = max(len(legs), 1)
-                for leg in legs:
-                    result.append({
-                        "sport":         leg.get("sport", "") or "Parlay",
-                        "uitkomst":      r["uitkomst"],
-                        "inzet":         round(r.get("inzet", 0) / n, 2),
-                        "winst_verlies": round(r.get("winst_verlies", 0) / n, 2),
-                        "ev_score":      0.0,
-                        "odds":          float(leg.get("odds", 1.0)),
-                        "bet":           leg.get("bet_type", ""),
-                        "speler":        leg.get("player", ""),
-                        "_parlay_id":    r_id,
-                    })
+            if _sel_info["bets"]:
+                for _db2 in sorted(_sel_info["bets"],
+                                   key=lambda x: x.get("datum",""), reverse=True):
+                    _dsp  = _db2.get("sport","?")
+                    _dico = SPORT_ICONS.get(_dsp.upper(), "🎮") if _dsp != "Parlay" else "🎰"
+                    _dpnl = _db2.get("winst_verlies", 0)
+                    _dcol = "#4ade80" if _dpnl > 0 else "#f87171"
+                    _dbet = _db2.get("bet") or _db2.get("bet_type") or ""
+                    _dspl = _db2.get("speler","")
+                    _dods = _db2.get("odds","—")
+                    st.markdown(f"""
+                    <div style="display:flex;justify-content:space-between;align-items:center;
+                      padding:9px 14px;margin:4px 0;background:#11112b;border-radius:8px;
+                      border:1px solid #2e2e56;">
+                      <div>
+                        <span style="margin-right:6px;font-size:1rem;">{_dico}</span>
+                        <span style="color:#e8eaf6;font-weight:600;">{_dspl}</span>
+                        <span style="color:#a8aace;font-size:0.82rem;margin-left:6px;">{_dbet}</span>
+                      </div>
+                      <div style="text-align:right;flex-shrink:0;margin-left:8px;">
+                        <span style="color:{_dcol};font-weight:700;">€{_dpnl:+.2f}</span>
+                        <span style="color:#6868a0;font-size:0.75rem;margin-left:6px;">@ {_dods}</span>
+                      </div>
+                    </div>""", unsafe_allow_html=True)
             else:
-                result.append(r)
-        return result
-    _gedaan_sport = _expand_parlay_legs(_gedaan, _parlays_bk_map)
+                st.markdown("""
+                <div style="text-align:center;color:#6868a0;padding:28px 16px;
+                  background:#11112b;border-radius:8px;border:1px dashed #2e2e56;
+                  margin-top:8px;">
+                  Geen bets op deze dag
+                </div>""", unsafe_allow_html=True)
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
-    def _calc_streak(results: list) -> tuple:
-        """Bereken huidige streak en langste streak. Returns (huidig, langste, soort)."""
-        if not results:
-            return 0, 0, "—"
-        sorted_r = sorted(results, key=lambda r: r.get("datum",""))
-        current, best, last = 1, 1, sorted_r[-1].get("uitkomst","")
-        for i in range(len(sorted_r) - 2, -1, -1):
-            if sorted_r[i].get("uitkomst","") == last:
-                current += 1
-            else:
-                break
-        for i in range(len(sorted_r) - 1):
-            run = 1
-            while i + run < len(sorted_r) and sorted_r[i+run].get("uitkomst") == sorted_r[i].get("uitkomst"):
-                run += 1
-            best = max(best, run)
-        return current, best, last
+    # ════════════════════════════════════════════════════════════
+    # VIEW: MAAND
+    # ════════════════════════════════════════════════════════════
+    elif _selected_view == "Maand":
+        _m_start  = _bk_today.replace(day=1)
+        _m_next   = (_m_start + datetime.timedelta(days=32)).replace(day=1)
+        _m_days   = [_m_start + datetime.timedelta(days=_mi)
+                     for _mi in range((_m_next - _m_start).days)]
 
-    def _calc_drawdown(results: list) -> float:
-        """Bereken maximale drawdown (grootste piek-naar-dal verlies)."""
-        if len(results) < 2:
-            return 0.0
-        sorted_r = sorted(results, key=lambda r: r.get("datum",""))
-        peak, max_dd, cum = 0.0, 0.0, 0.0
-        for r in sorted_r:
-            cum  += r.get("winst_verlies", 0)
-            peak  = max(peak, cum)
-            max_dd = max(max_dd, peak - cum)
-        return round(max_dd, 2)
+        _m_bets_all = [b for _md in _m_days
+                       for b in _bets_by_date.get(_md.isoformat(), [])]
+        _m_total_pnl = sum(b.get("winst_verlies",0) for b in _m_bets_all)
+        _m_won_n     = sum(1 for b in _m_bets_all if b.get("uitkomst") == "gewonnen")
+        _m_n         = len(_m_bets_all)
+        _m_wr        = (_m_won_n / _m_n * 100) if _m_n > 0 else 0.0
 
-    if not _gedaan:
-        st.info("Nog geen afgeronde weddenschappen. Voeg ze toe via ➕ hierboven of markeer props in ⭐ Favorieten.")
+        st.markdown(f"#### {_bk_today.strftime('%B %Y')}")
+        _mc1, _mc2, _mc3 = st.columns(3)
+        _mc1.markdown(kpi_card("💰", "Maand P&L",
+            f"€{_m_total_pnl:+.2f}",
+            positive=(_m_total_pnl > 0) if _m_total_pnl != 0 else None,
+            tooltip=f"€{_m_total_pnl:+.4f}"), unsafe_allow_html=True)
+        _mc2.markdown(kpi_card("🎯", "Bets", str(_m_n), "in maand"), unsafe_allow_html=True)
+        _mc3.markdown(kpi_card("📊", "Win rate",
+            f"{_m_wr:.0f}%",
+            f"{_m_won_n} gewonnen",
+            positive=(_m_wr >= 50) if _m_n > 0 else None), unsafe_allow_html=True)
+        st.markdown("---")
+
+        # Groepeer in kalender-weken
+        _wk_groups: dict = {}
+        for _wmd in _m_days:
+            _wk_nr = _wmd.isocalendar()[1]
+            if _wk_nr not in _wk_groups:
+                _wk_groups[_wk_nr] = []
+            _wk_groups[_wk_nr].append(_wmd)
+
+        _wk_counter = 1
+        for _wk_nr2, _wk_days2 in sorted(_wk_groups.items()):
+            _wk_s  = _wk_days2[0].strftime("%-d %b")
+            _wk_e  = _wk_days2[-1].strftime("%-d %b")
+            _wk_bs = [b for _wd5 in _wk_days2
+                      for b in _bets_by_date.get(_wd5.isoformat(), [])]
+            _wk_pnl  = sum(b.get("winst_verlies",0) for b in _wk_bs)
+            _wk_won  = sum(1 for b in _wk_bs if b.get("uitkomst") == "gewonnen")
+            _wk_n    = len(_wk_bs)
+            _wk_col  = "#4ade80" if _wk_pnl > 0 else "#f87171" if _wk_pnl < 0 else "#a8aace"
+            _wk_pstr = f"€{_wk_pnl:+.2f}"
+            # Expand de huidige week automatisch
+            _wk_is_cur = any(_wd5 >= _bk_today for _wd5 in _wk_days2)
+
+            with st.expander(
+                f"Week {_wk_counter}  ·  {_wk_s}–{_wk_e}  ·  {_wk_n} bets  ·  P&L: {_wk_pstr}",
+                expanded=_wk_is_cur,
+            ):
+                if not _wk_bs:
+                    st.caption("Geen bets in deze week.")
+                else:
+                    for _wb in sorted(_wk_bs, key=lambda x: x.get("datum",""), reverse=True):
+                        _ws   = _wb.get("sport","?")
+                        _wico = SPORT_ICONS.get(_ws.upper(), "🎮") if _ws != "Parlay" else "🎰"
+                        _wpnl2 = _wb.get("winst_verlies",0)
+                        _wcol2 = "#4ade80" if _wpnl2 > 0 else "#f87171"
+                        _wdate = (_wb.get("datum",""))[:10]
+                        try:
+                            _wdate_fmt = datetime.date.fromisoformat(_wdate).strftime("%-d %b")
+                        except Exception:
+                            _wdate_fmt = _wdate
+                        st.markdown(f"""
+                        <div style="display:flex;justify-content:space-between;
+                          align-items:center;padding:7px 12px;margin:3px 0;
+                          background:#13132e;border-radius:7px;border:1px solid #2e2e56;">
+                          <div>
+                            <span style="color:#6868a0;font-size:0.72rem;margin-right:8px;">{_wdate_fmt}</span>
+                            <span style="margin-right:4px;">{_wico}</span>
+                            <span style="color:#e8eaf6;font-weight:500;">{_wb.get('speler','')}</span>
+                            <span style="color:#a8aace;font-size:0.78rem;margin-left:6px;">{_wb.get('bet','')}</span>
+                          </div>
+                          <span style="color:{_wcol2};font-weight:700;flex-shrink:0;margin-left:8px;">
+                            €{_wpnl2:+.2f}
+                          </span>
+                        </div>""", unsafe_allow_html=True)
+            _wk_counter += 1
+
+    # ════════════════════════════════════════════════════════════
+    # VIEW: ALL TIME  (bestaande implementatie ongewijzigd)
+    # ════════════════════════════════════════════════════════════
     else:
-        # ── Overzicht metrics ────────────────────────────────────────────────
-        st.markdown("#### 🎯 Overzicht")
-        _bn_won   = sum(1 for r in _gedaan if r.get("uitkomst") == "gewonnen")
-        _bt_inzet = sum(r.get("inzet", 0) for r in _gedaan)
-        _bt_wl    = sum(r.get("winst_verlies", 0) for r in _gedaan)
-        _broi     = (_bt_wl / _bt_inzet * 100) if _bt_inzet > 0 else 0.0
-        _bwin_pct = (_bn_won / len(_gedaan) * 100) if _gedaan else 0.0
+        st.markdown("### 📊 Bankroll Tracker")
 
-        # Huidig saldo (alleen als startbankroll ingesteld)
-        if _start_bk_saved > 0:
-            _huidig_saldo = _start_bk_saved + _bt_wl
-            _groei_pct    = (_bt_wl / _start_bk_saved * 100) if _start_bk_saved > 0 else 0.0
-            _bmc1, _bmc2, _bmc3, _bmc4 = st.columns(4)
-            _bmc1.markdown(kpi_card("🏦", "Startbankroll", f"€{_start_bk_saved:.2f}"), unsafe_allow_html=True)
-            _bmc2.markdown(kpi_card("💰", "Huidig saldo",  f"€{_huidig_saldo:.2f}", f"P&L {_bt_wl:+.2f}", positive=(_bt_wl > 0) if _bt_wl != 0 else None), unsafe_allow_html=True)
-            _bmc3.markdown(kpi_card("📈", "Groei",         f"{_groei_pct:+.1f}%", positive=(_groei_pct > 0) if _groei_pct != 0 else None), unsafe_allow_html=True)
-            _bmc4.markdown(kpi_card("🎯", "Win %",         f"{_bwin_pct:.1f}%",   positive=(_bwin_pct >= 55) if _gedaan else None), unsafe_allow_html=True)
-            st.markdown("")
-
-        _bc1, _bc2, _bc3, _bc4 = st.columns(4)
-        _bc1.markdown(kpi_card("💰", "Totaal P&L",   f"€{_bt_wl:+.2f}", positive=(_bt_wl > 0) if _bt_wl != 0 else None, tooltip=f"€{_bt_wl:+.4f}"), unsafe_allow_html=True)
-        _bc2.markdown(kpi_card("📈", "ROI",           f"{_broi:+.1f}%",  positive=(_broi > 0) if _broi != 0 else None, tooltip=f"{_broi:+.4f}%"), unsafe_allow_html=True)
-        _bc3.markdown(kpi_card("📊", "W / L",         f"{_bn_won} / {len(_gedaan) - _bn_won}", f"{len(_gedaan)} bets gespeeld"), unsafe_allow_html=True)
-        _bc4.markdown(kpi_card("🎰", "Bets gespeeld", str(len(_gedaan))), unsafe_allow_html=True)
-
-        # Streak + drawdown
-        _cur_streak, _best_streak, _streak_type = _calc_streak(_gedaan)
-        _max_dd = _calc_drawdown(_gedaan)
-        _streak_icon = "🔥" if _streak_type == "gewonnen" else "❄️"
-        _bx1, _bx2, _bx3 = st.columns(3)
-        _bx1.markdown(kpi_card(_streak_icon, "Huidige streak", f"{_cur_streak}× {_streak_type}", positive=(_streak_type == "gewonnen")), unsafe_allow_html=True)
-        _bx2.markdown(kpi_card("🏆", "Langste streak", str(_best_streak)), unsafe_allow_html=True)
-        _bx3.markdown(kpi_card("📉", "Max drawdown", f"€{_max_dd:.2f}", "piek-naar-dal verlies", positive=(False if _max_dd > 0 else None), tooltip=f"€{_max_dd:.4f}"), unsafe_allow_html=True)
-
-        # ── P&L grafiek (met bankrollniveau) ────────────────────────────────
+        # ── Weddenschap toevoegen ────────────────────────────────────────────────
+        with st.expander("➕ Weddenschap toevoegen", expanded=True):
+            st.caption("Voeg een weddenschap toe — zowel al gezette bets (open) als afgeronde bets (gewonnen/verloren).")
+            _db1, _db2, _db3 = st.columns(3)
+            _db4, _db5, _db6 = st.columns(3)
+            _db_speler   = _db1.text_input("Speler / Team", key="db_speler",
+                                            placeholder="bijv. Connor McDavid")
+            _db_sport    = _db2.selectbox("Sport", ["NHL","NBA","MLB","Voetbal","Overig"], key="db_sport")
+            _db_bet      = _db3.text_input("Bet type", key="db_bet",
+                                            placeholder="bijv. Anytime Goal Scorer")
+            _db_odds     = _db4.number_input("Odds", min_value=1.01, max_value=50.0,
+                                              value=1.90, step=0.05, format="%.2f", key="db_odds")
+            _db_inzet    = _db5.number_input("Inzet (€)", min_value=0.10, max_value=5000.0,
+                                              value=10.0, step=1.0, format="%.2f", key="db_inzet")
+            _db_uitkomst = _db6.selectbox(
+                "Uitkomst",
+                ["open (nog niet gespeeld)", "gewonnen", "verloren"],
+                key="db_uitkomst",
+                help="Kies 'open' als je de bet al geplaatst hebt maar de uitkomst nog onbekend is.",
+            )
+            _db_datum    = st.date_input("Datum", value=datetime.date.today(), key="db_datum")
+            if st.button("💾 Opslaan", key="btn_db_save", use_container_width=True, type="primary"):
+                if _db_speler and _db_bet:
+                    _db_uitkomst_clean = "open" if _db_uitkomst.startswith("open") else _db_uitkomst
+                    db.add_direct_bet(
+                        speler=_db_speler, sport=_db_sport, bet_type=_db_bet,
+                        odds=float(_db_odds), inzet=float(_db_inzet),
+                        uitkomst=_db_uitkomst_clean, datum=_db_datum.isoformat(),
+                    )
+                    st.success("✅ Weddenschap opgeslagen!")
+                    st.rerun()
+                else:
+                    st.warning("Vul minimaal speler/team en bet type in.")
+    
         st.markdown("---")
-        st.markdown("#### 📈 P&L over tijd")
-        _sorted_res = sorted(_gedaan, key=lambda r: r.get("datum", ""))
-        if len(_sorted_res) >= 2:
-            _cum_wl, _rows = 0.0, []
-            for _r in _sorted_res:
-                _cum_wl += _r.get("winst_verlies", 0)
-                _row = {"Datum": _r.get("datum",""), "Cumulatief P&L (€)": round(_cum_wl, 2)}
-                if _start_bk_saved > 0:
-                    _row["Bankroll (€)"] = round(_start_bk_saved + _cum_wl, 2)
-                _rows.append(_row)
-            _chart_df = pd.DataFrame(_rows).set_index("Datum")
-            st.line_chart(_chart_df)
-        else:
-            st.caption("Minimaal 2 afgeronde weddenschappen nodig voor een grafiek.")
-
-        # ── Per sport ─────────────────────────────────────────────────────────
-        # Gebruikt _gedaan_sport: parlay-entries zijn uitgebreid naar losse sport-legs.
-        st.markdown("---")
-        st.markdown("#### 🏟️ Per sport")
-        for _bsport in sorted({r.get("sport","?") for r in _gedaan_sport}):
-            _sr   = [r for r in _gedaan_sport if r.get("sport","") == _bsport]
-            _sw   = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen")
-            _si   = sum(r.get("inzet", 0) for r in _sr)
-            _swl  = sum(r.get("winst_verlies", 0) for r in _sr)
-            _sroi = (_swl / _si * 100) if _si > 0 else 0.0
-            # Onderscheid single bets vs parlay legs in dit sport-bucket
-            _sr_singles = [r for r in _sr if not r.get("_parlay_id")]
-            _sr_legs    = [r for r in _sr if r.get("_parlay_id")]
-            _icon = SPORT_ICONS.get(_bsport.upper(), "⚽") if _bsport != "Parlay" else "🎰"
-            with st.expander(f"{_icon} {_bsport}  —  P&L: €{_swl:+.2f}  |  ROI: {_sroi:+.1f}%", expanded=True):
-                _sc1, _sc2, _sc3 = st.columns(3)
-                _sc1.metric("W / L",        f"{_sw} / {len(_sr) - _sw}")
-                _sc2.metric("Totale inzet", f"€{_si:.2f}")
-                _sc3.metric("P&L",          f"€{_swl:+.2f}")
-                if _sr_legs:
-                    _pl_w = sum(1 for r in _sr_legs if r.get("uitkomst") == "gewonnen")
-                    _pl_l = len(_sr_legs) - _pl_w
-                    st.caption(f"🎰 Waarvan parlay legs: {_pl_w}W / {_pl_l}L  ·  {len(_sr_singles)} singles")
-                _btype_wl = {}
-                for _r in _sr_singles:  # alleen singles voor meest winstgevend bet type
-                    _bt = _r.get("bet","?")
-                    _btype_wl[_bt] = _btype_wl.get(_bt, 0.0) + _r.get("winst_verlies", 0)
-                if _btype_wl:
-                    _best_bt = max(_btype_wl, key=lambda k: _btype_wl[k])
-                    if _btype_wl[_best_bt] > 0:
-                        st.caption(f"✨ Meest winstgevend: **{_best_bt}** (€{_btype_wl[_best_bt]:+.2f})")
-
-        # ── Winst per odds-range ─────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### 🎰 Winst per odds-range")
-        _odds_buckets = [
-            ("1.01–1.49", 1.01, 1.49), ("1.50–1.74", 1.50, 1.74),
-            ("1.75–1.99", 1.75, 1.99), ("2.00–2.49", 2.00, 2.49),
-            ("2.50–2.99", 2.50, 2.99), ("3.00+",     3.00, 99.0),
-        ]
-        _odds_rows = []
-        for _label, _lo, _hi in _odds_buckets:
-            _br = [r for r in _gedaan if _lo <= float(r.get("odds",0) or 0) <= _hi]
-            if not _br: continue
-            _bw  = sum(1 for r in _br if r.get("uitkomst") == "gewonnen")
-            _bwv = sum(r.get("winst_verlies",0) for r in _br)
-            _bi  = sum(r.get("inzet",0) for r in _br)
-            _odds_rows.append({
-                "Odds-range": _label, "N": len(_br),
-                "Win %":  f"{_bw/len(_br)*100:.0f}%",
-                "P&L":    f"€{_bwv:+.2f}",
-                "ROI":    f"{(_bwv/_bi*100) if _bi else 0:+.1f}%",
+    
+        # ── Openstaande weddenschappen ───────────────────────────────────────────
+        _openstaand = [r for r in db.load_resultaten() if r.get("uitkomst") == "open"]
+        # Open parlays toevoegen (staan niet in resultaten tabel)
+        _bk_open_prl_existing = {r.get("id", "") for r in _openstaand if str(r.get("id", "")).startswith("parlay_")}
+        for _bk_op_prl in db.load_parlays():
+            if (_bk_op_prl.get("uitkomst") or "open") != "open":
+                continue
+            _bk_op_prl_res_id = f"parlay_{_bk_op_prl['id']}"
+            if _bk_op_prl_res_id in _bk_open_prl_existing:
+                continue
+            _bk_op_prl_legs = _bk_op_prl.get("props_json") or []
+            _openstaand.append({
+                "id":            _bk_op_prl_res_id,
+                "datum":         (_bk_op_prl.get("datum") or datetime.date.today().isoformat())[:10],
+                "speler":        f"🎰 Parlay ({len(_bk_op_prl_legs)} legs)",
+                "bet":           ", ".join(str(l.get("player", "")) for l in _bk_op_prl_legs[:3]) or "Parlay",
+                "sport":         "Parlay",
+                "odds":          float(_bk_op_prl.get("gecombineerde_odds") or 1.0),
+                "inzet":         float(_bk_op_prl.get("inzet") or 0),
+                "uitkomst":      "open",
+                "winst_verlies": 0.0,
+                "ev_score":      float(_bk_op_prl.get("ev_score") or 0),
+                "is_parlay":     True,
             })
-        if _odds_rows:
-            st.dataframe(pd.DataFrame(_odds_rows), hide_index=True, use_container_width=True)
-        else:
-            st.caption("Nog niet genoeg data voor odds-range analyse.")
-
-        # ── EV analyse ───────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### 🔬 EV Analyse (voorspeld vs werkelijk)")
-        _ev_rows = []
-        for _bsport in sorted({r.get("sport","?") for r in _gedaan}):
-            _sr = [r for r in _gedaan if r.get("sport","") == _bsport]
-            if len(_sr) < 3: continue
-            _pred_hrs = [
-                (float(_r.get("ev_score",0)) + 1) / float(_r.get("odds",2.0))
-                for _r in _sr if float(_r.get("odds",2.0)) > 1.0
-            ]
-            if not _pred_hrs: continue
-            _pred_hr   = sum(_pred_hrs) / len(_pred_hrs)
-            _actual_hr = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen") / len(_sr)
-            _diff      = _actual_hr - _pred_hr
-            _ev_rows.append({
-                "Sport": _bsport, "Voorspeld HR": f"{_pred_hr*100:.1f}%",
-                "Werkelijk HR": f"{_actual_hr*100:.1f}%", "Verschil": f"{_diff*100:+.1f}%", "N": len(_sr),
-            })
-            if _pred_hr > 0 and _actual_hr < _pred_hr * 0.80:
-                st.warning(f"⚠️ {_bsport} props presteren {abs(_diff)*100:.0f}% onder verwachte hit rate")
-        if _ev_rows:
-            st.dataframe(pd.DataFrame(_ev_rows), hide_index=True, use_container_width=True)
-
-        # ── Per bet type ─────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### 📊 Per bet type")
-        _bt_agg: dict = {}
-        for _r in _gedaan:
-            _bt = (_r.get("bet") or _r.get("bet_type") or "Onbekend").split(" ")[0]
-            _bt_agg.setdefault(_bt, {"n":0,"won":0,"ev":0.0,"wv":0.0,"inzet":0.0})
-            _bt_agg[_bt]["n"] += 1
-            if (_r.get("uitkomst") or "") == "gewonnen": _bt_agg[_bt]["won"] += 1
-            _bt_agg[_bt]["ev"]    += float(_r.get("ev_score") or 0)
-            _bt_agg[_bt]["wv"]    += float(_r.get("winst_verlies") or 0)
-            _bt_agg[_bt]["inzet"] += float(_r.get("inzet") or 0)
-        _bt_rows = [
-            {"Bet Type": _bt, "N": _s["n"],
-             "Win %":  f"{_s['won']/_s['n']*100:.0f}%"  if _s["n"] else "0%",
-             "ROI":    f"{(_s['wv']/_s['inzet']*100) if _s['inzet'] else 0:+.1f}%",
-             "P&L":    f"€{_s['wv']:+.2f}",
-             "Gem. EV": f"{_s['ev']/_s['n']:.3f}" if _s["n"] else "0.000"}
-            for _bt, _s in sorted(_bt_agg.items(), key=lambda x: x[1]["wv"], reverse=True)
-        ]
-        if _bt_rows:
-            st.dataframe(pd.DataFrame(_bt_rows), use_container_width=True, hide_index=True)
-
-        # ── Parlay ROI ───────────────────────────────────────────────────────
-        # _all_parlays_bk already loaded above (reuse, avoids duplicate DB call)
-        if _all_parlays_bk:
+        if _openstaand:
+            st.markdown("#### ⏳ Openstaande weddenschappen")
+            st.caption(f"{len(_openstaand)} bet(s) nog niet afgerond — klik op gewonnen of verloren om te registreren.")
+            for _op in sorted(_openstaand, key=lambda r: r.get("datum",""), reverse=True):
+                _op_id = _op.get("id","")
+                _oc1, _oc2, _oc3, _oc4, _oc5 = st.columns([3, 1, 1, 1, 1])
+                _oc1.write(f"**{_op.get('speler','')}** — {_op.get('bet','')}  @ {_op.get('odds','—')} | €{_op.get('inzet',0):.2f}")
+                _oc2.caption(_op.get("datum","")[:10])
+                if _oc3.button("✅ Win", key=f"opwon_{_op_id}"):
+                    _op_inzet_val = float(_op.get("inzet", 10))
+                    _op_upd = dict(_op)
+                    _op_upd["uitkomst"] = "gewonnen"
+                    db.upsert_resultaat(_op_id, _op_upd, "gewonnen", _op_inzet_val)
+                    if str(_op_id).startswith("parlay_"):
+                        _op_odds_val = float(_op.get("odds", 1.0))
+                        db.update_parlay(str(_op_id)[len("parlay_"):], {
+                            "uitkomst": "gewonnen",
+                            "winst_verlies": round(_op_inzet_val * (_op_odds_val - 1), 2),
+                        })
+                    st.rerun()
+                if _oc4.button("❌ Loss", key=f"oplost_{_op_id}"):
+                    _op_inzet_val = float(_op.get("inzet", 10))
+                    _op_upd = dict(_op)
+                    _op_upd["uitkomst"] = "verloren"
+                    db.upsert_resultaat(_op_id, _op_upd, "verloren", _op_inzet_val)
+                    if str(_op_id).startswith("parlay_"):
+                        db.update_parlay(str(_op_id)[len("parlay_"):], {
+                            "uitkomst": "verloren",
+                            "winst_verlies": round(-float(_op.get("inzet", 10)), 2),
+                        })
+                    st.rerun()
+                if _oc5.button("🗑️", key=f"opdel_{_op_id}", help="Verwijder"):
+                    if str(_op_id).startswith("parlay_"):
+                        # Open parlay staat niet in resultaten → verwijder uit parlays tabel
+                        db.delete_parlay(str(_op_id)[len("parlay_"):])
+                    else:
+                        db.remove_resultaat(_op_id)
+                    st.rerun()
             st.markdown("---")
-            st.markdown("#### 🎯 Parlay ROI")
-            _p_n    = len(_all_parlays_bk)
-            _p_won  = sum(1 for p in _all_parlays_bk if (p.get("uitkomst") or "") == "gewonnen")
-            _p_inzet = sum(float(p.get("inzet") or 10) for p in _all_parlays_bk)
-            _p_wv   = sum(float(p.get("winst_verlies") or 0) for p in _all_parlays_bk)
-            _p_roi  = _p_wv / _p_inzet * 100 if _p_inzet else 0
-            _pc1, _pc2, _pc3, _pc4 = st.columns(4)
-            _pc1.metric("Parlays gespeeld", _p_n)
-            _pc2.metric("Gewonnen",          f"{_p_won}/{_p_n}")
-            _pc3.metric("Totaal W/V",        f"€{_p_wv:.2f}")
-            _pc4.metric("Parlay ROI",        f"{_p_roi:.1f}%")
-
-    # ── Kelly Criterion Calculator ───────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("#### 🧮 Kelly Criterion Calculator")
-    st.caption("Bereken de optimale inzet als percentage van je bankroll op basis van je geschatte hit rate.")
-    _kc1, _kc2, _kc3 = st.columns(3)
-    _k_odds    = _kc1.number_input("Odds",        min_value=1.01, max_value=50.0, value=1.90,
-                                    step=0.05, format="%.2f", key="kelly_odds")
-    _k_hitrate = _kc2.number_input("Hit rate (%)", min_value=1.0, max_value=99.0, value=55.0,
-                                    step=1.0, format="%.1f", key="kelly_hr") / 100.0
-    _k_fraction = _kc3.selectbox("Kelly fractie",
-                                  ["Volle Kelly (agressief)", "Halve Kelly (gematigd)", "Kwart Kelly (conservatief)"],
-                                  index=1, key="kelly_frac")
-    _k_frac_val = 1.0 if "Volle" in _k_fraction else (0.5 if "Halve" in _k_fraction else 0.25)
-    _k_b        = _k_odds - 1.0          # winst per eenheid inzet
-    _k_q        = 1.0 - _k_hitrate
-    _k_full     = (_k_b * _k_hitrate - _k_q) / _k_b if _k_b > 0 else 0.0
-    _k_advised  = max(0.0, _k_full * _k_frac_val)
-    _kr1, _kr2, _kr3, _kr4 = st.columns(4)
-    _kr1.metric("Full Kelly %",    f"{_k_full*100:.1f}%")
-    _kr2.metric("Geadviseerde %",  f"{_k_advised*100:.1f}%")
-    if _start_bk_saved > 0:
-        _k_euro = _start_bk_saved * _k_advised + sum(r.get("winst_verlies",0) for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen","verloren"))
-        _k_euro = max(0.0, _k_euro * _k_advised)
-        _kr3.metric("Inzet bij huidig saldo", f"€{_k_euro:.2f}")
-    if _k_full <= 0:
-        _kr4.metric("EV", "❌ Negatief", help="Geen positieve verwachte waarde bij deze odds + hit rate.")
-    else:
-        _k_ev = _k_hitrate * _k_b - _k_q
-        _kr4.metric("EV per €1 inzet", f"€{_k_ev:+.3f}")
+    
+        # ── Startbankroll instelling ─────────────────────────────────────────────
+        _start_bk_saved = float(db.get_setting("start_bankroll") or 0.0)
+        with st.expander("⚙️ Bankroll instellingen", expanded=(_start_bk_saved == 0)):
+            _start_bk_input = st.number_input(
+                "Startbankroll (€)", min_value=0.0, max_value=100000.0,
+                value=_start_bk_saved, step=10.0, format="%.2f", key="start_bk_input",
+                help="Stel je beginkapitaal in. De app berekent dan je huidig saldo en groei%."
+            )
+            if st.button("💾 Opslaan", key="btn_start_bk"):
+                db.set_setting("start_bankroll", float(_start_bk_input))
+                _start_bk_saved = float(_start_bk_input)
+                st.success("Startbankroll opgeslagen!")
+                st.rerun()
+    
+        st.markdown("---")
+    
+        # ── Filters ──────────────────────────────────────────────────────────────
+        st.markdown("#### 🔎 Filters")
+        _bkf1, _bkf2, _bkf3, _bkf4 = st.columns(4)
+        _bk_sport  = _bkf1.selectbox("Sport",    ["Alles","NHL","NBA","MLB","Voetbal"], key="bk_sport")
+        _bk_btype  = _bkf2.selectbox("Bet type", ["Alles","Goals","Assists","Shots on Goal",
+                                                   "Blocked Shots","Hits","Points","Home Runs",
+                                                   "Strikeouts","Over/Under"], key="bk_btype")
+        _bk_period = _bkf3.selectbox("Periode",  ["Alles","Laatste 7 dagen","Laatste 30 dagen"], key="bk_period")
+        _bk_kind   = _bkf4.selectbox("Type",     ["Alles","Singles","Parlays"], key="bk_kind")
+        st.markdown("---")
+    
+        _today_bk = datetime.date.today()
+    
+        def _bk_filter(r: dict) -> bool:
+            if _bk_sport != "Alles" and _bk_sport.lower() not in (r.get("sport","") or "").lower():
+                return False
+            if _bk_btype != "Alles" and _bk_btype.lower() not in (r.get("bet_type","") or "").lower():
+                return False
+            if _bk_period != "Alles":
+                try:
+                    rd   = datetime.date.fromisoformat((r.get("datum") or "")[:10])
+                    days = 7 if "7" in _bk_period else 30
+                    if (_today_bk - rd).days > days:
+                        return False
+                except Exception:
+                    pass
+            # Detecteer parlay via id-prefix (robuust voor bestaande records zonder is_parlay=True)
+            _r_is_parlay = str(r.get("id","")).startswith("parlay_") or bool(r.get("is_parlay"))
+            if _bk_kind == "Singles" and _r_is_parlay: return False
+            if _bk_kind == "Parlays" and not _r_is_parlay: return False
+            return True
+    
+        _alle_res = [r for r in db.load_resultaten() if _bk_filter(r)]
+        _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren")]
+    
+        # ── Parlays laden (één keer, hergebruikt voor per-sport en Parlay ROI) ────
+        _all_parlays_bk = db.load_parlays()
+        _parlays_bk_map = {p["id"]: p for p in _all_parlays_bk}
+    
+        # Gesettlede parlays die ontbreken in _gedaan toevoegen (zelfde aanpak als Dashboard).
+        # _gedaan komt uit resultaten; als upsert_resultaat ooit niet is uitgevoerd staan
+        # de parlays daar niet in en worden ze hier handmatig ingevuld.
+        _bk_bestaande_prl_ids = {
+            str(r.get("id", "")) for r in _gedaan
+            if str(r.get("id", "")).startswith("parlay_")
+        }
+        for _p in _all_parlays_bk:
+            if (_p.get("uitkomst") or "open") not in ("gewonnen", "verloren"):
+                continue
+            _p_res_id = f"parlay_{_p['id']}"
+            if _p_res_id in _bk_bestaande_prl_ids:
+                continue  # al aanwezig in resultaten, niet dubbel tellen
+            _p_legs  = _p.get("props_json") or []
+            _p_entry = {
+                "id":            _p_res_id,
+                "datum":         (_p.get("datum") or "")[:10],
+                "speler":        f"🎰 Parlay ({len(_p_legs)} legs)",
+                "bet":           ", ".join(str(l.get("player", "")) for l in _p_legs[:3]) or "Parlay",
+                "sport":         "Parlay",
+                "odds":          float(_p.get("gecombineerde_odds") or 1.0),
+                "inzet":         float(_p.get("inzet") or 0),
+                "uitkomst":      _p["uitkomst"],
+                "winst_verlies": float(_p.get("winst_verlies") or 0),
+                "ev_score":      float(_p.get("ev_score") or 0),
+                "is_parlay":     True,
+            }
+            if _bk_filter(_p_entry):  # respecteer actieve sport/periode/type filters
+                _gedaan.append(_p_entry)
+    
+        # _gedaan_sport: parlay-entries uitgebreid naar losse sport-legs voor per-sport stats
+        # Elke leg krijgt inzet/P&L proportioneel toegewezen (inzet / aantal legs).
+        def _expand_parlay_legs(gedaan, parlays_map):
+            result = []
+            for r in gedaan:
+                r_id = str(r.get("id", ""))
+                if r_id.startswith("parlay_"):
+                    prl = parlays_map.get(r_id[len("parlay_"):], {})
+                    legs = prl.get("props_json") or []
+                    n = max(len(legs), 1)
+                    for leg in legs:
+                        result.append({
+                            "sport":         leg.get("sport", "") or "Parlay",
+                            "uitkomst":      r["uitkomst"],
+                            "inzet":         round(r.get("inzet", 0) / n, 2),
+                            "winst_verlies": round(r.get("winst_verlies", 0) / n, 2),
+                            "ev_score":      0.0,
+                            "odds":          float(leg.get("odds", 1.0)),
+                            "bet":           leg.get("bet_type", ""),
+                            "speler":        leg.get("player", ""),
+                            "_parlay_id":    r_id,
+                        })
+                else:
+                    result.append(r)
+            return result
+        _gedaan_sport = _expand_parlay_legs(_gedaan, _parlays_bk_map)
+    
+        # ── Helpers ──────────────────────────────────────────────────────────────
+        def _calc_streak(results: list) -> tuple:
+            """Bereken huidige streak en langste streak. Returns (huidig, langste, soort)."""
+            if not results:
+                return 0, 0, "—"
+            sorted_r = sorted(results, key=lambda r: r.get("datum",""))
+            current, best, last = 1, 1, sorted_r[-1].get("uitkomst","")
+            for i in range(len(sorted_r) - 2, -1, -1):
+                if sorted_r[i].get("uitkomst","") == last:
+                    current += 1
+                else:
+                    break
+            for i in range(len(sorted_r) - 1):
+                run = 1
+                while i + run < len(sorted_r) and sorted_r[i+run].get("uitkomst") == sorted_r[i].get("uitkomst"):
+                    run += 1
+                best = max(best, run)
+            return current, best, last
+    
+        def _calc_drawdown(results: list) -> float:
+            """Bereken maximale drawdown (grootste piek-naar-dal verlies)."""
+            if len(results) < 2:
+                return 0.0
+            sorted_r = sorted(results, key=lambda r: r.get("datum",""))
+            peak, max_dd, cum = 0.0, 0.0, 0.0
+            for r in sorted_r:
+                cum  += r.get("winst_verlies", 0)
+                peak  = max(peak, cum)
+                max_dd = max(max_dd, peak - cum)
+            return round(max_dd, 2)
+    
+        if not _gedaan:
+            st.info("Nog geen afgeronde weddenschappen. Voeg ze toe via ➕ hierboven of markeer props in ⭐ Favorieten.")
+        else:
+            # ── Overzicht metrics ────────────────────────────────────────────────
+            st.markdown("#### 🎯 Overzicht")
+            _bn_won   = sum(1 for r in _gedaan if r.get("uitkomst") == "gewonnen")
+            _bt_inzet = sum(r.get("inzet", 0) for r in _gedaan)
+            _bt_wl    = sum(r.get("winst_verlies", 0) for r in _gedaan)
+            _broi     = (_bt_wl / _bt_inzet * 100) if _bt_inzet > 0 else 0.0
+            _bwin_pct = (_bn_won / len(_gedaan) * 100) if _gedaan else 0.0
+    
+            # Huidig saldo (alleen als startbankroll ingesteld)
+            if _start_bk_saved > 0:
+                _huidig_saldo = _start_bk_saved + _bt_wl
+                _groei_pct    = (_bt_wl / _start_bk_saved * 100) if _start_bk_saved > 0 else 0.0
+                _bmc1, _bmc2, _bmc3, _bmc4 = st.columns(4)
+                _bmc1.markdown(kpi_card("🏦", "Startbankroll", f"€{_start_bk_saved:.2f}"), unsafe_allow_html=True)
+                _bmc2.markdown(kpi_card("💰", "Huidig saldo",  f"€{_huidig_saldo:.2f}", f"P&L {_bt_wl:+.2f}", positive=(_bt_wl > 0) if _bt_wl != 0 else None), unsafe_allow_html=True)
+                _bmc3.markdown(kpi_card("📈", "Groei",         f"{_groei_pct:+.1f}%", positive=(_groei_pct > 0) if _groei_pct != 0 else None), unsafe_allow_html=True)
+                _bmc4.markdown(kpi_card("🎯", "Win %",         f"{_bwin_pct:.1f}%",   positive=(_bwin_pct >= 55) if _gedaan else None), unsafe_allow_html=True)
+                st.markdown("")
+    
+            _bc1, _bc2, _bc3, _bc4 = st.columns(4)
+            _bc1.markdown(kpi_card("💰", "Totaal P&L",   f"€{_bt_wl:+.2f}", positive=(_bt_wl > 0) if _bt_wl != 0 else None, tooltip=f"€{_bt_wl:+.4f}"), unsafe_allow_html=True)
+            _bc2.markdown(kpi_card("📈", "ROI",           f"{_broi:+.1f}%",  positive=(_broi > 0) if _broi != 0 else None, tooltip=f"{_broi:+.4f}%"), unsafe_allow_html=True)
+            _bc3.markdown(kpi_card("📊", "W / L",         f"{_bn_won} / {len(_gedaan) - _bn_won}", f"{len(_gedaan)} bets gespeeld"), unsafe_allow_html=True)
+            _bc4.markdown(kpi_card("🎰", "Bets gespeeld", str(len(_gedaan))), unsafe_allow_html=True)
+    
+            # Streak + drawdown
+            _cur_streak, _best_streak, _streak_type = _calc_streak(_gedaan)
+            _max_dd = _calc_drawdown(_gedaan)
+            _streak_icon = "🔥" if _streak_type == "gewonnen" else "❄️"
+            _bx1, _bx2, _bx3 = st.columns(3)
+            _bx1.markdown(kpi_card(_streak_icon, "Huidige streak", f"{_cur_streak}× {_streak_type}", positive=(_streak_type == "gewonnen")), unsafe_allow_html=True)
+            _bx2.markdown(kpi_card("🏆", "Langste streak", str(_best_streak)), unsafe_allow_html=True)
+            _bx3.markdown(kpi_card("📉", "Max drawdown", f"€{_max_dd:.2f}", "piek-naar-dal verlies", positive=(False if _max_dd > 0 else None), tooltip=f"€{_max_dd:.4f}"), unsafe_allow_html=True)
+    
+            # ── P&L grafiek (met bankrollniveau) ────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 📈 P&L over tijd")
+            _sorted_res = sorted(_gedaan, key=lambda r: r.get("datum", ""))
+            if len(_sorted_res) >= 2:
+                _cum_wl, _rows = 0.0, []
+                for _r in _sorted_res:
+                    _cum_wl += _r.get("winst_verlies", 0)
+                    _row = {"Datum": _r.get("datum",""), "Cumulatief P&L (€)": round(_cum_wl, 2)}
+                    if _start_bk_saved > 0:
+                        _row["Bankroll (€)"] = round(_start_bk_saved + _cum_wl, 2)
+                    _rows.append(_row)
+                _chart_df = pd.DataFrame(_rows).set_index("Datum")
+                st.line_chart(_chart_df)
+            else:
+                st.caption("Minimaal 2 afgeronde weddenschappen nodig voor een grafiek.")
+    
+            # ── Per sport ─────────────────────────────────────────────────────────
+            # Gebruikt _gedaan_sport: parlay-entries zijn uitgebreid naar losse sport-legs.
+            st.markdown("---")
+            st.markdown("#### 🏟️ Per sport")
+            for _bsport in sorted({r.get("sport","?") for r in _gedaan_sport}):
+                _sr   = [r for r in _gedaan_sport if r.get("sport","") == _bsport]
+                _sw   = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen")
+                _si   = sum(r.get("inzet", 0) for r in _sr)
+                _swl  = sum(r.get("winst_verlies", 0) for r in _sr)
+                _sroi = (_swl / _si * 100) if _si > 0 else 0.0
+                # Onderscheid single bets vs parlay legs in dit sport-bucket
+                _sr_singles = [r for r in _sr if not r.get("_parlay_id")]
+                _sr_legs    = [r for r in _sr if r.get("_parlay_id")]
+                _icon = SPORT_ICONS.get(_bsport.upper(), "⚽") if _bsport != "Parlay" else "🎰"
+                with st.expander(f"{_icon} {_bsport}  —  P&L: €{_swl:+.2f}  |  ROI: {_sroi:+.1f}%", expanded=True):
+                    _sc1, _sc2, _sc3 = st.columns(3)
+                    _sc1.metric("W / L",        f"{_sw} / {len(_sr) - _sw}")
+                    _sc2.metric("Totale inzet", f"€{_si:.2f}")
+                    _sc3.metric("P&L",          f"€{_swl:+.2f}")
+                    if _sr_legs:
+                        _pl_w = sum(1 for r in _sr_legs if r.get("uitkomst") == "gewonnen")
+                        _pl_l = len(_sr_legs) - _pl_w
+                        st.caption(f"🎰 Waarvan parlay legs: {_pl_w}W / {_pl_l}L  ·  {len(_sr_singles)} singles")
+                    _btype_wl = {}
+                    for _r in _sr_singles:  # alleen singles voor meest winstgevend bet type
+                        _bt = _r.get("bet","?")
+                        _btype_wl[_bt] = _btype_wl.get(_bt, 0.0) + _r.get("winst_verlies", 0)
+                    if _btype_wl:
+                        _best_bt = max(_btype_wl, key=lambda k: _btype_wl[k])
+                        if _btype_wl[_best_bt] > 0:
+                            st.caption(f"✨ Meest winstgevend: **{_best_bt}** (€{_btype_wl[_best_bt]:+.2f})")
+    
+            # ── Winst per odds-range ─────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 🎰 Winst per odds-range")
+            _odds_buckets = [
+                ("1.01–1.49", 1.01, 1.49), ("1.50–1.74", 1.50, 1.74),
+                ("1.75–1.99", 1.75, 1.99), ("2.00–2.49", 2.00, 2.49),
+                ("2.50–2.99", 2.50, 2.99), ("3.00+",     3.00, 99.0),
+            ]
+            _odds_rows = []
+            for _label, _lo, _hi in _odds_buckets:
+                _br = [r for r in _gedaan if _lo <= float(r.get("odds",0) or 0) <= _hi]
+                if not _br: continue
+                _bw  = sum(1 for r in _br if r.get("uitkomst") == "gewonnen")
+                _bwv = sum(r.get("winst_verlies",0) for r in _br)
+                _bi  = sum(r.get("inzet",0) for r in _br)
+                _odds_rows.append({
+                    "Odds-range": _label, "N": len(_br),
+                    "Win %":  f"{_bw/len(_br)*100:.0f}%",
+                    "P&L":    f"€{_bwv:+.2f}",
+                    "ROI":    f"{(_bwv/_bi*100) if _bi else 0:+.1f}%",
+                })
+            if _odds_rows:
+                st.dataframe(pd.DataFrame(_odds_rows), hide_index=True, use_container_width=True)
+            else:
+                st.caption("Nog niet genoeg data voor odds-range analyse.")
+    
+            # ── EV analyse ───────────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 🔬 EV Analyse (voorspeld vs werkelijk)")
+            _ev_rows = []
+            for _bsport in sorted({r.get("sport","?") for r in _gedaan}):
+                _sr = [r for r in _gedaan if r.get("sport","") == _bsport]
+                if len(_sr) < 3: continue
+                _pred_hrs = [
+                    (float(_r.get("ev_score",0)) + 1) / float(_r.get("odds",2.0))
+                    for _r in _sr if float(_r.get("odds",2.0)) > 1.0
+                ]
+                if not _pred_hrs: continue
+                _pred_hr   = sum(_pred_hrs) / len(_pred_hrs)
+                _actual_hr = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen") / len(_sr)
+                _diff      = _actual_hr - _pred_hr
+                _ev_rows.append({
+                    "Sport": _bsport, "Voorspeld HR": f"{_pred_hr*100:.1f}%",
+                    "Werkelijk HR": f"{_actual_hr*100:.1f}%", "Verschil": f"{_diff*100:+.1f}%", "N": len(_sr),
+                })
+                if _pred_hr > 0 and _actual_hr < _pred_hr * 0.80:
+                    st.warning(f"⚠️ {_bsport} props presteren {abs(_diff)*100:.0f}% onder verwachte hit rate")
+            if _ev_rows:
+                st.dataframe(pd.DataFrame(_ev_rows), hide_index=True, use_container_width=True)
+    
+            # ── Per bet type ─────────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("#### 📊 Per bet type")
+            _bt_agg: dict = {}
+            for _r in _gedaan:
+                _bt = (_r.get("bet") or _r.get("bet_type") or "Onbekend").split(" ")[0]
+                _bt_agg.setdefault(_bt, {"n":0,"won":0,"ev":0.0,"wv":0.0,"inzet":0.0})
+                _bt_agg[_bt]["n"] += 1
+                if (_r.get("uitkomst") or "") == "gewonnen": _bt_agg[_bt]["won"] += 1
+                _bt_agg[_bt]["ev"]    += float(_r.get("ev_score") or 0)
+                _bt_agg[_bt]["wv"]    += float(_r.get("winst_verlies") or 0)
+                _bt_agg[_bt]["inzet"] += float(_r.get("inzet") or 0)
+            _bt_rows = [
+                {"Bet Type": _bt, "N": _s["n"],
+                 "Win %":  f"{_s['won']/_s['n']*100:.0f}%"  if _s["n"] else "0%",
+                 "ROI":    f"{(_s['wv']/_s['inzet']*100) if _s['inzet'] else 0:+.1f}%",
+                 "P&L":    f"€{_s['wv']:+.2f}",
+                 "Gem. EV": f"{_s['ev']/_s['n']:.3f}" if _s["n"] else "0.000"}
+                for _bt, _s in sorted(_bt_agg.items(), key=lambda x: x[1]["wv"], reverse=True)
+            ]
+            if _bt_rows:
+                st.dataframe(pd.DataFrame(_bt_rows), use_container_width=True, hide_index=True)
+    
+            # ── Parlay ROI ───────────────────────────────────────────────────────
+            # _all_parlays_bk already loaded above (reuse, avoids duplicate DB call)
+            if _all_parlays_bk:
+                st.markdown("---")
+                st.markdown("#### 🎯 Parlay ROI")
+                _p_n    = len(_all_parlays_bk)
+                _p_won  = sum(1 for p in _all_parlays_bk if (p.get("uitkomst") or "") == "gewonnen")
+                _p_inzet = sum(float(p.get("inzet") or 10) for p in _all_parlays_bk)
+                _p_wv   = sum(float(p.get("winst_verlies") or 0) for p in _all_parlays_bk)
+                _p_roi  = _p_wv / _p_inzet * 100 if _p_inzet else 0
+                _pc1, _pc2, _pc3, _pc4 = st.columns(4)
+                _pc1.metric("Parlays gespeeld", _p_n)
+                _pc2.metric("Gewonnen",          f"{_p_won}/{_p_n}")
+                _pc3.metric("Totaal W/V",        f"€{_p_wv:.2f}")
+                _pc4.metric("Parlay ROI",        f"{_p_roi:.1f}%")
+    
+        # ── Kelly Criterion Calculator ───────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 🧮 Kelly Criterion Calculator")
+        st.caption("Bereken de optimale inzet als percentage van je bankroll op basis van je geschatte hit rate.")
+        _kc1, _kc2, _kc3 = st.columns(3)
+        _k_odds    = _kc1.number_input("Odds",        min_value=1.01, max_value=50.0, value=1.90,
+                                        step=0.05, format="%.2f", key="kelly_odds")
+        _k_hitrate = _kc2.number_input("Hit rate (%)", min_value=1.0, max_value=99.0, value=55.0,
+                                        step=1.0, format="%.1f", key="kelly_hr") / 100.0
+        _k_fraction = _kc3.selectbox("Kelly fractie",
+                                      ["Volle Kelly (agressief)", "Halve Kelly (gematigd)", "Kwart Kelly (conservatief)"],
+                                      index=1, key="kelly_frac")
+        _k_frac_val = 1.0 if "Volle" in _k_fraction else (0.5 if "Halve" in _k_fraction else 0.25)
+        _k_b        = _k_odds - 1.0          # winst per eenheid inzet
+        _k_q        = 1.0 - _k_hitrate
+        _k_full     = (_k_b * _k_hitrate - _k_q) / _k_b if _k_b > 0 else 0.0
+        _k_advised  = max(0.0, _k_full * _k_frac_val)
+        _kr1, _kr2, _kr3, _kr4 = st.columns(4)
+        _kr1.metric("Full Kelly %",    f"{_k_full*100:.1f}%")
+        _kr2.metric("Geadviseerde %",  f"{_k_advised*100:.1f}%")
+        if _start_bk_saved > 0:
+            _k_euro = _start_bk_saved * _k_advised + sum(r.get("winst_verlies",0) for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen","verloren"))
+            _k_euro = max(0.0, _k_euro * _k_advised)
+            _kr3.metric("Inzet bij huidig saldo", f"€{_k_euro:.2f}")
+        if _k_full <= 0:
+            _kr4.metric("EV", "❌ Negatief", help="Geen positieve verwachte waarde bij deze odds + hit rate.")
+        else:
+            _k_ev = _k_hitrate * _k_b - _k_q
+            _kr4.metric("EV per €1 inzet", f"€{_k_ev:+.3f}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

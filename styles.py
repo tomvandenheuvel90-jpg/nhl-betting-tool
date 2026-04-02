@@ -475,5 +475,57 @@ hr { border-color: #2e2e56 !important; margin: 1.5rem 0 !important; }
 /* ── Tooltip ── */
 [data-testid="stTooltipIcon"] { color: #a8aace !important; }
 
+/* ══════════════════════════════════════════════════════════
+   BANKROLL — Period switcher (radio horizontal)
+   ══════════════════════════════════════════════════════════ */
+
+/* Radio group — wrap as pill/segmented control */
+div[data-testid="stRadio"] > div[role="radiogroup"] {
+  background: #11112b !important;
+  border: 1px solid #2e2e56 !important;
+  border-radius: 30px !important;
+  padding: 4px !important;
+  gap: 2px !important;
+  display: inline-flex !important;
+}
+
+div[data-testid="stRadio"] > div[role="radiogroup"] > label {
+  border-radius: 24px !important;
+  padding: 6px 18px !important;
+  cursor: pointer !important;
+  color: #a8aace !important;
+  font-weight: 600 !important;
+  font-size: 0.88rem !important;
+  transition: all 0.2s ease !important;
+  background: transparent !important;
+  margin: 0 !important;
+}
+
+div[data-testid="stRadio"] > div[role="radiogroup"] > label:hover {
+  background: #1a1a3e !important;
+  color: #c4b5fd !important;
+}
+
+div[data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
+  background: linear-gradient(135deg, #5b21b6 0%, #7c3aed 100%) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 10px rgba(124,58,237,0.4) !important;
+}
+
+/* Hide the actual radio circle */
+div[data-testid="stRadio"] > div[role="radiogroup"] > label > div:first-child {
+  display: none !important;
+}
+
+/* ── Day strip buttons — base style for all 7 ── */
+.bk-day-strip button {
+  min-height: 80px !important;
+  white-space: pre-wrap !important;
+  line-height: 1.6 !important;
+  font-size: 0.78rem !important;
+  padding: 6px 3px !important;
+  font-weight: 600 !important;
+}
+
 </style>
 """
