@@ -13,7 +13,7 @@ berekent de Expected Value (EV) per prop, en beheert een bet slip / parlay build
 ## Architecture
 
 ### Entry point
-- **`streamlit_app.py`** (±1780 regels) — Enige entry point. Start met `streamlit run streamlit_app.py`.
+- **`streamlit_app.py`** (±1900 regels) — Enige entry point. Start met `streamlit run streamlit_app.py`.
   Bevat de volledige UI logica in 7 tabs:
   | Tab | Inhoud |
   |-----|--------|
@@ -67,7 +67,7 @@ berekent de Expected Value (EV) per prop, en beheert een bet slip / parlay build
 - `download_football.py` → `football_data/` (JSON teamstats per competitie)
 
 ### Database-laag
-**`db.py`** (553 r.) — Abstractielaag: Supabase (primair) met lokale JSON-fallback.
+**`db.py`** (±610 r.) — Abstractielaag: Supabase (primair) met lokale JSON-fallback.
 
 | Tabel / bestand | Inhoud |
 |-----------------|--------|
@@ -75,10 +75,17 @@ berekent de Expected Value (EV) per prop, en beheert een bet slip / parlay build
 | `favorieten` | Bewaarde bets (speler, bet, odds, EV, sport, bet365_status) |
 | `resultaten` | Geplaatste + afgeronde bets (inzet, uitkomst, P&L, datum) |
 | `parlays` | Opgeslagen parlays (legs, gecombineerde odds, hit kans, EV) |
-| `settings` | App-instellingen (bijv. startbankroll) |
+| `settings` | App-instellingen (bijv. startbankroll) — `settings.json` |
+| `bankroll_mutations.json` | Opnames en stortingen buiten bets om (lokaal JSON) |
 
 Lokale fallback-bestanden: `analyse_geschiedenis.json`, (favorieten/resultaten via Supabase of JSON).
 Geschiedenis wordt gesnoeid na 7 dagen, tenzij gekoppeld aan een geplaatste weddenschap.
+
+**Bankroll mutatie-functies (db.py):**
+- `load_bankroll_mutations()` — lijst van opnames/stortingen
+- `save_bankroll_mutation(bedrag, omschrijving, datum)` — voeg toe; bedrag > 0 = storting, < 0 = opname
+- `delete_bankroll_mutation(id)` — verwijder op id
+- `get_bankroll_mutations_total()` — netto som van alle mutaties
 
 ### UI / stijl-laag
 | Bestand | Doel |
@@ -200,6 +207,11 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - **Parlay settlement fix**: ✅ Gewonnen / ❌ Verloren op een parlay schrijft nu ook naar de `resultaten` tabel via `upsert_resultaat()` met id `parlay_{id}`. Hierdoor verschijnt de parlay in 📋 Geplaatste Bets en telt de P&L mee in de Bankroll.
 - **Delete bet uit geschiedenis**: 🗑️ knop in 📋 Geplaatste Bets werkt voor alle bets (open, gewonnen, verloren). Bij verwijderen van een parlay-entry wordt de parlay in de `parlays` tabel automatisch teruggezet op status `"open"`, zodat hij opnieuw gesettled kan worden.
 - **Handmatig bet invoerformulier — Bet type dropdown**: vrij tekstveld vervangen door dropdown (Player Prop / Match Result / Odds Boost / Other) met een vrij tekstveld "Details" eronder. Geldt voor zowel de ⭐ Shortlist als de 🎯 Parlay Builder invoerformulieren. Opgeslagen waarde: `"Player Prop — Anytime Goal Scorer"` (of alleen de categorie als Details leeg is).
+- **Odds aanpasbaar bij bet plaatsen (Shortlist)**: inzet én odds staan naast elkaar bij het plaatsen van een bet vanuit de ⭐ Shortlist. Odds zijn vooringevuld vanuit de opgeslagen waarde maar kunnen worden aangepast. P&L berekening gebruikt de ingevoerde odds.
+- **Per-screenshot extractie**: `extract_bets()` verwerkt elk geüpload screenshot in een aparte Claude API-call (was: alles in één call, leidde tot JSON-afkap bij >25 props). Resultaten worden gecombineerd en gedupliceert na afloop.
+- **Blessure-check toggle**: `🩺 Blessure-check` checkbox in de Analyse-tab schakelt de NHL roster scan in/uit. Standaard **uitgeschakeld** (snellere analyse). Geïmplementeerd via `injuries_enabled` parameter in `generate_auto_props()` → `_nhl_auto_props()`.
+- **Props transparantie**: na filtering toont de app hoeveel props zijn weggevallen op negatieve EV of klein sample, zodat de gebruiker begrijpt waarom niet alle geüploade props zichtbaar zijn.
+- **Bankroll mutaties**: opnames en stortingen zijn registreerbaar via `💸 Opname of storting registreren` expander in de 📊 Bankroll tab. Opgeslagen in `bankroll_mutations.json`. Saldo-berekening is `start + mutaties + P&L`.
 
 ---
 
@@ -216,6 +228,7 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - [ ] Parlay: leg-niveau odds aanpassen in opgeslagen parlays
 - [ ] Automatisch duplicaten detecteren bij toevoegen van een bet
 - [ ] Parlays die vóór de settlement-fix zijn opgeslagen staan nog niet in `resultaten` — eventueel handmatig herstellen via db.py
+- [ ] Meerdere screenshots: props met negatieve EV worden gefilterd — overweeg optie "toon alles" zodat gebruiker ook negatieve EV props kan zien en zelf kan beslissen
 
 ---
 
