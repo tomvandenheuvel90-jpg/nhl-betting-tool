@@ -127,7 +127,10 @@ ARRAY 1 — "bets"  (uit screenshot-type A of B)
 ══════════════════════════════════════════════════════
 Extraheer ELKE zichtbare spelersprop. Elk object heeft:
   - "player"       : naam (bijv. "J. Duren" of "Connor McDavid")
-  - "sport"        : "NHL", "NBA", "MLB", "EPL", "La Liga", "Bundesliga", "Serie A" of "Ligue 1"
+  - "sport"        : "NHL", "NBA", "MLB", of de exacte voetbalcompetitie (bijv. "EPL",
+                     "Championship", "La Liga", "Bundesliga", "Serie A", "Ligue 1",
+                     "Champions League", "Europa League", "Eredivisie", "MLS").
+                     Gebruik NOOIT "NBA" of "NHL" voor voetbalspelers.
   - "team"         : teamafkorting indien zichtbaar (bijv. "DET"), anders null
   - "opponent"     : tegenstander indien zichtbaar (bijv. "MIN" uit "vs MIN"), anders null
   - "bet_type"     : bijv. "Over 13.5 REB+AST" of "Over 0.5 Points"

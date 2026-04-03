@@ -410,37 +410,68 @@ def detect_scenario(bets: list, matches: list) -> int:
     return 3
 
 
+# Trefwoorden in teamnamen die wijzen op voetbal (nooit NBA/NHL/MLB teams)
+_SOCCER_TEAM_KEYWORDS = frozenset({
+    " fc", "fc ", "afc ", " afc", " united", " city", " town", " athletic",
+    " rovers", " wanderers", " albion", " athletic", " hotspur", " villa",
+    " wednesday", " forest", " palace", " rangers", " celtic",
+})
+
+
 def detect_sports_from_matches(matches: list) -> set:
     """
-    Detecteer welke sporten aanwezig zijn op basis van 'competition' OF 'sport' veld.
-    Bug 2 fix: checkt nu ook het 'sport' veld (was eerder alleen 'competition').
+    Detecteer welke sporten aanwezig zijn op basis van 'competition', 'sport' OF teamnamen.
+
+    Bug 3 fix: als er wél matches zijn maar sport/competition leeg is, val dan NIET terug
+    op {"NHL","NBA","MLB"} — dat triggert onterecht NBA-spelersdata voor voetbal.
+    De fallback naar alle drie sporten geldt ALLEEN als de matches-lijst volledig leeg is.
     """
     sports = set()
     for m in matches:
-        # FIX Bug 2: gebruik sport-veld als competition leeg is
+        # Stap 1: competition- of sport-veld
         comp = (m.get("competition") or m.get("sport") or "").lower()
-        if not comp:
+        if comp:
+            if any(k in comp for k in ("nhl", "hockey")):
+                sports.add("NHL")
+            elif any(k in comp for k in ("nba", "basketball")):
+                sports.add("NBA")
+            elif any(k in comp for k in ("mlb", "baseball")):
+                sports.add("MLB")
+            elif any(k in comp for k in (
+                # Engeland
+                "premier", "championship", "efl", "league one", "league two", "fa cup",
+                # Internationaal / Europa
+                "champions league", "ucl", "europa league", "uel", "conference league",
+                # Overige grote competities
+                "la liga", "laliga", "bundesliga", "serie a", "ligue", "epl",
+                "eredivisie", "primeira liga", "super lig", "jupiler", "scottish",
+                # Generiek
+                "soccer", "football", "voetbal", "mls",
+            )):
+                sports.add("SOCCER")
+            # Onbekende competitienaam maar wél een waarde → waarschijnlijk voetbal
+            # (NHL/NBA/MLB competitions zijn bijna altijd herkenbaar door bovenstaande keywords)
+            else:
+                sports.add("SOCCER")
             continue
-        if any(k in comp for k in ("nhl", "hockey")):
-            sports.add("NHL")
-        elif any(k in comp for k in ("nba", "basketball")):
-            sports.add("NBA")
-        elif any(k in comp for k in ("mlb", "baseball")):
-            sports.add("MLB")
-        elif any(k in comp for k in (
-            # Engeland
-            "premier", "championship", "efl", "league one", "league two", "fa cup",
-            # Internationaal / Europa
-            "champions league", "ucl", "europa league", "uel", "conference league",
-            # Overige grote competities
-            "la liga", "laliga", "bundesliga", "serie a", "ligue", "epl",
-            "eredivisie", "primeira liga", "super lig", "jupiler", "scottish",
-            # Generiek
-            "soccer", "football", "voetbal", "mls",
-        )):
+
+        # Stap 2: geen competition/sport-veld → controleer teamnamen op voetbal-patronen
+        home = (m.get("home_team") or "").lower()
+        away = (m.get("away_team") or "").lower()
+        team_str = home + " " + away
+        if any(kw in team_str for kw in _SOCCER_TEAM_KEYWORDS):
             sports.add("SOCCER")
-    if not sports:
+        # NHL-teamnamen detecteren via bestaande keyword-set
+        elif (
+            any(kw in home for kw in _NHL_TEAM_KEYWORDS) or
+            any(kw in away for kw in _NHL_TEAM_KEYWORDS)
+        ):
+            sports.add("NHL")
+
+    # Fallback: alleen als er géén matches waren (leeg schema)
+    if not sports and not matches:
         sports = {"NHL", "NBA", "MLB"}
+
     return sports
 
 
@@ -590,6 +621,15 @@ def generate_auto_props(matches: list, progress_cb=None,
     injuries_enabled=False slaat de NHL-spelersroster scan over (32 API-calls).
     """
     sports = detect_sports_from_matches(matches)
+    _log.info(f"[generate_auto_props] Gedetecteerde sporten: {sports}")
+
+    # Veiligheidscheck: als er matches zijn maar sport onbekend, geen auto-props genereren.
+    # Dit voorkomt dat bij voetbal-screenshots NBA-spelersdata wordt opgehaald.
+    if not sports:
+        if progress_cb:
+            progress_cb("⚠️ Sport niet herkend — geen automatische props gegenereerd")
+        return []
+
     all_props: list = []
     if "NHL" in sports:
         if progress_cb:
@@ -604,7 +644,7 @@ def generate_auto_props(matches: list, progress_cb=None,
             progress_cb("⚾ MLB schema + spelersstats ophalen...")
         all_props.extend(_mlb_auto_props(progress_cb))
     if "SOCCER" in sports and progress_cb:
-        progress_cb("⚽ Voetbal: automatische props niet beschikbaar")
+        progress_cb("⚽ Voetbal: automatische props niet beschikbaar via API")
     return all_props
 
 
