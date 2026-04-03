@@ -197,6 +197,7 @@ for _k, _v in [
     ("parlay_last_sport", "NHL"),
     ("bk_view",           "7 Dagen"),
     ("bk_selected_day",   None),
+    ("injuries_enabled",  True),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -519,6 +520,12 @@ with tab_analyse:
         else:
             st.caption(f"🎯 Odds API: {_calls}/{_limiet} calls gebruikt deze maand")
 
+    st.session_state.injuries_enabled = st.checkbox(
+        "🩺 Blessure-check (NHL spelersroster laden)",
+        value=st.session_state.injuries_enabled,
+        help="Schakel uit om de NHL roster scan over te slaan en de analyse te versnellen.",
+    )
+
     analyze_btn = st.button(
         "🔍 Analyseer",
         use_container_width=True,
@@ -603,6 +610,7 @@ with tab_analyse:
                         auto_bets = generate_auto_props(
                             matches,
                             progress_cb=lambda msg: st.write(f"  · {msg}"),
+                            injuries_enabled=st.session_state.injuries_enabled,
                         )
                         if auto_bets:
                             bets = auto_bets

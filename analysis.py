@@ -244,47 +244,48 @@ def extract_bets(client, image_paths: list) -> tuple:
     raw = ""
 
     try:
-        steps.append(f"Stap 1: {len(image_paths)} afbeelding(en) verwerken")
-        expanded_paths = []
-        for p in image_paths:
-            expanded_paths.extend(_split_tall_image(p))
-        steps.append(f"  → {len(expanded_paths)} blokken na splitsing")
+        steps.append(f"Stap 1: {len(image_paths)} afbeelding(en) verwerken — per screenshot")
 
-        steps.append("Stap 2: content blokken bouwen")
-        content = [_image_content_block(p) for p in expanded_paths]
-        content.append({"type": "text", "text": EXTRACT_PROMPT})
-        steps.append(f"  → {len(content)} content blokken (incl. prompt)")
+        # Bug 2 fix: verwerk elke screenshot afzonderlijk zodat de output per API-call
+        # binnen de 8 000-token limiet van claude-haiku-4-5 past. Eerder werden alle
+        # afbeeldingen in één call gecombineerd waardoor de JSON werd afgekapt bij ~25
+        # props en de rest van de screenshots volledig werd overgeslagen.
+        _all_bets: list = []
+        _all_matches: list = []
 
-        steps.append(f"Stap 3: Claude {EXTRACT_MODEL} aanroepen (max_tokens=8000)")
-        response = client.messages.create(
-            model=EXTRACT_MODEL,
-            max_tokens=8000,
-            temperature=0,
-            messages=[{"role": "user", "content": content}],
-        )
-        raw = response.content[0].text.strip()
-        debug_info["_dbg_raw"]   = raw
-        debug_info["_dbg_model"] = EXTRACT_MODEL
-        steps.append(f"  → Response: {len(raw)} tekens, begint met: {raw[:80]!r}")
-        _log.info(f"[extract_bets] Claude response ({len(raw)} tekens): {raw[:200]!r}")
+        for _i, _path in enumerate(image_paths):
+            steps.append(f"  → Screenshot {_i + 1}/{len(image_paths)}: {Path(_path).name}")
 
-        steps.append("Stap 4: JSON parsen")
-        data = _parse_json_from_text(raw)
+            # Splits hoge afbeeldingen in twee overlappende helften (ongewijzigd)
+            _expanded = _split_tall_image(_path)
+            steps.append(f"    → {len(_expanded)} blok(ken) na splitsing")
 
-        if data is None:
-            steps.append("  → Directe parse mislukt, probeer repair_truncated_json")
-            repaired = _repair_truncated_json(raw)
-            data = _parse_json_from_text(repaired)
-            if data is not None:
-                steps.append("  → repair_truncated_json geslaagd")
+            _content = [_image_content_block(_ep) for _ep in _expanded]
+            _content.append({"type": "text", "text": EXTRACT_PROMPT})
 
-        if data is None:
-            steps.append("  → Repair mislukt, splits afbeeldingen in helften")
-            _all_bets: list = []
-            _all_matches: list = []
-            for _orig in image_paths:
-                for _half in _split_image_halves(_orig):
-                    steps.append(f"    → Analyseer helft: {Path(_half).name}")
+            steps.append(f"    → Claude {EXTRACT_MODEL} aanroepen (max_tokens=8000)")
+            _resp = client.messages.create(
+                model=EXTRACT_MODEL,
+                max_tokens=8000,
+                temperature=0,
+                messages=[{"role": "user", "content": _content}],
+            )
+            raw = _resp.content[0].text.strip()   # bewaar laatste raw voor debug
+            steps.append(f"    → Response: {len(raw)} tekens")
+            _log.info(f"[extract_bets] Screenshot {_i + 1}: {len(raw)} tekens")
+
+            _data = _parse_json_from_text(raw)
+            if _data is None:
+                steps.append("    → Directe parse mislukt, probeer repair_truncated_json")
+                _data = _parse_json_from_text(_repair_truncated_json(raw))
+                if _data is not None:
+                    steps.append("    → repair_truncated_json geslaagd")
+
+            if _data is None:
+                # Fallback: splits in helften (voor extreem lange screenshots)
+                steps.append("    → Repair mislukt, splits in helften")
+                for _half in _split_image_halves(_path):
+                    steps.append(f"      → Analyseer helft: {Path(_half).name}")
                     _hc = [_image_content_block(_half), {"type": "text", "text": EXTRACT_PROMPT}]
                     _hr = client.messages.create(
                         model=EXTRACT_MODEL, max_tokens=8000, temperature=0,
@@ -298,26 +299,27 @@ def extract_bets(client, image_paths: list) -> tuple:
                         else:
                             _all_bets.extend(_hdata.get("bets", []) or [])
                             _all_matches.extend(_hdata.get("matches", []) or [])
-            bets    = _deduplicate_bets(_all_bets)
-            matches = _deduplicate_matches(_all_matches)
-            steps.append(f"  → Split-fallback: {len(bets)} bets, {len(matches)} matches")
-            if not bets and not matches:
-                err = (f"JSON parsing mislukt na alle pogingen.\n"
-                       f"Response lengte: {len(raw)} tekens\nEerste 500 tekens:\n{raw[:500]}")
-                debug_info["_dbg_parse_error"] = err
-                steps.append("  ✗ Alle fallbacks mislukt")
-                _log.error(f"[extract_bets] {err}")
-        else:
-            steps.append(f"  → Geparsed als: {type(data).__name__}")
-            steps.append("Stap 5: bets en matches extraheren")
-            if isinstance(data, list):
-                bets    = _deduplicate_bets(data)
-                matches = []
             else:
-                bets    = _deduplicate_bets(data.get("bets", []) or [])
-                matches = _deduplicate_matches(data.get("matches", []) or [])
-            steps.append(f"  → {len(bets)} bets, {len(matches)} matches gevonden")
-            _log.info(f"[extract_bets] {len(bets)} bets, {len(matches)} matches")
+                if isinstance(_data, list):
+                    _all_bets.extend(_data)
+                else:
+                    _all_bets.extend(_data.get("bets", []) or [])
+                    _all_matches.extend(_data.get("matches", []) or [])
+
+        bets    = _deduplicate_bets(_all_bets)
+        matches = _deduplicate_matches(_all_matches)
+        steps.append(f"  → Totaal: {len(bets)} bets, {len(matches)} matches")
+        _log.info(f"[extract_bets] {len(bets)} bets, {len(matches)} matches")
+
+        debug_info["_dbg_raw"]   = raw
+        debug_info["_dbg_model"] = EXTRACT_MODEL
+
+        if not bets and not matches:
+            err = (f"JSON parsing mislukt voor alle screenshots.\n"
+                   f"Laatste response ({len(raw)} tekens):\n{raw[:500]}")
+            debug_info["_dbg_parse_error"] = err
+            steps.append("  ✗ Alle fallbacks mislukt")
+            _log.error(f"[extract_bets] {err}")
 
     except Exception as exc:
         tb = traceback.format_exc()
@@ -434,7 +436,9 @@ def detect_sports_from_matches(matches: list) -> set:
 
 # ─── Auto-props generatie ─────────────────────────────────────────────────────
 
-def _nhl_auto_props(progress_cb=None) -> list:
+def _nhl_auto_props(progress_cb=None, injuries_enabled: bool = True) -> list:
+    if not injuries_enabled:
+        return []
     try:
         today_teams = nhl.get_today_teams()
     except Exception:
@@ -569,14 +573,18 @@ def _mlb_auto_props(progress_cb=None) -> list:
     return props
 
 
-def generate_auto_props(matches: list, progress_cb=None) -> list:
-    """Genereer automatische props (Scenario 1: geen Linemate)."""
+def generate_auto_props(matches: list, progress_cb=None,
+                        injuries_enabled: bool = True) -> list:
+    """Genereer automatische props (Scenario 1: geen Linemate).
+
+    injuries_enabled=False slaat de NHL-spelersroster scan over (32 API-calls).
+    """
     sports = detect_sports_from_matches(matches)
     all_props: list = []
     if "NHL" in sports:
         if progress_cb:
             progress_cb("🏒 NHL schema + spelersstats ophalen...")
-        all_props.extend(_nhl_auto_props(progress_cb))
+        all_props.extend(_nhl_auto_props(progress_cb, injuries_enabled=injuries_enabled))
     if "NBA" in sports:
         if progress_cb:
             progress_cb("🏀 NBA schema + spelersstats ophalen...")
