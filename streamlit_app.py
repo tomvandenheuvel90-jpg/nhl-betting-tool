@@ -197,7 +197,7 @@ for _k, _v in [
     ("parlay_last_sport", "NHL"),
     ("bk_view",           "7 Dagen"),
     ("bk_selected_day",   None),
-    ("injuries_enabled",  True),
+    ("injuries_enabled",  False),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -296,7 +296,8 @@ with tab_dashboard:
     _dsh_total_wl    = sum(r.get("winst_verlies", 0) for r in _dsh_gedaan)
     _dsh_roi         = (_dsh_total_wl / _dsh_total_inzet * 100) if _dsh_total_inzet > 0 else 0.0
     _dsh_wr          = (_dsh_won / len(_dsh_gedaan) * 100) if _dsh_gedaan else 0.0
-    _dsh_huidig_saldo = (_dsh_start_bk + _dsh_total_wl) if _dsh_start_bk > 0 else None
+    _dsh_mutations_total = db.get_bankroll_mutations_total()
+    _dsh_huidig_saldo = (_dsh_start_bk + _dsh_mutations_total + _dsh_total_wl) if _dsh_start_bk > 0 else None
 
     # Streak berekenen
     def _dsh_streak(results: list) -> tuple:
@@ -558,27 +559,27 @@ with tab_analyse:
 
                 if not bets and not matches:
                     _aborted = True
-                    if dbg.get("traceback"):
+                    if dbg.get("_dbg_traceback"):
                         _reason = "Exception tijdens extract_bets()"
-                    elif dbg.get("parse_error"):
+                    elif dbg.get("_dbg_parse_error"):
                         _reason = "JSON parsing mislukt"
-                    elif not dbg.get("raw"):
+                    elif not dbg.get("_dbg_raw"):
                         _reason = "Claude gaf geen response terug (API-fout?)"
                     else:
-                        _reason = f"Claude gaf response maar geen data ({len(dbg.get('raw',''))} tekens)"
+                        _reason = f"Claude gaf response maar geen data ({len(dbg.get('_dbg_raw',''))} tekens)"
 
                     st.error(f"❌ Analyse mislukt: **{_reason}**")
                     with st.expander("🔧 Debug — volledige diagnostiek", expanded=True):
-                        st.caption(f"Model: `{dbg.get('model','?')}` · response: {len(dbg.get('raw',''))} tekens")
-                        if dbg.get("steps"):
+                        st.caption(f"Model: `{dbg.get('_dbg_model','?')}` · response: {len(dbg.get('_dbg_raw',''))} tekens")
+                        if dbg.get("_dbg_steps"):
                             st.markdown("**Stap-log:**")
-                            st.code("\n".join(dbg["steps"]), language="text")
-                        if dbg.get("parse_error"):
-                            st.error(dbg["parse_error"])
-                        if dbg.get("traceback"):
-                            st.code(dbg["traceback"], language="python")
+                            st.code("\n".join(dbg["_dbg_steps"]), language="text")
+                        if dbg.get("_dbg_parse_error"):
+                            st.error(dbg["_dbg_parse_error"])
+                        if dbg.get("_dbg_traceback"):
+                            st.code(dbg["_dbg_traceback"], language="python")
                         st.markdown("**Claude's ruwe response:**")
-                        st.code(dbg.get("raw", "(leeg)")[:4000], language="text")
+                        st.code(dbg.get("_dbg_raw", "(leeg)")[:4000], language="text")
 
                     # Auto-test: laat Claude de afbeelding beschrijven
                     st.write("🔍 **Auto-test:** Claude beschrijft de afbeelding...")
@@ -709,6 +710,13 @@ with tab_analyse:
 
             if not _aborted:
                 enriched_ranked = filter_and_rank_props(enriched)
+                _gefilterd_n    = len(enriched) - len(enriched_ranked)
+                if _gefilterd_n > 0:
+                    st.info(
+                        f"📊 **{len(enriched)} props gescoord** — "
+                        f"**{len(enriched_ranked)} getoond** na filtering "
+                        f"({_gefilterd_n} weggevallen: negatieve EV of te klein sample)"
+                    )
                 _auto_parlays   = generate_parlay_suggestions(enriched_ranked)
 
                 # Top 3: geef voorkeur aan sterke props
@@ -738,7 +746,7 @@ with tab_analyse:
                     "mlb_match_analyses":    mlb_match_analyses,
                     "scenario":              scenario,
                     "auto_parlays":          _auto_parlays,
-                    "debug_hit_rates":       dbg.get("hit_rates", []),
+                    "debug_hit_rates":       dbg.get("_dbg_hit_rates", []),
                 }
                 st.session_state.uploader_key += 1
                 st.session_state.just_analyzed = True
@@ -1045,9 +1053,10 @@ with tab_bankroll:
             _bets_by_date[_bkd].append(_bkr)
 
     # Globale totalen
-    _bk_total_wl   = sum(r.get("winst_verlies",0) for r in _bk_all_settled)
-    _start_bk_saved = float(db.get_setting("start_bankroll") or 0.0)
-    _bk_balance    = _start_bk_saved + _bk_total_wl if _start_bk_saved > 0 else None
+    _bk_total_wl      = sum(r.get("winst_verlies",0) for r in _bk_all_settled)
+    _start_bk_saved   = float(db.get_setting("start_bankroll") or 0.0)
+    _mutations_total  = db.get_bankroll_mutations_total()
+    _bk_balance       = _start_bk_saved + _mutations_total + _bk_total_wl if _start_bk_saved > 0 else None
 
     # ── HEADER ───────────────────────────────────────────────────────────────
     _7d_cutoff = (_bk_today - datetime.timedelta(days=6)).isoformat()
@@ -1425,6 +1434,37 @@ with tab_bankroll:
                     st.rerun()
             st.markdown("---")
     
+        # ── Opname / Storting registreren ────────────────────────────────────────
+        with st.expander("💸 Opname of storting registreren", expanded=False):
+            st.caption("Registreer geldopnames of stortingen zodat je saldo altijd klopt.")
+            _mut_c1, _mut_c2, _mut_c3 = st.columns([1, 2, 1])
+            _mut_type    = _mut_c1.selectbox("Type", ["Opname 💸", "Storting 💰"], key="mut_type")
+            _mut_bedrag  = _mut_c2.number_input("Bedrag (€)", min_value=0.01, max_value=100000.0,
+                                                value=20.0, step=1.0, format="%.2f", key="mut_bedrag")
+            _mut_omschr  = _mut_c3.text_input("Omschrijving (optioneel)", key="mut_omschr",
+                                               placeholder="bijv. Claude kosten")
+            if st.button("✅ Registreren", key="btn_mut_save"):
+                _bedrag_signed = -abs(_mut_bedrag) if "Opname" in _mut_type else abs(_mut_bedrag)
+                _omschr_final  = _mut_omschr.strip() or ("Storting" if _bedrag_signed > 0 else "Opname")
+                db.save_bankroll_mutation(_bedrag_signed, _omschr_final)
+                st.success(f"{'Opname' if _bedrag_signed < 0 else 'Storting'} van €{abs(_bedrag_signed):.2f} geregistreerd!")
+                st.rerun()
+
+            _mutations = db.load_bankroll_mutations()
+            if _mutations:
+                st.markdown("**Mutatiehistorie:**")
+                for _m in sorted(_mutations, key=lambda x: x.get("datum",""), reverse=True):
+                    _m_bedrag = float(_m.get("bedrag", 0))
+                    _m_kleur  = "#4ade80" if _m_bedrag >= 0 else "#f87171"
+                    _m_icon   = "💰" if _m_bedrag >= 0 else "💸"
+                    _mc1, _mc2, _mc3, _mc4 = st.columns([1.5, 1.2, 3, 0.8])
+                    _mc1.caption(_m.get("datum","—"))
+                    _mc2.markdown(f"<span style='color:{_m_kleur};font-weight:700'>{'+' if _m_bedrag >= 0 else ''}€{_m_bedrag:.2f}</span>", unsafe_allow_html=True)
+                    _mc3.caption(f"{_m_icon} {_m.get('omschrijving','')}")
+                    if _mc4.button("🗑️", key=f"del_mut_{_m['id']}"):
+                        db.delete_bankroll_mutation(_m["id"])
+                        st.rerun()
+
         # ── Startbankroll instelling ─────────────────────────────────────────────
         _start_bk_saved = float(db.get_setting("start_bankroll") or 0.0)
         with st.expander("⚙️ Bankroll instellingen", expanded=(_start_bk_saved == 0)):

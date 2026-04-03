@@ -536,6 +536,60 @@ def set_setting(key: str, value) -> None:
     save_settings(s)
 
 
+# ── Bankroll mutaties (opnames / stortingen) ──────────────────────────────────
+
+_MUTATIONS_FILE = _BASE_DIR / "bankroll_mutations.json"
+
+
+def load_bankroll_mutations() -> list:
+    """Laad lijst van bankroll-mutaties (opnames en stortingen)."""
+    if _MUTATIONS_FILE.exists():
+        try:
+            return json.loads(_MUTATIONS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def save_bankroll_mutation(bedrag: float, omschrijving: str, datum: str = "") -> str:
+    """
+    Voeg een bankroll-mutatie toe.
+    bedrag > 0 = storting, bedrag < 0 = opname.
+    Geeft het gegenereerde id terug.
+    """
+    import uuid as _uuid
+    import datetime as _dt
+    mutations = load_bankroll_mutations()
+    mutation_id = str(_uuid.uuid4())[:8]
+    mutations.append({
+        "id":           mutation_id,
+        "datum":        datum or _dt.datetime.now().strftime("%Y-%m-%d"),
+        "bedrag":       float(bedrag),
+        "omschrijving": omschrijving.strip() or ("Storting" if bedrag > 0 else "Opname"),
+    })
+    _MUTATIONS_FILE.write_text(
+        json.dumps(mutations, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return mutation_id
+
+
+def delete_bankroll_mutation(mutation_id: str) -> bool:
+    """Verwijder een bankroll-mutatie op id."""
+    mutations = load_bankroll_mutations()
+    new_list  = [m for m in mutations if m.get("id") != mutation_id]
+    if len(new_list) == len(mutations):
+        return False
+    _MUTATIONS_FILE.write_text(
+        json.dumps(new_list, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return True
+
+
+def get_bankroll_mutations_total() -> float:
+    """Geeft de netto som van alle mutaties (stortingen min opnames)."""
+    return sum(float(m.get("bedrag", 0)) for m in load_bankroll_mutations())
+
+
 # ── Direct bet (gesloten weddenschap direct naar resultaten) ──────────────────
 
 def add_direct_bet(speler: str, sport: str, bet_type: str, odds: float,
