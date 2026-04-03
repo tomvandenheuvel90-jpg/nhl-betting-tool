@@ -32,6 +32,46 @@ _REF_ODDS = {
     "strikeouts":  1.90,
 }
 
+# ─── Bet365 voetbal-whitelist ─────────────────────────────────────────────────
+# Alleen deze markttypen worden getoond voor voetbal. Elke tuple bevat trefwoorden
+# die in de bet_type string moeten voorkomen. Een prop hoeft maar één tuple te matchen.
+# Negatieve termen (exclude) worden gescheiden met "~".
+#
+# Markten per categorie:
+#   Wedstrijd:  1X2, Double Chance, BTTS, Over/Under, Handicap, Draw No Bet, Corners
+#   Speler:     Anytime Scorer, Multi Scorer (2+), Assist, Schoten, Schoten op doel, Saves
+SOCCER_BET365_WHITELIST = [
+    # ── Wedstrijdmarkten ──
+    ("1x2",),
+    ("match result",),
+    ("home win",), ("away win",), ("draw",),
+    ("double chance",),
+    ("both teams to score",), ("btts",), ("both teams score",),
+    ("over",), ("under",),          # dekt Over/Under goals én corners
+    ("asian handicap",), ("handicap",),
+    ("draw no bet",),
+    ("corner",),
+    # ── Spelersmarkten ──
+    ("anytime",),                   # anytime scorer / anytime goalscorer
+    ("to score 2",), ("2+ goal",), ("multi scorer",), ("score twice",), ("brace",),
+    ("assist",),
+    ("shots on target",),           # schoten op doel
+    ("shot",),                      # totale schoten (matcht ook shots on target → geen probleem)
+    ("save",),                      # keeper reddingen
+]
+
+def is_soccer_bet365_market(bet_type: str) -> bool:
+    """
+    Geeft True als bet_type overeenkomt met een Bet365-voetbalmarkt op de whitelist.
+    Vergelijking is hoofdletterongevoelig.
+    """
+    bt = bet_type.lower().strip()
+    for terms in SOCCER_BET365_WHITELIST:
+        if all(t in bt for t in terms):
+            return True
+    return False
+
+
 # ─── Scenario configuratie ────────────────────────────────────────────────────
 
 SCENARIO_LABELS = {

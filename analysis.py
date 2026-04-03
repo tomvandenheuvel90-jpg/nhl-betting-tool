@@ -34,7 +34,7 @@ from scorer import composite_score, ev, rating
 from prompts import (
     SOCCER_COMPS, _NHL_TEAM_KEYWORDS, _REF_ODDS,
     SCENARIO_WEIGHTS, EXTRACT_PROMPT, FLASHSCORE_PROMPT,
-    COMBO_SECTION, EXTRACT_MODEL,
+    COMBO_SECTION, EXTRACT_MODEL, is_soccer_bet365_market,
 )
 
 # ─── PIL / HEIC support ───────────────────────────────────────────────────────
@@ -793,6 +793,13 @@ def filter_and_rank_props(enriched: list) -> list:
         # Harde uitsluitingen
         if b365_status == "unavailable":
             continue
+
+        # Voetbal: alleen Bet365-markten doorlaten
+        _sport = (bet.get("sport") or "").upper()
+        if _sport in SOCCER_COMPS:
+            if not is_soccer_bet365_market(bet.get("bet_type", "")):
+                continue
+
         if ev_val <= 0:
             continue
         if sample_n > 0 and sample_n < 3:

@@ -229,6 +229,7 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - [ ] Automatisch duplicaten detecteren bij toevoegen van een bet
 - [ ] Parlays die vóór de settlement-fix zijn opgeslagen staan nog niet in `resultaten` — eventueel handmatig herstellen via db.py
 - [ ] Meerdere screenshots: props met negatieve EV worden gefilterd — overweeg optie "toon alles" zodat gebruiker ook negatieve EV props kan zien en zelf kan beslissen
+- [x] Soccer Bet365 whitelist: `is_soccer_bet365_market()` in `prompts.py` — alleen markten die op Bet365 beschikbaar zijn worden doorgelaten. Whitelist: 1X2, Double Chance, BTTS, Over/Under, Asian Handicap, Draw No Bet, Corners, Anytime Scorer, Multi Scorer (2+), Assist, Shots, Shots on Target, Keeper Saves. First Goalscorer is uitdrukkelijk uitgesloten.
 
 ---
 
