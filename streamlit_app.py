@@ -206,30 +206,30 @@ for _k, _v in [
 
 st.markdown("""
 <div style="background:linear-gradient(135deg,#12103a 0%,#1e1860 100%);
-  border:1px solid #3a2a70;border-radius:10px;padding:0.6rem 1.4rem;
-  margin-bottom:0.5rem;display:flex;align-items:center;gap:0.8rem;
+  border:1px solid #3a2a70;border-radius:14px;padding:1.2rem 2rem;
+  margin-bottom:1rem;display:flex;align-items:center;gap:1rem;
   box-shadow:0 4px 24px rgba(124,58,237,0.18);">
-  <span style="font-size:1.5rem;">🎯</span>
+  <span style="font-size:2rem;">🎯</span>
   <div>
-    <div style="font-size:1.2rem;font-weight:800;color:#c4b5fd;letter-spacing:-0.3px;">Bet Analyzer</div>
-    <div style="color:#8888b8;font-size:0.75rem;margin-top:1px;">
+    <div style="font-size:1.5rem;font-weight:800;color:#c4b5fd;letter-spacing:-0.3px;">Bet Analyzer</div>
+    <div style="color:#8888b8;font-size:0.82rem;margin-top:2px;">
       Linemate + Flashscore &nbsp;·&nbsp; NHL · NBA · MLB · Voetbal
     </div>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-# Banner — JPG heeft voorrang boven SVG, beperkte hoogte zodat er minder gescrolld hoeft
+# Banner — JPG heeft voorrang boven SVG, max-hoogte beperkt zodat de afbeelding compact blijft
 import os as _os
 if _os.path.exists("assets/banner.jpg"):
-    st.markdown('<div style="max-height:120px;overflow:hidden;border-radius:8px;margin-bottom:0.4rem;">', unsafe_allow_html=True)
+    st.markdown('<div style="max-height:150px;overflow:hidden;border-radius:8px;margin-bottom:0.6rem;">', unsafe_allow_html=True)
     st.image("assets/banner.jpg", use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 elif _os.path.exists("assets/banner.svg"):
     try:
         with open("assets/banner.svg", "r") as _f:
             _svg = _f.read()
-        st.markdown(f'<div style="max-height:120px;overflow:hidden;border-radius:8px;margin-bottom:0.4rem;">{_svg}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="max-height:150px;overflow:hidden;border-radius:8px;margin-bottom:0.6rem;">{_svg}</div>', unsafe_allow_html=True)
     except Exception:
         pass
 
