@@ -942,21 +942,29 @@ with tab_favorieten:
                         db.remove_resultaat(_fid)
                         st.rerun()
 
+                _col_inzet, _col_odds = st.columns(2)
                 _inzet_default = float(_res.get("inzet", 10.0))
-                _inzet = st.number_input(
+                _inzet = _col_inzet.number_input(
                     "💰 Inzet (€)", min_value=0.10, value=_inzet_default,
                     step=1.0, format="%.2f", key=f"inzet_{_fid}_{_idx}",
                 )
+                _odds_default = float(_res.get("odds") or _fav.get("odds") or 1.5)
+                _odds = _col_odds.number_input(
+                    "📊 Odds", min_value=1.01, value=_odds_default,
+                    step=0.05, format="%.2f", key=f"odds_{_fid}_{_idx}",
+                )
+                # Gebruik de (eventueel aangepaste) odds bij opslaan
+                _fav_met_odds = {**_fav, "odds": _odds}
                 _cpl, _cw, _cl, _cp = st.columns(4)
                 if _cpl.button("📋 Geplaatst", key=f"placed_{_fid}_{_idx}", use_container_width=True,
                                help="Markeer als geplaatst (uitkomst nog onbekend)"):
-                    db.upsert_resultaat(_fid, _fav, "open", _inzet)
+                    db.upsert_resultaat(_fid, _fav_met_odds, "open", _inzet)
                     st.rerun()
                 if _cw.button("✅ Gewonnen", key=f"won_{_fid}_{_idx}",  use_container_width=True):
-                    db.upsert_resultaat(_fid, _fav, "gewonnen", _inzet)
+                    db.upsert_resultaat(_fid, _fav_met_odds, "gewonnen", _inzet)
                     st.rerun()
                 if _cl.button("❌ Verloren", key=f"lost_{_fid}_{_idx}", use_container_width=True):
-                    db.upsert_resultaat(_fid, _fav, "verloren", _inzet)
+                    db.upsert_resultaat(_fid, _fav_met_odds, "verloren", _inzet)
                     st.rerun()
                 if _cp.button("⏳ Reset",    key=f"reset_{_fid}_{_idx}", use_container_width=True):
                     db.remove_resultaat(_fid)
