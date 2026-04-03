@@ -427,7 +427,17 @@ def detect_sports_from_matches(matches: list) -> set:
             sports.add("NBA")
         elif any(k in comp for k in ("mlb", "baseball")):
             sports.add("MLB")
-        elif any(k in comp for k in ("premier", "la liga", "bundesliga", "serie a", "ligue", "epl")):
+        elif any(k in comp for k in (
+            # Engeland
+            "premier", "championship", "efl", "league one", "league two", "fa cup",
+            # Internationaal / Europa
+            "champions league", "ucl", "europa league", "uel", "conference league",
+            # Overige grote competities
+            "la liga", "laliga", "bundesliga", "serie a", "ligue", "epl",
+            "eredivisie", "primeira liga", "super lig", "jupiler", "scottish",
+            # Generiek
+            "soccer", "football", "voetbal", "mls",
+        )):
             sports.add("SOCCER")
     if not sports:
         sports = {"NHL", "NBA", "MLB"}

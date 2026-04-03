@@ -4,7 +4,29 @@ prompts.py — BetAnalyzer constanten, prompts en scenario-configuratie
 
 # ─── Sporten ──────────────────────────────────────────────────────────────────
 
-SOCCER_COMPS = {"EPL", "LA LIGA", "LALIGA", "BUNDESLIGA", "SERIE A", "LIGUE 1", "LIGUE1", "VOETBAL", "SOCCER"}
+SOCCER_COMPS = {
+    # Engeland
+    "EPL", "PREMIER LEAGUE", "CHAMPIONSHIP", "EFL CHAMPIONSHIP", "EFL",
+    "LEAGUE ONE", "LEAGUE TWO", "FA CUP",
+    # Spanje
+    "LA LIGA", "LALIGA", "SEGUNDA",
+    # Duitsland
+    "BUNDESLIGA", "2. BUNDESLIGA", "2.BUNDESLIGA",
+    # Italië
+    "SERIE A", "SERIE B",
+    # Frankrijk
+    "LIGUE 1", "LIGUE1", "LIGUE 2",
+    # Nederland
+    "EREDIVISIE", "EERSTE DIVISIE",
+    # Europa
+    "CHAMPIONS LEAGUE", "UCL", "EUROPA LEAGUE", "UEL", "CONFERENCE LEAGUE",
+    # Portugal / Turkije / België / Schotland
+    "PRIMEIRA LIGA", "SUPER LIG", "JUPILER", "SCOTTISH PREMIERSHIP",
+    # Generiek
+    "VOETBAL", "SOCCER", "FOOTBALL",
+    # MLS
+    "MLS",
+}
 
 _NHL_TEAM_KEYWORDS = {
     "maple leafs", "bruins", "canadiens", "senators", "sabres", "red wings",
@@ -137,8 +159,11 @@ ARRAY 2 — "matches"  (uit screenshot-type C)
 Extraheer ELKE zichtbare wedstrijd. Elk object heeft:
   - "home_team"      : volledige naam thuisploeg (string), bijv. "Florida Panthers"
   - "away_team"      : volledige naam uitploeg (string), bijv. "Minnesota Wild"
-  - "sport"          : "NHL", "NBA", "MLB", of voetbalcompetitie zoals "EPL"
-  - "competition"    : competitienaam indien zichtbaar (bijv. "NHL", "Premier League"), of null
+  - "sport"          : "NHL", "NBA", "MLB", of de exacte voetbalcompetitie zoals zichtbaar
+                       (bijv. "EPL", "Championship", "Bundesliga", "Serie A", "Ligue 1",
+                       "Eredivisie", "Champions League", "Europa League", "MLS").
+                       Gebruik NOOIT "NBA" of "NHL" voor voetbalwedstrijden.
+  - "competition"    : competitienaam indien zichtbaar (bijv. "Championship", "Premier League"), of null
   - "time"           : aanvangstijd indien zichtbaar (bijv. "00:00" of "01:00"), of null
   - "date"           : datum indien zichtbaar (bijv. "2025-03-25"), of null
   - "status"         : "gepland", "bezig" of "afgelopen"
