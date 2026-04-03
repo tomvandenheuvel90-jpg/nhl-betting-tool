@@ -212,6 +212,17 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - **Blessure-check toggle**: `🩺 Blessure-check` checkbox in de Analyse-tab schakelt de NHL roster scan in/uit. Standaard **uitgeschakeld** (snellere analyse). Geïmplementeerd via `injuries_enabled` parameter in `generate_auto_props()` → `_nhl_auto_props()`.
 - **Props transparantie**: na filtering toont de app hoeveel props zijn weggevallen op negatieve EV of klein sample, zodat de gebruiker begrijpt waarom niet alle geüploade props zichtbaar zijn.
 - **Bankroll mutaties**: opnames en stortingen zijn registreerbaar via `💸 Opname of storting registreren` expander in de 📊 Bankroll tab. Opgeslagen in `bankroll_mutations.json`. Saldo-berekening is `start + mutaties + P&L`.
+- **Soccer Bet365 whitelist**: `is_soccer_bet365_market()` in `prompts.py`. Alleen markten op Bet365-voetbal worden doorgelaten: 1X2, Double Chance, BTTS, Over/Under, Handicap, Draw No Bet, Corners, Anytime Scorer, Multi Scorer (2+), Assist, Shots, Shots on Target, Keeper Saves. First Goalscorer en schoten (niet op goal) zijn **uitgesloten**.
+- **SOCCER_COMPS uitgebreid**: van 8 naar ~30 competities inclusief Championship, EFL, Eredivisie, UCL, Conference League, etc. Gebruikt in `enrich_bet()` om voetbalbets correct te behandelen.
+- **detect_sports_from_matches — 3-laags detectie** (commit `8b949d8`):
+  1. Sport/competition veld: Championship, EFL, etc. → SOCCER. Onbekende gevulde waarde → ook SOCCER.
+  2. Teamnaam-check: "FC", "United", "City", "Rovers", "Villa", etc. → SOCCER.
+  3. Fallback `{"NHL","NBA","MLB"}` alleen als matches-lijst **leeg** is (was: altijd bij onherkende sport → triggerde NBA).
+- **generate_auto_props veiligheidscheck**: lege sports-set → geen API-calls, melding tonen. Voorkomt NBA-spelerslookup bij voetbal-screenshots.
+- **EXTRACT_PROMPT bets-sectie bijgewerkt**: voetbalcompetities (Championship, La Liga, etc.) als geldige sport-opties toegevoegd. Expliciet verbod op "NBA"/"NHL" voor voetbalspelers.
+- **NBA hist_* veldnamen fix**: `sports/nba.py` geeft nu aliassen mee: `avg_points → hist_points_avg`, `avg_rebounds → hist_rebounds_avg`, etc. Scorer kon hiervoor geen seizoens-HR berekenen voor NBA props.
+- **Combo stats NBA**: `scorer.py` herkent nu PRA (Points+Rebounds+Assists), RA, PA als combinatie-props. `_get_raw_and_line()` telt de losse waarden op; `_get_hist_lam()` gebruikt de juiste veldnaam.
+- **Debug-sleutels fix**: `analysis.py` gebruikt `_dbg_raw`, `_dbg_traceback` etc.; `streamlit_app.py` gebruikt nu ook de `_dbg_` prefix (was zonder prefix → debug-info werd nooit getoond).
 
 ---
 
@@ -230,6 +241,7 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - [ ] Parlays die vóór de settlement-fix zijn opgeslagen staan nog niet in `resultaten` — eventueel handmatig herstellen via db.py
 - [ ] Meerdere screenshots: props met negatieve EV worden gefilterd — overweeg optie "toon alles" zodat gebruiker ook negatieve EV props kan zien en zelf kan beslissen
 - [x] Soccer Bet365 whitelist: `is_soccer_bet365_market()` in `prompts.py` — alleen markten die op Bet365 beschikbaar zijn worden doorgelaten. Whitelist: 1X2, Double Chance, BTTS, Over/Under, Asian Handicap, Draw No Bet, Corners, Anytime Scorer, Multi Scorer (2+), Assist, Shots, Shots on Target, Keeper Saves. First Goalscorer is uitdrukkelijk uitgesloten.
+- [ ] **OPEN BUG — NBA-spelers bij voetbal-screenshots**: ondanks meerdere fixes (detect_sports_from_matches uitgebreid, fallback aangepast, teamnaam-detectie toegevoegd) blijft de app NBA-spelersdata ophalen bij Championship Flashscore screenshots. Nog niet volledig opgelost. Volgende stap: debug-output toevoegen zodat zichtbaar is welke sport/competition Claude Vision teruggeeft én wat detect_sports_from_matches retourneert. Mogelijk moet de Streamlit-app herstart worden na de laatste push.
 
 ---
 
@@ -244,3 +256,6 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - **Cache TTL:** splits/last-10 = 2u, H2H = 4u, seizoensdata = 6u — bewust kort gehouden zodat dagelijkse wedstrijden opgepikt worden
 - **H2H fallback:** als er minder dan `_H2H_MIN_GAMES` (= 3) onderlinge duels zijn, wordt de H2H-factor stilletjes overgeslagen (geen error, geen aanpassing)
 - **Split fallback:** als er minder dan 5 venue-specifieke wedstrijden beschikbaar zijn, gebruikt `_split_or_overall()` de algemene last-10; als die ook ontbreekt, valt `_blend()` terug op het seizoensgemiddelde
+- **Git push**: SSH naar github.com werkt niet vanuit de Claude-sandbox. Tom moet zelf pushen: `cd /Users/tomvandenheuvel/Documents/BetAnalyzer && git push origin main`. Na elke sessie controles via `git log --oneline -5`.
+- **Streamlit herstarten na code-wijzigingen**: als de app al draait en er zijn nieuwe commits gepusht, moet Streamlit herstart worden (Ctrl+C → `streamlit run streamlit_app.py`) zodat de nieuwe Python-modules worden geladen.
+- **NBA auto-props detectie**: `_nba_auto_props()` wordt alleen getriggerd als `detect_sports_from_matches()` "NBA" retourneert. Dit mag NOOIT gebeuren bij voetbal-screenshots. Zie open bug in Outstanding/TODO.
