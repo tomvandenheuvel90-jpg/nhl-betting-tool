@@ -127,13 +127,19 @@ def _stats_from_csv(player_id: int) -> dict:
                             "avg_blocks":   blk,
                             "avg_steals":   stl,
                             "avg_turnovers": 0.0,
-                            # Poisson lambda hints voor scorer
-                            "hist_pts_avg":    pts,
-                            "hist_ast_avg":    ast,
-                            "hist_reb_avg":    reb,
-                            "hist_threes_avg": fg3m,
-                            "hist_blk_avg":    blk,
-                            "hist_stl_avg":    stl,
+                            # Poisson lambda hints voor scorer (zowel oud als nieuw formaat)
+                            "hist_pts_avg":      pts,
+                            "hist_ast_avg":      ast,
+                            "hist_reb_avg":      reb,
+                            "hist_threes_avg":   fg3m,
+                            "hist_blk_avg":      blk,
+                            "hist_stl_avg":      stl,
+                            # Nieuwe namen die scorer._get_hist_lam verwacht
+                            "hist_points_avg":   pts,
+                            "hist_assists_avg":  ast,
+                            "hist_rebounds_avg": reb,
+                            "hist_blocks_avg":   blk,
+                            "hist_steals_avg":   stl,
                         }
         except Exception as e:
             print(f"  ⚠️  NBA CSV leesfout ({csv_path}): {e}")
@@ -224,6 +230,14 @@ def get_player_stats(player_id: int, n_games: int = 20) -> dict:
         "avg_blocks":   avg(blk),
         "avg_steals":   avg(stl),
         "avg_turnovers": avg(tov),
+
+        # hist_*-aliassen zodat scorer.py Poisson-blending kan gebruiken
+        "hist_points_avg":   avg(pts),
+        "hist_assists_avg":  avg(ast),
+        "hist_rebounds_avg": avg(reb),
+        "hist_threes_avg":   avg(fg3m),
+        "hist_blocks_avg":   avg(blk),
+        "hist_steals_avg":   avg(stl),
     }
 
     cache_set(cache_key, result, ttl_hours=6)

@@ -46,9 +46,35 @@ def _get_raw_and_line(bet_type: str, player_stats: dict) -> tuple[list, float, b
     """
     Geeft (raw_values, threshold, use_gte) voor het gegeven bet-type.
     use_gte=True voor "anytime scorer" (≥1), anders gebruik > threshold.
+    Ondersteunt NBA combo-stats: PRA, RA, PA, PR (gesommeerde per-game waarden).
     """
     bt   = bet_type.lower()
     line = _extract_line(bt)
+
+    # ── NBA combo stats: PRA / PA / RA / PR ──────────────────────────────────
+    # Herken via "+" separator of combinaties van bekende afkortingen
+    _has_pts = "pts" in bt or "point" in bt
+    _has_reb = "reb" in bt or "rebound" in bt
+    _has_ast = "ast" in bt or "assist" in bt
+    _is_combo = ("+" in bt) or (_has_pts and _has_reb) or (_has_pts and _has_ast) or (_has_reb and _has_ast)
+
+    if _is_combo:
+        raw_pts = player_stats.get("raw_pts", [])
+        raw_reb = player_stats.get("raw_reb", [])
+        raw_ast = player_stats.get("raw_ast", [])
+        # Gebruik het kortste beschikbare subset, sommeer per game
+        _games = max(len(raw_pts), len(raw_reb), len(raw_ast))
+        if _games > 0:
+            def _v(lst, i): return lst[i] if i < len(lst) else 0.0
+            combo_raw = [
+                (_v(raw_pts, i) if _has_pts else 0.0)
+                + (_v(raw_reb, i) if _has_reb else 0.0)
+                + (_v(raw_ast, i) if _has_ast else 0.0)
+                for i in range(_games)
+            ]
+            return combo_raw, line, False
+        # Geen raw data → fallback op lege lijst (scorer gebruikt dan hist_lam)
+        return [], line, False
 
     # ── NHL ──
     if ("shot" in bt or "sog" in bt) and "block" not in bt and "attempt" not in bt:
@@ -125,23 +151,68 @@ def _get_raw_and_line(bet_type: str, player_stats: dict) -> tuple[list, float, b
 # ─── Historische lambda (voor Poisson blending) ───────────────────────────────
 
 def _get_hist_lam(bet_type: str, player_stats: dict) -> float:
-    """Geeft historisch gemiddelde per game voor het stat-type in dit bet_type."""
+    """
+    Geeft historisch gemiddelde per game voor het stat-type in dit bet_type.
+    Ondersteunt ook NBA combo-stats (PRA, RA, PA) en "pts"-notatie.
+    """
     bt = bet_type.lower()
+
+    # ── NHL shots / Soccer shots ──
     if ("shot" in bt or "sog" in bt) and "block" not in bt and "attempt" not in bt:
         return player_stats.get("hist_shots_avg", 0.0)
     if "block" in bt and "shot" in bt:
         return player_stats.get("hist_blocks_avg", 0.0)
+
+    # ── NHL / Soccer goals ──
     if "anytime" in bt and ("goal" in bt or "scorer" in bt):
         return player_stats.get("hist_goals_avg", 0.0)
     if "goal" in bt:
         return player_stats.get("hist_goals_avg", 0.0)
-    if "assist" in bt:
-        return player_stats.get("hist_assists_avg", 0.0)
+
+    # ── NHL / MLB hits ──
+    if "hit" in bt and "base" not in bt:
+        return player_stats.get("hist_mlb_hits_avg") or player_stats.get("hist_hits_avg", 0.0)
+
+    # ── NBA combo stats: PRA / RA / PA / PR ──
+    # Detecteer via "+" separator of bekende afkortingen
+    _has_pts = "pts" in bt or "point" in bt
+    _has_reb = "reb" in bt or "rebound" in bt
+    _has_ast = "ast" in bt or "assist" in bt
+    _is_combo = ("+" in bt) or (_has_pts and _has_reb) or (_has_pts and _has_ast) or (_has_reb and _has_ast)
+
+    if _is_combo:
+        _lam = 0.0
+        if _has_pts:
+            _lam += player_stats.get("hist_points_avg", 0.0)
+        if _has_reb:
+            _lam += player_stats.get("hist_rebounds_avg") or player_stats.get("hist_reb_avg", 0.0)
+        if _has_ast:
+            _lam += player_stats.get("hist_assists_avg") or player_stats.get("hist_ast_avg", 0.0)
+        return _lam
+
+    # ── NBA / NHL assists ──
+    if "assist" in bt or "ast" in bt:
+        return player_stats.get("hist_assists_avg") or player_stats.get("hist_ast_avg", 0.0)
+
+    # ── NBA rebounds ──
+    if "rebound" in bt or " reb" in bt or bt.endswith("reb"):
+        return player_stats.get("hist_rebounds_avg") or player_stats.get("hist_reb_avg", 0.0)
+
+    # ── NBA / NHL points ("PTS" of "Points") ──
     if "point" in bt and "3" not in bt and "three" not in bt:
         return player_stats.get("hist_points_avg", 0.0)
-    if "hit" in bt and "base" not in bt:
-        # NHL: hist_hits_avg  |  MLB: hist_mlb_hits_avg
-        return player_stats.get("hist_mlb_hits_avg") or player_stats.get("hist_hits_avg", 0.0)
+    if "pts" in bt and "3pt" not in bt:
+        return player_stats.get("hist_points_avg", 0.0)
+
+    # ── NBA 3-pointers ──
+    if "three" in bt or "3-point" in bt or "3pt" in bt or "3pm" in bt:
+        return player_stats.get("hist_threes_avg", 0.0)
+
+    # ── NBA blocks / steals ──
+    if "block" in bt:
+        return player_stats.get("hist_blocks_avg") or player_stats.get("hist_blk_avg", 0.0)
+    if "steal" in bt:
+        return player_stats.get("hist_steals_avg") or player_stats.get("hist_stl_avg", 0.0)
 
     # ── MLB ──
     if "home run" in bt or "homer" in bt:
