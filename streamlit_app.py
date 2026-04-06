@@ -722,10 +722,10 @@ with tab_analyse:
                     )
                 _auto_parlays   = generate_parlay_suggestions(enriched_ranked)
 
-                # Top 3: geef voorkeur aan sterke props
-                top3 = [b for b in enriched_ranked if b["rating"].startswith("✅")][:3]
+                # Top 3: geef voorkeur aan sterke props met positieve EV
+                top3 = [b for b in enriched_ranked if b["rating"].startswith("✅") and float(b.get("ev") or -1) > 0][:3]
                 if not top3:
-                    top3 = enriched_ranked[:3]
+                    top3 = [b for b in enriched_ranked if float(b.get("ev") or -1) > 0][:3]
                 if not top3:
                     top3 = [b for b in enriched if float(b.get("ev") or -1) > 0][:3]
                 top3_out = [
