@@ -23,6 +23,7 @@ from pathlib import Path
 BASE_DIR     = Path(__file__).parent.parent
 RAW_DIR      = BASE_DIR / "moneypuck_data" / "raw"
 FILTERED_DIR = BASE_DIR / "moneypuck_data" / "filtered"
+FLAT_DIR     = BASE_DIR / "data" / "moneypuck"
 FILE_IDS     = BASE_DIR / "gdrive_file_ids.json"
 TMP_DIR      = Path("/tmp") / "moneypuck"
 
@@ -133,21 +134,28 @@ def _load_season(year: int, season_type: str) -> list:
     if key in _CACHE:
         return _CACHE[key]
 
-    # 1. Lokaal raw
+    # 1. Flat data/moneypuck/skaters_{year}.csv
+    flat_path = FLAT_DIR / f"skaters_{year}.csv"
+    if flat_path.exists():
+        rows = _read_csv_rows(flat_path)
+        _CACHE[key] = rows
+        return rows
+
+    # 2. Lokaal raw
     raw_path = RAW_DIR / season_type / str(year) / "skaters.csv"
     if raw_path.exists():
         rows = _read_csv_rows(raw_path)
         _CACHE[key] = rows
         return rows
 
-    # 2. Lokaal filtered
+    # 3. Lokaal filtered
     filtered_path = FILTERED_DIR / season_type / str(year) / "skaters_filtered.csv"
     if filtered_path.exists():
         rows = _read_csv_rows(filtered_path)
         _CACHE[key] = rows
         return rows
 
-    # 3. /tmp cache (eerder gedownload in deze sessie)
+    # 4. /tmp cache (eerder gedownload in deze sessie)
     tmp_path = TMP_DIR / season_type / str(year) / "skaters_filtered.csv"
     if tmp_path.exists():
         try:
@@ -157,7 +165,7 @@ def _load_season(year: int, season_type: str) -> list:
         except Exception:
             pass
 
-    # 4. Google Drive download
+    # 5. Google Drive download
     rel_key = f"{season_type}/{year}/skaters_filtered.csv"
     rows = _download_from_gdrive(rel_key)
     _CACHE[key] = rows
