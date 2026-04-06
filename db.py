@@ -43,6 +43,7 @@ import json
 import hashlib
 import datetime
 import uuid
+import time
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -58,6 +59,26 @@ HISTORY_DAYS = 7
 
 _supabase     = None
 _using_supabase = False
+
+_SB_RETRIES = 3
+_SB_DELAY   = 1.0  # seconden tussen pogingen
+
+
+def _sb_call(fn, *args, **kwargs):
+    """
+    Voer een Supabase-aanroep uit met retry-logica.
+    Probeert max _SB_RETRIES keer bij netwerk-/timeout-fouten.
+    Gooit de laatste uitzondering door als alle pogingen mislukken.
+    """
+    last_exc = None
+    for attempt in range(1, _SB_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _SB_RETRIES:
+                time.sleep(_SB_DELAY)
+    raise last_exc
 
 
 def init(url: str = "", key: str = "") -> bool:
@@ -117,13 +138,13 @@ def load_history() -> list:
     if _using_supabase:
         try:
             # Haal alles op; filter client-side op datum of gebruik
-            resp = (
+            resp = _sb_call(lambda: (
                 _supabase.table("geschiedenis")
                 .select("*")
                 .order("datum", desc=True)
                 .order("tijd", desc=True)
                 .execute()
-            )
+            ))
             result = []
             for r in (resp.data or []):
                 sid = r.get("session_id", "")
@@ -266,12 +287,12 @@ def save_to_history(
 def load_favorieten() -> list:
     if _using_supabase:
         try:
-            resp = (
+            resp = _sb_call(lambda: (
                 _supabase.table("favorieten")
                 .select("*")
                 .order("datum", desc=True)
                 .execute()
-            )
+            ))
             return resp.data or []
         except Exception:
             pass
@@ -344,7 +365,7 @@ def remove_favoriet(fav_id: str) -> None:
 def load_resultaten() -> list:
     if _using_supabase:
         try:
-            resp = _supabase.table("resultaten").select("*").execute()
+            resp = _sb_call(lambda: _supabase.table("resultaten").select("*").execute())
             return resp.data or []
         except Exception:
             pass
@@ -421,7 +442,7 @@ def load_parlays() -> list:
     """Laad alle opgeslagen parlays."""
     if _using_supabase:
         try:
-            res = _supabase.table("parlays").select("*").order("datum", desc=True).execute()
+            res = _sb_call(lambda: _supabase.table("parlays").select("*").order("datum", desc=True).execute())
             rows = res.data or []
             for r in rows:
                 for field in ("props_json", "legs_json"):
