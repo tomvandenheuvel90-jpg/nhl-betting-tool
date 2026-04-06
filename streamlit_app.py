@@ -1971,7 +1971,7 @@ with tab_parlay:
         _mc4.metric(f"Winst bij €{_inzet:.0f}", f"€{_winst:.2f}")
 
         if _p_ev is None:
-            st.info("ℹ️ Voeg hit rates toe aan alle legs om EV te berekenen.")
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ Voeg hit rates toe aan alle legs om EV te berekenen.</small>', unsafe_allow_html=True)
         elif _p_ev < 0:
             st.warning(f"⚠️ Negatieve EV ({_ev_s2}) — verliesgevend op lange termijn.")
         else:
@@ -1998,7 +1998,7 @@ with tab_parlay:
             st.session_state.parlay_legs = []
             st.rerun()
     else:
-        st.info("Voeg props toe om een parlay te bouwen.")
+        st.markdown('<small style="color:#a0c4ff;">ℹ️ Voeg props toe om een parlay te bouwen.</small>', unsafe_allow_html=True)
 
     # Opgeslagen parlays
     _saved_parlays = db.load_parlays()
