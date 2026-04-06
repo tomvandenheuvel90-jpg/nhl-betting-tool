@@ -172,7 +172,7 @@ try:
         if _gdrive_ok and _fids.exists():
             st.success("☁️ **Cloud modus** — MoneyPuck data via Google Drive.")
         elif not _gdrive_ok:
-            st.info("ℹ️ **Cloud versie** — Historische MoneyPuck data niet beschikbaar.")
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ <b>Cloud versie</b> — Historische MoneyPuck data niet beschikbaar.</small>', unsafe_allow_html=True)
 except Exception:
     pass
 
@@ -432,7 +432,7 @@ with tab_dashboard:
         st.markdown("#### 📊 Laatste resultaten")
         _dsh_recent = sorted(_dsh_gedaan, key=lambda r: r.get("datum",""), reverse=True)[:15]
         if not _dsh_recent:
-            st.info("Nog geen afgeronde weddenschappen.")
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen afgeronde weddenschappen.</small>', unsafe_allow_html=True)
         else:
             for _dr in _dsh_recent:
                 _dr_icon = "✅" if _dr.get("uitkomst") == "gewonnen" else "❌"
@@ -453,7 +453,7 @@ with tab_dashboard:
         # Shortlist preview
         st.markdown("#### ⭐ Shortlist")
         if not _dsh_favorieten:
-            st.info("Shortlist is leeg — voeg props toe via Analyse of Analyse Geschiedenis.")
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ Shortlist is leeg — voeg props toe via Analyse of Analyse Geschiedenis.</small>', unsafe_allow_html=True)
         else:
             for _df in _dsh_favorieten[:5]:
                 _df_ev = float(_df.get("ev_score", 0))
@@ -484,7 +484,7 @@ with tab_dashboard:
                 unsafe_allow_html=True,
             )
         else:
-            st.info("Nog geen analyse gedaan. Ga naar de Analyse tab om te beginnen.")
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen analyse gedaan. Ga naar de Analyse tab om te beginnen.</small>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -596,7 +596,7 @@ with tab_analyse:
                                 {"type": "text", "text": "Beschrijf wat je ziet in deze afbeelding."},
                             ]}],
                         )
-                        st.info(f"**Claude ziet:** {_tr.content[0].text}")
+                        st.markdown(f'<small style="color:#a0c4ff;">ℹ️ <b>Claude ziet:</b> {_tr.content[0].text}</small>', unsafe_allow_html=True)
                     except Exception as _te:
                         st.error(f"Beschrijvingstest mislukt: {type(_te).__name__}: {_te}")
 
@@ -715,10 +715,11 @@ with tab_analyse:
                 enriched_ranked = filter_and_rank_props(enriched)
                 _gefilterd_n    = len(enriched) - len(enriched_ranked)
                 if _gefilterd_n > 0:
-                    st.info(
-                        f"📊 **{len(enriched)} props gescoord** — "
-                        f"**{len(enriched_ranked)} getoond** na filtering "
-                        f"({_gefilterd_n} weggevallen: negatieve EV of te klein sample)"
+                    st.markdown(
+                        f'<small style="color:#a0c4ff;">ℹ️ <b>{len(enriched)} props gescoord</b> — '
+                        f'<b>{len(enriched_ranked)} getoond</b> na filtering '
+                        f'({_gefilterd_n} weggevallen: negatieve EV of te klein sample)</small>',
+                        unsafe_allow_html=True,
                     )
                 _auto_parlays   = generate_parlay_suggestions(enriched_ranked)
 
@@ -783,9 +784,11 @@ with tab_analyse:
         mlb_match_analyses    = res.get("mlb_match_analyses", [])
         scenario              = res.get("scenario", 3)
 
-        st.info(SCENARIO_LABELS.get(scenario, ""))
+        _sc_lbl = SCENARIO_LABELS.get(scenario, "")
+        if _sc_lbl:
+            st.markdown(f'<small style="color:#a0c4ff;">ℹ️ {_sc_lbl}</small>', unsafe_allow_html=True)
         if scenario == 3:
-            st.info("⚠️ Tip: upload ook een Flashscore screenshot voor wedstrijdcontext en automatische prop-suggesties.")
+            st.markdown('<small style="color:#a0c4ff;">⚠️ Tip: upload ook een Flashscore screenshot voor wedstrijdcontext en automatische prop-suggesties.</small>', unsafe_allow_html=True)
 
         # Wedstrijd-kaarten
         if nhl_match_analyses:    render_nhl_match_cards(nhl_match_analyses)
@@ -912,7 +915,7 @@ with tab_favorieten:
     _res_map = {r["id"]: r for r in db.load_resultaten()}
 
     if not _favs:
-        st.info("Nog geen favorieten. Klik op ⭐ in een prop-kaart om te bewaren of voeg er handmatig een toe.")
+        st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen favorieten. Klik op ⭐ in een prop-kaart om te bewaren of voeg er handmatig een toe.</small>', unsafe_allow_html=True)
     else:
         # Samenvatting als er afgeronde resultaten zijn
         _done = [r for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen", "verloren")]
@@ -1613,7 +1616,7 @@ with tab_bankroll:
             return round(max_dd, 2)
     
         if not _gedaan:
-            st.info("Nog geen afgeronde weddenschappen. Voeg ze toe via ➕ hierboven of markeer props in ⭐ Favorieten.")
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen afgeronde weddenschappen. Voeg ze toe via ➕ hierboven of markeer props in ⭐ Favorieten.</small>', unsafe_allow_html=True)
         else:
             # ── Overzicht metrics ────────────────────────────────────────────────
             st.markdown("#### 🎯 Overzicht")
@@ -2126,7 +2129,7 @@ with tab_geplaatst:
         })
 
     if not _alle_res_gp:
-        st.info("Nog geen weddenschappen geregistreerd. Voeg bets toe via de Shortlist of Bankroll tab.")
+        st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen weddenschappen geregistreerd. Voeg bets toe via de Shortlist of Bankroll tab.</small>', unsafe_allow_html=True)
     else:
         # ── Filters ──────────────────────────────────────────────────────────
         _gp_c1, _gp_c2, _gp_c3 = st.columns(3)
@@ -2143,7 +2146,7 @@ with tab_geplaatst:
             _gp_data = [r for r in _gp_data if _gp_zoek.lower() in (r.get("speler") or "").lower()]
 
         if not _gp_data:
-            st.info("Geen weddenschappen gevonden met deze filters.")
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ Geen weddenschappen gevonden met deze filters.</small>', unsafe_allow_html=True)
         else:
             # ── Totaalsamenvatting ────────────────────────────────────────────
             _gp_afgerond = [r for r in _gp_data if r.get("uitkomst") in ("gewonnen","verloren")]
@@ -2294,7 +2297,7 @@ with tab_history:
         _all_hist = list(reversed(_all_hist))
 
     if not _all_hist:
-        st.info("Nog geen analyses opgeslagen. Voer een analyse uit om de geschiedenis te vullen.")
+        st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen analyses opgeslagen. Voer een analyse uit om de geschiedenis te vullen.</small>', unsafe_allow_html=True)
     else:
         _used_sids = db._get_used_session_ids()
         _shown = 0
@@ -2381,4 +2384,4 @@ with tab_history:
                         st.rerun()
 
         if _shown == 0:
-            st.info("Geen analyses gevonden met deze filters.")
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ Geen analyses gevonden met deze filters.</small>', unsafe_allow_html=True)
