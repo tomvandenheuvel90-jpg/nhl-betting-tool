@@ -527,13 +527,44 @@ def save_settings(settings: dict) -> None:
 
 
 def get_setting(key: str, default=None):
+    """
+    Laad een instelling. Probeert Supabase eerst (tabel 'settings'),
+    daalt terug op lokale settings.json als Supabase niet beschikbaar is
+    of de tabel niet bestaat.
+
+    Supabase tabel aanmaken (éénmalig):
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+    """
+    if _using_supabase:
+        try:
+            res = _supabase.table("settings").select("value").eq("key", key).limit(1).execute()
+            if res.data:
+                raw = res.data[0]["value"]
+                # Probeer numerieke waarden te converteren
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    return raw
+        except Exception:
+            pass  # Tabel bestaat niet of netwerk-fout → val terug op JSON
     return load_settings().get(key, default)
 
 
 def set_setting(key: str, value) -> None:
+    """
+    Sla een instelling op in lokale JSON én in Supabase (als verbonden).
+    Overschrijft ALLEEN als de gebruiker expliciet opslaat.
+    """
+    # Altijd lokaal opslaan als backup
     s = load_settings()
     s[key] = value
     save_settings(s)
+    # Ook naar Supabase als die beschikbaar is
+    if _using_supabase:
+        try:
+            _supabase.table("settings").upsert({"key": key, "value": str(value)}).execute()
+        except Exception:
+            pass  # Tabel bestaat niet → geen probleem, lokale JSON is backup
 
 
 # ── Bankroll mutaties (opnames / stortingen) ──────────────────────────────────
