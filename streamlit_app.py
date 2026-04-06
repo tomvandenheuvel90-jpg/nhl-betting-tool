@@ -437,7 +437,7 @@ with tab_dashboard:
             for _dr in _dsh_recent:
                 _dr_icon = "✅" if _dr.get("uitkomst") == "gewonnen" else "❌"
                 _dr_wl   = _dr.get("winst_verlies", 0)
-                _dr_wl_s = f"€{_dr_wl:+.0f}"
+                _dr_wl_s = f"+€{abs(_dr_wl):.0f}" if _dr_wl >= 0 else f"-€{abs(_dr_wl):.0f}"
                 _dr_kleur = "#4ade80" if _dr_wl >= 0 else "#f87171"
                 st.markdown(
                     f"<div style='display:flex;justify-content:space-between;align-items:center;"
@@ -925,7 +925,7 @@ with tab_favorieten:
             _sc1, _sc2, _sc3, _sc4 = st.columns(4)
             _sc1.markdown(kpi_card("✅", "Gewonnen", str(_fn_won), f"{_fn_won}/{len(_done)} bets"), unsafe_allow_html=True)
             _sc2.markdown(kpi_card("❌", "Verloren",  str(_fn_lost), positive=(False if _fn_lost > 0 else None)), unsafe_allow_html=True)
-            _sc3.markdown(kpi_card("💰", "P&L", f"€{_ft_wl:+.2f}", f"inzet €{_ft_inzet:.2f}", positive=(_ft_wl > 0) if _ft_wl != 0 else None, tooltip=f"€{_ft_wl:+.4f}"), unsafe_allow_html=True)
+            _sc3.markdown(kpi_card("💰", "P&L", (f"+€{abs(_ft_wl):.2f}" if _ft_wl >= 0 else f"-€{abs(_ft_wl):.2f}"), f"inzet €{_ft_inzet:.2f}", positive=(_ft_wl > 0) if _ft_wl != 0 else None, tooltip=(f"+€{abs(_ft_wl):.4f}" if _ft_wl >= 0 else f"-€{abs(_ft_wl):.4f}")), unsafe_allow_html=True)
             _sc4.markdown(kpi_card("📈", "ROI", f"{_froi:+.1f}%", f"over {len(_done)} bets", positive=(_froi > 0) if _froi != 0 else None, tooltip=f"{_froi:+.4f}%"), unsafe_allow_html=True)
             st.markdown("---")
 
@@ -945,7 +945,8 @@ with tab_favorieten:
                 with _ci:
                     _cap = f"Sport: {_fav.get('sport','')} · Bet365: {_fav.get('bet365_status','')}"
                     if _res:
-                        _cap += f"  ·  Inzet: €{_res.get('inzet',0):.2f}  ·  P&L: €{_res.get('winst_verlies',0):+.2f}"
+                        _r_wl = _res.get('winst_verlies', 0)
+                        _cap += f"  ·  Inzet: €{_res.get('inzet',0):.2f}  ·  P&L: {'+€' if _r_wl >= 0 else '-€'}{abs(_r_wl):.2f}"
                     st.caption(_cap)
                 with _cd:
                     if st.button("🗑️", key=f"delfav_{_fid}_{_idx}", help="Verwijder favoriet"):
@@ -1186,9 +1187,9 @@ with tab_bankroll:
         st.markdown("")
         _sc1, _sc2, _sc3 = st.columns(3)
         _sc1.markdown(kpi_card("💰", "Week P&L",
-            f"€{_7d_pnl_sum:+.2f}",
+            (f"+€{abs(_7d_pnl_sum):.2f}" if _7d_pnl_sum >= 0 else f"-€{abs(_7d_pnl_sum):.2f}"),
             positive=(_7d_pnl_sum > 0) if _7d_pnl_sum != 0 else None,
-            tooltip=f"€{_7d_pnl_sum:+.4f}"), unsafe_allow_html=True)
+            tooltip=(f"+€{abs(_7d_pnl_sum):.4f}" if _7d_pnl_sum >= 0 else f"-€{abs(_7d_pnl_sum):.4f}")), unsafe_allow_html=True)
         _sc2.markdown(kpi_card("🎯", "Bets",
             str(_7d_n), "in periode"), unsafe_allow_html=True)
         _sc3.markdown(kpi_card("📊", "Win rate",
@@ -1212,7 +1213,7 @@ with tab_bankroll:
             _ddh1.markdown(f"**{_day_lbl}**")
             _ddh2.markdown(
                 f"<div style='text-align:right;color:{_day_color};"
-                f"font-weight:700;font-size:1rem;'>€{_day_tot:+.2f}</div>",
+                f"font-weight:700;font-size:1rem;'>{'+€' if _day_tot >= 0 else '-€'}{abs(_day_tot):.2f}</div>",
                 unsafe_allow_html=True)
 
             if _sel_info["bets"]:
@@ -1235,7 +1236,7 @@ with tab_bankroll:
                         <span style="color:#a8aace;font-size:0.82rem;margin-left:6px;">{_dbet}</span>
                       </div>
                       <div style="text-align:right;flex-shrink:0;margin-left:8px;">
-                        <span style="color:{_dcol};font-weight:700;">€{_dpnl:+.2f}</span>
+                        <span style="color:{_dcol};font-weight:700;">{'+€' if _dpnl >= 0 else '-€'}{abs(_dpnl):.2f}</span>
                         <span style="color:#6868a0;font-size:0.75rem;margin-left:6px;">@ {_dods}</span>
                       </div>
                     </div>""", unsafe_allow_html=True)
