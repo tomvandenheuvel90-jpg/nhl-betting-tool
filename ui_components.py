@@ -398,134 +398,147 @@ def render_top3(top3: list):
 
 def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, session_id: str = ""):
     sport_icon    = SPORT_ICONS.get(bet["sport"].upper(), "⚽")
-    ev_str        = f"+{bet['ev']:.3f}" if bet["ev"] >= 0 else f"{bet['ev']:.3f}"
+    ev_val        = bet["ev"]
+    ev_str        = f"+{ev_val:.3f}" if ev_val >= 0 else f"{ev_val:.3f}"
+    ev_color      = "#4ade80" if ev_val >= 0.05 else ("#facc15" if ev_val >= 0 else "#f87171")
     composite_pct = int(bet["composite"] * 100)
-    rat_color     = _rating_color(bet["rating"])
+    rat           = bet["rating"]
+    rat_color     = _rating_color(rat)
 
-    with st.container():
-        st.markdown("<div style='background:#11112b;border:1px solid #2a2a58;"
-                    "border-radius:12px;padding:16px;margin-bottom:12px;'>",
-                    unsafe_allow_html=True)
-        col_l, col_r = st.columns([3, 1])
-        with col_l:
-            st.markdown(f"**{sport_icon} #{rank} van {total}**")
-        with col_r:
-            st.markdown(f"<span style='color:{rat_color};font-weight:700;'>{bet['rating']}</span>",
-                        unsafe_allow_html=True)
-        st.markdown(f"#### {bet['player']}")
+    # ── Score opbouw waarden ──────────────────────────────────────────────────
+    _opp_f    = float(bet.get("opp_factor") or 0.5)
+    _rel_f    = float(bet.get("reliability") or 0.0)
+    _lm_hr    = float(bet.get("linemate_hr") or 0.0)
+    _s_hr     = float(bet.get("season_hr")   or 0.0)
+    _no_s     = bool(bet.get("no_season_data"))
+    _eff_lm_w = 0.70 if _no_s else 0.35
+    _eff_s_w  = 0.00 if _no_s else 0.35
 
-        if bet.get("_ev_penalty_note"):
-            st.warning(bet["_ev_penalty_note"])
-        if bet.get("_sample_warning"):
-            st.warning(bet["_sample_warning"])
+    _opp_text = "Gunstig"  if _opp_f >= 0.62 else ("Neutraal" if _opp_f >= 0.45 else "Moeilijk")
+    _opp_c    = "#4ade80"  if _opp_f >= 0.62 else ("#a0a0c0"  if _opp_f >= 0.45 else "#f87171")
+    _rel_text = "Hoog"     if _rel_f >= 0.75 else ("Matig"    if _rel_f >= 0.40 else "Laag")
+    _rel_c    = "#4ade80"  if _rel_f >= 0.75 else ("#facc15"  if _rel_f >= 0.40 else "#f87171")
+    _bar_color = "#7c3aed" if composite_pct >= 62 else ("#facc15" if composite_pct >= 52 else "#f87171")
 
-        b365_label   = bet.get("bet365", {}).get("label", "")
-        caption_line = f"{bet['bet_type']} · {bet['sport']}"
-        if b365_label:
-            caption_line += f"  ·  {b365_label}"
-        st.caption(caption_line)
+    # ── Caption-regel ─────────────────────────────────────────────────────────
+    b365_label    = bet.get("bet365", {}).get("label", "")
+    caption_parts = [bet["bet_type"], bet["sport"]]
+    if bet.get("opponent"):
+        caption_parts.append(f"vs {bet['opponent']}")
+    if b365_label:
+        caption_parts.append(b365_label)
+    _gaa = bet.get("gaa")
+    if _gaa:
+        caption_parts.append(f"GAA {float(_gaa):.2f}" if isinstance(_gaa, (int, float)) else f"GAA {_gaa}")
+    caption_line = "  ·  ".join(caption_parts)
 
-        ev_color = "#4ade80" if bet["ev"] >= 0.05 else "#facc15"
-        st.markdown(f"<span style='color:{ev_color};font-size:1.4rem;font-weight:800;'>EV {ev_str}</span>",
-                    unsafe_allow_html=True)
+    # ── Waarschuwingen als HTML ───────────────────────────────────────────────
+    _warn_style = ("background:#2a1a08;border:1px solid #92400e;border-radius:6px;"
+                   "padding:5px 9px;font-size:0.72rem;color:#fbbf24;margin:3px 0;")
+    _info_style = ("background:#1a1a2a;border:1px solid #4a4a8a;border-radius:6px;"
+                   "padding:5px 9px;font-size:0.72rem;color:#a0a0d0;margin:3px 0;")
+    warnings_html = ""
+    if bet.get("_ev_penalty_note"):
+        warnings_html += f"<div style='{_warn_style}'>⚠️ {bet['_ev_penalty_note']}</div>"
+    if bet.get("_sample_warning"):
+        warnings_html += f"<div style='{_warn_style}'>⚠️ {bet['_sample_warning']}</div>"
+    if bet.get("no_linemate_hr"):
+        warnings_html += (f"<div style='{_info_style}'>⚠️ Linemate HR niet gevonden — "
+                          f"EV op historische data.</div>")
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Linemate HR", f"{bet['linemate_hr']*100:.1f}%")
-        c2.metric("Seizoens HR", f"{bet['season_hr']*100:.1f}%")
-        c3.metric("Odds",        f"{bet['odds']}")
-        c4.metric("Sample",      bet["sample"])
+    # ── Stat chips (LM HR / Sez HR / Odds / Sample) ───────────────────────────
+    def _chip(label: str, val: str) -> str:
+        return (f"<div style='background:#0d0d24;border:1px solid #2a2a58;border-radius:8px;"
+                f"padding:4px 8px;text-align:center;flex:1;min-width:0;'>"
+                f"<div style='font-size:0.62rem;color:#6868a0;'>{label}</div>"
+                f"<div style='font-size:0.90rem;font-weight:700;color:#e0e0ff;'>{val}</div>"
+                f"</div>")
 
-        st.progress(bet["composite"], text=f"Composite: {composite_pct}%")
+    stats_html = (
+        f"<div style='display:flex;gap:5px;margin:6px 0;'>"
+        f"{_chip('LM HR',  f'{_lm_hr*100:.0f}%')}"
+        f"{_chip('Sez HR', f'{_s_hr*100:.0f}%' if not _no_s else '—')}"
+        f"{_chip('Odds',   str(bet['odds']))}"
+        f"{_chip('Sample', str(bet.get('sample','—')))}"
+        f"</div>"
+    )
 
-        # ── Score opbouw — model-transparantie ────────────────────────────────
-        _opp_f   = float(bet.get("opp_factor") or 0.5)
-        _rel_f   = float(bet.get("reliability") or 0.0)
-        _lm_hr   = float(bet.get("linemate_hr") or 0.0)
-        _s_hr    = float(bet.get("season_hr")   or 0.0)
-        _no_s    = bool(bet.get("no_season_data"))
-        # Effectieve gewichten (seizoen-gewicht = 0 als geen historische data)
-        _eff_lm_w = 0.70 if _no_s else 0.35
-        _eff_s_w  = 0.00 if _no_s else 0.35
+    # ── Score opbouw pills ────────────────────────────────────────────────────
+    def _pill(label: str, val: str, color: str = "#c4b5fd") -> str:
+        return (f"<span style='background:#16163a;border:1px solid #2a2a58;"
+                f"border-radius:20px;padding:2px 8px;font-size:0.66rem;"
+                f"display:inline-block;margin:2px 3px 2px 0;white-space:nowrap;'>"
+                f"<span style='color:#6868a0;'>{label}</span> "
+                f"<span style='color:{color};font-weight:600;'>{val}</span>"
+                f"</span>")
 
-        def _opp_label(f: float) -> str:
-            return "🟢 Gunstig" if f >= 0.62 else ("⚪ Neutraal" if f >= 0.45 else "🔴 Moeilijk")
+    pills_html = (
+        _pill(f"LM {_eff_lm_w*100:.0f}%", f"{_lm_hr*100:.0f}%")
+        + _pill(f"Sez {_eff_s_w*100:.0f}%", f"{_s_hr*100:.0f}%" if not _no_s else "—")
+        + _pill("Tegenstander", _opp_text, _opp_c)
+        + _pill("Betrouwb.", _rel_text, _rel_c)
+    )
 
-        def _rel_label(f: float) -> str:
-            return "Hoog" if f >= 0.75 else ("Matig" if f >= 0.40 else "Laag")
-
-        _breakdown_items = [
-            (f"Linemate HR  ·  {_eff_lm_w*100:.0f}%",  _lm_hr, _eff_lm_w * _lm_hr,
-             f"{_lm_hr*100:.0f}%"),
-            (f"Seizoen HR  ·  {_eff_s_w*100:.0f}%",    _s_hr,  _eff_s_w  * _s_hr,
-             f"{_s_hr*100:.0f}%" if not _no_s else "—  geen data"),
-            ("Tegenstander  ·  20%",                    _opp_f, 0.20 * _opp_f,
-             _opp_label(_opp_f)),
-            ("Betrouwbaarheid  ·  10%",                 _rel_f, 0.10 * _rel_f,
-             _rel_label(_rel_f)),
-        ]
-        _bd_rows_html = ""
-        for _bd_label, _bd_val, _bd_contrib, _bd_disp in _breakdown_items:
-            _bar_w = int(_bd_val * 72)   # schaal 0-1 naar 0-72 px
-            _bar_c = ("#7c3aed" if _bd_contrib >= 0.20
-                      else ("#4ade80" if _bd_contrib >= 0.12 else "#6868a0"))
-            _bd_rows_html += (
-                f"<div style='display:flex;align-items:center;gap:8px;padding:3px 0;"
-                f"border-bottom:1px solid #16163a;'>"
-                f"<span style='color:#8888b8;font-size:0.72rem;min-width:160px;'>"
-                f"{_bd_label}</span>"
-                f"<div style='background:#1a1a3e;border-radius:3px;height:6px;"
-                f"width:72px;flex-shrink:0;'>"
-                f"<div style='background:{_bar_c};width:{_bar_w}px;height:6px;"
-                f"border-radius:3px;'></div></div>"
-                f"<span style='color:#c4b5fd;font-size:0.72rem;'>{_bd_disp}</span>"
-                f"</div>"
-            )
-        st.markdown(
-            f"<div style='background:#0a0a22;border-radius:8px;padding:8px 12px;"
-            f"margin:6px 0 2px 0;border:1px solid #1e1e40;'>"
-            f"<div style='font-size:0.70rem;color:#6868a0;margin-bottom:5px;'>"
-            f"🔍 Score opbouw</div>"
-            f"{_bd_rows_html}</div>",
-            unsafe_allow_html=True,
+    # ── Trend stats ───────────────────────────────────────────────────────────
+    _ts = bet.get("trend_stats") or []
+    trend_html = ""
+    if _ts:
+        _ts_rows = "".join(
+            f"<div style='display:flex;justify-content:space-between;padding:2px 0;'>"
+            f"<span style='color:#a8aace;font-size:0.70rem;'>{_t.get('label','')}</span>"
+            f"<span style='color:#c4b5fd;font-size:0.70rem;font-weight:600;'>"
+            f"{int((_t.get('hit_rate') or 0)*100)}%"
+            f"<span style='color:#6868a0;font-weight:400;margin-left:4px;'>"
+            f"{_t.get('sample','')}</span></span></div>"
+            for _t in _ts
+        )
+        trend_html = (
+            f"<div style='background:#0d0d24;border-radius:6px;padding:6px 10px;"
+            f"margin:5px 0 2px 0;border:1px solid #1e1e40;'>"
+            f"<div style='font-size:0.65rem;color:#6868a0;margin-bottom:3px;'>"
+            f"📊 Linemate trends</div>{_ts_rows}</div>"
         )
 
-        if bet.get("no_linemate_hr"):
-            st.warning("⚠️ **Onvoldoende data** — Linemate hit rate niet gevonden in screenshot. "
-                       "EV is uitsluitend gebaseerd op historische statistieken.")
+    # ── Volledige kaart als HTML ──────────────────────────────────────────────
+    card_html = f"""
+<div style='background:#11112b;border:1px solid #2a2a58;border-radius:12px;
+     padding:11px 13px 8px 13px;margin-bottom:8px;'>
 
-        info_parts = []
-        if bet.get("opponent"):
-            info_parts.append(f"vs {bet['opponent']}")
-        if bet.get("gaa"):
-            info_parts.append(f"GAA {bet['gaa']}")
-        if bet.get("source"):
-            info_parts.append(f"Bron: {bet['source']}")
-        if info_parts:
-            st.caption(" · ".join(info_parts))
+  <div style='display:flex;justify-content:space-between;align-items:center;
+       margin-bottom:3px;'>
+    <span style='font-size:0.68rem;color:#6868a0;'>{sport_icon} #{rank}/{total}</span>
+    <span style='font-size:0.75rem;font-weight:700;color:{rat_color};'>{rat}</span>
+  </div>
 
-        # Trend stats (Linemate Trends-weergave: meerdere statistiekregels per prop)
-        _ts = bet.get("trend_stats") or []
-        if _ts:
-            _ts_rows = "".join(
-                f"<div style='display:flex;justify-content:space-between;"
-                f"padding:3px 0;border-bottom:1px solid #1e1e40;'>"
-                f"<span style='color:#a8aace;font-size:0.78rem;'>{_t.get('label','')}</span>"
-                f"<span style='color:#c4b5fd;font-size:0.78rem;font-weight:600;'>"
-                f"{int((_t.get('hit_rate') or 0)*100)}%"
-                f"<span style='color:#6868a0;font-weight:400;margin-left:4px;'>{_t.get('sample','')}</span>"
-                f"</span></div>"
-                for _t in _ts
-            )
-            st.markdown(
-                f"<div style='background:#0d0d24;border-radius:8px;padding:8px 12px;"
-                f"margin:8px 0;border:1px solid #1e1e40;'>"
-                f"<div style='font-size:0.72rem;color:#6868a0;margin-bottom:4px;'>"
-                f"📊 Linemate trend statistieken</div>"
-                f"{_ts_rows}</div>",
-                unsafe_allow_html=True,
-            )
+  <div style='font-size:1.0rem;font-weight:800;color:#c4b5fd;margin-bottom:1px;'>
+    {bet['player']}</div>
+  <div style='font-size:0.68rem;color:#8888b8;margin-bottom:5px;'>{caption_line}</div>
 
-        # Odds aanpassen
+  <div style='font-size:1.15rem;font-weight:800;color:{ev_color};margin-bottom:4px;'>
+    EV {ev_str}</div>
+
+  {warnings_html}
+  {stats_html}
+
+  <div style='margin:4px 0;'>
+    <div style='display:flex;justify-content:space-between;margin-bottom:2px;'>
+      <span style='font-size:0.63rem;color:#6868a0;'>Composite</span>
+      <span style='font-size:0.63rem;color:#c4b5fd;font-weight:600;'>{composite_pct}%</span>
+    </div>
+    <div style='background:#1a1a3e;border-radius:4px;height:4px;'>
+      <div style='background:{_bar_color};width:{composite_pct}%;height:4px;
+           border-radius:4px;'></div>
+    </div>
+  </div>
+
+  <div style='margin-top:4px;line-height:1.6;'>{pills_html}</div>
+  {trend_html}
+</div>"""
+
+    with st.container():
+        st.markdown(card_html, unsafe_allow_html=True)
+
+        # ── Interactieve Streamlit-elementen ──────────────────────────────────
         _adj_key     = "adj_" + db.make_fav_id(bet["player"], bet["bet_type"])
         _stored_odds = st.session_state.get(_adj_key)
         _display     = _stored_odds if _stored_odds is not None else float(bet["odds"])
@@ -554,7 +567,6 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
                 else:
                     st.success("✅ Nog steeds interessant")
 
-        # Favoriet knop
         _fav_label = "⭐ Verwijder uit Shortlist" if is_fav else "⭐ Voeg toe aan Shortlist"
         fid = db.make_fav_id(bet["player"], bet["bet_type"])
         if st.button(_fav_label, key=f"fav_{rank}_{total}", use_container_width=False):
@@ -569,5 +581,3 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
                 else:
                     db.add_favoriet(fid, bet, source_session_id=session_id)
             st.rerun()
-
-        st.markdown("</div>", unsafe_allow_html=True)
