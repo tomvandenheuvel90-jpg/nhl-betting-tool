@@ -456,7 +456,7 @@ with tab_dashboard:
             st.markdown('<small style="color:#a0c4ff;">ℹ️ Shortlist is leeg — voeg props toe via Analyse of Analyse Geschiedenis.</small>', unsafe_allow_html=True)
         else:
             for _df in _dsh_favorieten[:5]:
-                _df_ev = float(_df.get("ev_score", 0))
+                _df_ev = float(_df.get("ev_score") or 0)
                 _ev_kleur = "#4ade80" if _df_ev >= 0.05 else "#facc15"
                 st.markdown(
                     f"<div style='padding:5px 0;border-bottom:1px solid #1e1e3a;'>"
@@ -822,38 +822,49 @@ with tab_analyse:
             st.markdown("---")
             render_top3(top3_out)
 
-            # Automatische parlay suggesties
+            # Automatische parlay suggesties — gesplitst per grootte
             _aps = res.get("auto_parlays", [])
             if _aps:
                 st.markdown("---")
                 st.markdown("### 🎯 Automatische Parlay Suggesties")
-                st.caption("Top combinaties op basis van beschikbare props")
-                for _api, _apc in enumerate(_aps, 1):
-                    _ev_s = f"+{_apc['parlay_ev']:.3f}" if _apc["parlay_ev"] >= 0 else f"{_apc['parlay_ev']:.3f}"
-                    _legs = " + ".join(f"{b.get('player','')} ({b.get('bet_type','')})" for b in _apc["props"])
-                    _c1, _c2, _c3, _c4, _c5 = st.columns([4, 1, 1, 1, 1])
-                    _c1.write(f"**{_api}.** {_legs}")
-                    _c2.write(f"Odds: {_apc.get('gecombineerde_odds', 0):.2f}")
-                    _c3.write(f"Hit: {_apc.get('hit_kans', 0)*100:.1f}%")
-                    _c4.write(f"EV: {_ev_s}")
-                    if _c5.button("⭐ Sla op", key=f"autopar_{_api}"):
-                        db.save_parlay({
-                            "id":                 str(uuid.uuid4())[:8],
-                            "datum":              datetime.datetime.now().isoformat(),
-                            "props_json":         _apc.get("props", []),
-                            "gecombineerde_odds": _apc.get("gecombineerde_odds", 1.0),
-                            "hit_kans":           _apc.get("hit_kans", 0.0),
-                            "ev_score":           _apc["parlay_ev"],
-                            "inzet":              10.0,
-                            "uitkomst":           "open",
-                            "winst_verlies":      0.0,
-                            "legs_json":          {
-                                b.get("player","")+"_"+b.get("bet_type",""): "open"
+
+                _aps_by_size = {}
+                for _apc in _aps:
+                    _sz = _apc.get("n_legs", len(_apc.get("props", [])))
+                    _aps_by_size.setdefault(_sz, []).append(_apc)
+
+                _par_idx = 0  # globale teller voor unieke widget-keys
+                for _sz in sorted(_aps_by_size.keys()):
+                    _sz_list = _aps_by_size[_sz]
+                    st.caption(f"**{_sz}-leg parlays** — top {len(_sz_list)}")
+                    for _apc in _sz_list:
+                        _par_idx += 1
+                        _ev_s  = f"+{_apc['parlay_ev']:.3f}" if _apc["parlay_ev"] >= 0 else f"{_apc['parlay_ev']:.3f}"
+                        _legs  = " + ".join(f"{b.get('player','')} ({b.get('bet_type','')})" for b in _apc["props"])
+                        _c1, _c2, _c3, _c4, _c5 = st.columns([4, 1, 1, 1, 1])
+                        _leg_label = f"**{_par_idx}.** {_legs}"
+                        if _apc.get("same_team_warning"):
+                            _leg_label += " ⚠️"
+                        _c1.write(_leg_label)
+                        _c2.write(f"Odds: {_apc.get('gecombineerde_odds', 0):.2f}")
+                        _c3.write(f"Hit: {_apc.get('hit_kans', 0)*100:.1f}%")
+                        _c4.write(f"EV: {_ev_s}")
+                        if _apc.get("same_team_warning"):
+                            _c1.caption("⚠️ Zelfde team — odds al −15% gecorrigeerd (SGP-korting)")
+                        if _c5.button("🎯 Naar Builder", key=f"autopar_{_par_idx}",
+                                      help="Stuur naar Parlay Builder om inzet in te stellen en op te slaan"):
+                            st.session_state.parlay_legs = [
+                                {
+                                    "player":   b.get("player", ""),
+                                    "sport":    b.get("sport", ""),
+                                    "bet_type": b.get("bet_type", ""),
+                                    "odds":     float(b.get("odds") or 1.5),
+                                    "hit_rate": float(b.get("composite") or b.get("linemate_hr") or 0),
+                                }
                                 for b in _apc.get("props", [])
-                            },
-                        })
-                        st.success(f"✅ Parlay {_api} opgeslagen!")
-                        st.rerun()
+                            ]
+                            st.info(f"✅ Parlay {_par_idx} staat klaar in de 🎯 Parlay Builder — stel daar je inzet in en sla op.")
+                            st.rerun()
 
             # Alle props — gesorteerd van beste naar slechtste EV (alle screenshots gecombineerd)
             # enriched is al gesorteerd op EV (hoog→laag) inclusief negatieve EV props
@@ -949,7 +960,7 @@ with tab_favorieten:
             _res      = _res_map.get(_fid, {})
             _uitkomst = _res.get("uitkomst", "")
             _icon     = "✅" if _uitkomst == "gewonnen" else ("❌" if _uitkomst == "verloren" else "⏳")
-            _ev_disp  = f"{float(_fav.get('ev_score', 0)):+.3f}"
+            _ev_disp  = f"{float(_fav.get('ev_score') or 0):+.3f}"
 
             with st.expander(
                 f"{_icon} {_fav.get('speler','')} · {_fav.get('bet','')} "
@@ -960,8 +971,12 @@ with tab_favorieten:
                 with _ci:
                     _cap = f"Sport: {_fav.get('sport','')} · Bet365: {_fav.get('bet365_status','')}"
                     if _res:
-                        _r_wl = _res.get('winst_verlies', 0)
-                        _cap += f"  ·  Inzet: €{_res.get('inzet',0):.2f}  ·  P&L: {'+€' if _r_wl >= 0 else '-€'}{abs(_r_wl):.2f}"
+                        _cap += f"  ·  Inzet: €{_res.get('inzet',0):.2f}"
+                        if _uitkomst in ("gewonnen", "verloren"):
+                            _r_wl = _res.get('winst_verlies', 0)
+                            _cap += f"  ·  P&L: {'+€' if _r_wl >= 0 else '-€'}{abs(_r_wl):.2f}"
+                        else:
+                            _cap += "  ·  P&L: —"
                     st.caption(_cap)
                 with _cd:
                     if st.button("🗑️", key=f"delfav_{_fid}_{_idx}", help="Verwijder favoriet"):

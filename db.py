@@ -44,8 +44,27 @@ import hashlib
 import datetime
 import uuid
 import time
+import os
 from pathlib import Path
 from typing import Optional, List, Dict
+
+# ─── Tijdzone helper ──────────────────────────────────────────────────────────
+# Streamlit Cloud draait op UTC. Gebruik de TZ-omgevingsvariabele als die is
+# ingesteld (bijv. "Europe/Amsterdam"), anders val terug op UTC+2 (CEST).
+
+def _now_local() -> datetime.datetime:
+    """Geeft de huidige tijd in de lokale tijdzone van de gebruiker."""
+    tz_name = os.environ.get("TZ", "")
+    if tz_name:
+        try:
+            import zoneinfo
+            tz = zoneinfo.ZoneInfo(tz_name)
+            return datetime.datetime.now(tz)
+        except Exception:
+            pass
+    # Fallback: UTC+2 (Nederland zomer / CEST)
+    tz_offset = datetime.timezone(datetime.timedelta(hours=2))
+    return datetime.datetime.now(tz_offset)
 
 # ─── Paden voor lokale JSON fallback ──────────────────────────────────────────
 
@@ -182,7 +201,7 @@ def save_to_history(
     parlay_suggesties: Optional[list] = None,
 ) -> str:
     """Sla analyse op en geef de session_id terug."""
-    now        = datetime.datetime.now()
+    now        = _now_local()
     datum      = now.strftime("%Y-%m-%d")
     tijd       = now.strftime("%H:%M")
     session_id = uuid.uuid4().hex[:12]
@@ -394,7 +413,12 @@ def save_resultaten(results: list) -> None:
 
 def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> None:
     odds = float(fav.get("odds", 1.0))
-    wl   = round(inzet * (odds - 1), 2) if uitkomst == "gewonnen" else round(-inzet, 2)
+    if uitkomst == "gewonnen":
+        wl = round(inzet * (odds - 1), 2)
+    elif uitkomst == "verloren":
+        wl = round(-inzet, 2)
+    else:  # "open" — nog niet gesettled, geen P&L boeken
+        wl = 0.0
     _is_parlay = str(fav_id).startswith("parlay_")
     row  = {
         "id":                fav_id,
@@ -476,7 +500,7 @@ def save_parlay(parlay: dict) -> None:
     if "id" not in parlay:
         parlay["id"] = str(_uuid.uuid4())[:8]
     if "datum" not in parlay:
-        parlay["datum"] = _dt.datetime.now().isoformat()
+        parlay["datum"] = _now_local().isoformat()
     if _using_supabase:
         try:
             row = dict(parlay)
@@ -622,7 +646,7 @@ def save_bankroll_mutation(bedrag: float, omschrijving: str, datum: str = "") ->
     mutation_id = str(_uuid.uuid4())[:8]
     mutations.append({
         "id":           mutation_id,
-        "datum":        datum or _dt.datetime.now().strftime("%Y-%m-%d"),
+        "datum":        datum or _now_local().strftime("%Y-%m-%d"),
         "bedrag":       float(bedrag),
         "omschrijving": omschrijving.strip() or ("Storting" if bedrag > 0 else "Opname"),
     })

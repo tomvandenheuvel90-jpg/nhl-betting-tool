@@ -885,8 +885,19 @@ def filter_and_rank_props(enriched: list) -> list:
 
 # ─── Parlay suggesties ────────────────────────────────────────────────────────
 
-def generate_parlay_suggestions(bets: list, max_parlays: int = 3) -> list:
-    """Genereer top parlay combinaties uit beschikbare, positieve-EV props."""
+_SAME_TEAM_CORR_DISCOUNT = 0.85   # bookmakers hanteren ~15% lagere odds bij same-team SGP
+
+def generate_parlay_suggestions(bets: list, max_per_size: int = 2) -> list:
+    """
+    Genereer parlay-suggesties, gesplitst per grootte (2-leg en 3-leg).
+
+    Same-team combinaties worden toegelaten maar krijgen een korting van 15% op de
+    gecombineerde odds (same-game parlay penalty), omdat bookmakers voor gecorreleerde
+    legs lagere odds bieden dan de simpele vermenigvuldiging. Een waarschuwingsvlag
+    ('same_team_warning') wordt meegegeven zodat de UI dit zichtbaar kan maken.
+
+    Retourneert: gesorteerde lijst van parlays, elk met 'n_legs' veld.
+    """
     eligible = [
         b for b in bets
         if ((b.get("bet365") or {}).get("status", "") in ("available", "different_line", "")
@@ -894,23 +905,37 @@ def generate_parlay_suggestions(bets: list, max_parlays: int = 3) -> list:
     ]
     if len(eligible) < 2:
         return []
-    candidates = []
+
+    results_by_size: dict = {2: [], 3: []}
+
     for n in (2, 3):
         for combo in itertools.combinations(eligible[:15], n):
             teams = [b.get("team", "") for b in combo]
-            if len(set(t for t in teams if t)) < len([t for t in teams if t]):
-                continue
+            filled_teams = [t for t in teams if t]
+            same_team = len(set(filled_teams)) < len(filled_teams)
+
             comb_odds = 1.0
             hit_ch    = 1.0
             for b in combo:
                 comb_odds *= float(b.get("odds") or 1.5)
                 hit_ch    *= float(b.get("composite") or b.get("linemate_hr") or 0.5)
+
+            # Same-team correlatie-penalty: bookmakers bieden SGP aan lagere odds
+            if same_team:
+                comb_odds *= _SAME_TEAM_CORR_DISCOUNT
+
             p_ev = hit_ch * (comb_odds - 1) - (1 - hit_ch)
-            candidates.append({
+            results_by_size[n].append({
                 "props":               list(combo),
                 "gecombineerde_odds":  round(comb_odds, 3),
                 "hit_kans":            round(hit_ch, 4),
                 "parlay_ev":           round(p_ev, 4),
+                "n_legs":              n,
+                "same_team_warning":   same_team,
             })
-    candidates.sort(key=lambda x: x["parlay_ev"], reverse=True)
-    return candidates[:max_parlays]
+
+        results_by_size[n].sort(key=lambda x: x["parlay_ev"], reverse=True)
+        results_by_size[n] = results_by_size[n][:max_per_size]
+
+    # Combineer: eerst 2-leg, dan 3-leg (beide gesorteerd op EV)
+    return results_by_size[2] + results_by_size[3]
