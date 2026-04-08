@@ -1727,29 +1727,181 @@ with tab_bankroll:
             else:
                 st.caption("Nog niet genoeg data voor odds-range analyse.")
     
-            # ── EV analyse ───────────────────────────────────────────────────────
+            # ── Model Prestaties — Feedback Loop ─────────────────────────────────
             st.markdown("---")
-            st.markdown("#### 🔬 EV Analyse (voorspeld vs werkelijk)")
-            _ev_rows = []
-            for _bsport in sorted({r.get("sport","?") for r in _gedaan}):
-                _sr = [r for r in _gedaan if r.get("sport","") == _bsport]
-                if len(_sr) < 3: continue
-                _pred_hrs = [
-                    (float(_r.get("ev_score",0)) + 1) / float(_r.get("odds",2.0))
-                    for _r in _sr if float(_r.get("odds",2.0)) > 1.0
+            st.markdown("#### 🧠 Model Prestaties — Feedback Loop")
+            st.caption("Hoe goed presteren de bets die de app aanbeveelt? Vergelijk voorspeld EV met werkelijk resultaat.")
+
+            # Gebruik alleen single bets voor model-kalibratie
+            # (parlays hebben een gecombineerde EV, niet per-bet vergelijkbaar)
+            _model_bets = [
+                r for r in _gedaan
+                if not str(r.get("id", "")).startswith("parlay_") and not r.get("is_parlay")
+            ]
+
+            if len(_model_bets) < 5:
+                st.caption("📊 Minimaal 5 afgeronde single bets nodig voor modelanalyse.")
+            else:
+                # ── Globale kalibratie KPIs (bovenaan, direct zichtbaar) ──────────
+                _m_ev_vals   = [float(r.get("ev_score") or 0) for r in _model_bets]
+                _m_inzet_sum = sum(float(r.get("inzet") or 0) for r in _model_bets)
+                _m_wl_sum    = sum(float(r.get("winst_verlies") or 0) for r in _model_bets)
+                _m_gem_ev    = sum(_m_ev_vals) / len(_m_ev_vals) if _m_ev_vals else 0.0
+                _m_roi       = (_m_wl_sum / _m_inzet_sum * 100) if _m_inzet_sum > 0 else 0.0
+                _m_bias      = _m_roi - _m_gem_ev * 100  # positief = model te conservatief
+
+                if abs(_m_bias) < 5:
+                    _bias_lbl = "✅ Goed gekalibreerd"
+                    _bias_pos = True
+                elif _m_bias > 5:
+                    _bias_lbl = "🚀 Model te conservatief"
+                    _bias_pos = True
+                else:
+                    _bias_lbl = "⚠️ Model te optimistisch"
+                    _bias_pos = False
+
+                _ks1, _ks2, _ks3 = st.columns(3)
+                _ks1.markdown(kpi_card("🎯", "Gem. voorspeld EV",
+                                       f"{_m_gem_ev:+.3f}", f"over {len(_model_bets)} bets"),
+                              unsafe_allow_html=True)
+                _ks2.markdown(kpi_card("📈", "Werkelijk ROI",
+                                       f"{_m_roi:+.1f}%", f"vs {_m_gem_ev*100:+.1f}% voorspeld",
+                                       positive=(_m_roi > 0) if _m_roi != 0 else None),
+                              unsafe_allow_html=True)
+                _ks3.markdown(kpi_card("🔬", "Model bias",
+                                       f"{_m_bias:+.1f}%", _bias_lbl, positive=_bias_pos),
+                              unsafe_allow_html=True)
+                st.caption("💡 **Model bias**: werkelijke ROI minus gemiddeld voorspeld EV%. "
+                           "Positief = model te conservatief (meer winst dan verwacht). "
+                           "Negatief = model schat kansen te optimistisch in.")
+
+                # ── Rating Tier Prestaties ────────────────────────────────────────
+                st.markdown("##### 🎯 Prestaties per model-rating")
+
+                def _derive_rating_tier(r: dict) -> str:
+                    """Gebruik opgeslagen rating als beschikbaar, anders schat op EV."""
+                    stored = (r.get("rating") or "").strip()
+                    if "Sterk"  in stored: return "✅ Sterk"
+                    if "Matig"  in stored: return "⚠️ Matig"
+                    if "Vermijd" in stored: return "❌ Vermijd"
+                    # Schatting voor bets zonder opgeslagen rating
+                    ev_val = float(r.get("ev_score") or 0)
+                    if ev_val >= 0.20:   return "✅ Sterk ~"
+                    elif ev_val >= 0.05: return "⚠️ Matig ~"
+                    else:               return "❌ Vermijd ~"
+
+                _tier_agg: dict = {}
+                _has_stored_rating = False
+                for _mr in _model_bets:
+                    _tier = _derive_rating_tier(_mr)
+                    if "~" not in _tier:
+                        _has_stored_rating = True
+                    if _tier not in _tier_agg:
+                        _tier_agg[_tier] = {"n": 0, "won": 0, "ev_sum": 0.0,
+                                            "wl_sum": 0.0, "inzet_sum": 0.0}
+                    _td = _tier_agg[_tier]
+                    _td["n"] += 1
+                    if _mr.get("uitkomst") == "gewonnen": _td["won"] += 1
+                    _td["ev_sum"]    += float(_mr.get("ev_score") or 0)
+                    _td["wl_sum"]    += float(_mr.get("winst_verlies") or 0)
+                    _td["inzet_sum"] += float(_mr.get("inzet") or 0)
+
+                _tier_order = ["✅ Sterk", "✅ Sterk ~", "⚠️ Matig", "⚠️ Matig ~",
+                               "❌ Vermijd", "❌ Vermijd ~"]
+                _tier_rows = []
+                for _tier in _tier_order:
+                    _td = _tier_agg.get(_tier)
+                    if not _td or _td["n"] == 0:
+                        continue
+                    _t_winpct = _td["won"] / _td["n"] * 100
+                    _t_gem_ev = _td["ev_sum"] / _td["n"]
+                    _t_roi    = (_td["wl_sum"] / _td["inzet_sum"] * 100) if _td["inzet_sum"] > 0 else 0.0
+                    _t_diff   = _t_roi - _t_gem_ev * 100
+                    _t_sig    = ("✅ Op schema" if abs(_t_diff) < 10
+                                 else ("🚀 Beter dan verwacht" if _t_diff > 10
+                                       else "⚠️ Onder verwachting"))
+                    _tier_rows.append({
+                        "Rating": _tier, "N": _td["n"],
+                        "Win %": f"{_t_winpct:.0f}%",
+                        "Gem. EV": f"{_t_gem_ev:+.3f}",
+                        "Werkelijk ROI": f"{_t_roi:+.1f}%",
+                        "Signaal": _t_sig,
+                    })
+                if _tier_rows:
+                    st.dataframe(pd.DataFrame(_tier_rows), hide_index=True, use_container_width=True)
+                    if not _has_stored_rating:
+                        st.caption("~ = rating geschat op EV score. "
+                                   "Exacte ratings worden opgeslagen voor nieuwe bets.")
+
+                # ── EV Kalibratie Buckets ─────────────────────────────────────────
+                st.markdown("##### 📊 EV Kalibratie — voorspeld vs werkelijk")
+
+                _ev_bucket_defs = [
+                    ("<0",       None,  0.0),
+                    ("0.00–0.09", 0.0,  0.10),
+                    ("0.10–0.19", 0.10, 0.20),
+                    ("0.20–0.29", 0.20, 0.30),
+                    ("0.30+",    0.30,  None),
                 ]
-                if not _pred_hrs: continue
-                _pred_hr   = sum(_pred_hrs) / len(_pred_hrs)
-                _actual_hr = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen") / len(_sr)
-                _diff      = _actual_hr - _pred_hr
-                _ev_rows.append({
-                    "Sport": _bsport, "Voorspeld HR": f"{_pred_hr*100:.1f}%",
-                    "Werkelijk HR": f"{_actual_hr*100:.1f}%", "Verschil": f"{_diff*100:+.1f}%", "N": len(_sr),
-                })
-                if _pred_hr > 0 and _actual_hr < _pred_hr * 0.80:
-                    st.warning(f"⚠️ {_bsport} props presteren {abs(_diff)*100:.0f}% onder verwachte hit rate")
-            if _ev_rows:
-                st.dataframe(pd.DataFrame(_ev_rows), hide_index=True, use_container_width=True)
+                _calib_rows = []
+                for _bl, _blo, _bhi in _ev_bucket_defs:
+                    if _blo is None:
+                        _bb = [r for r in _model_bets if float(r.get("ev_score") or 0) < _bhi]
+                    elif _bhi is None:
+                        _bb = [r for r in _model_bets if float(r.get("ev_score") or 0) >= _blo]
+                    else:
+                        _bb = [r for r in _model_bets
+                               if _blo <= float(r.get("ev_score") or 0) < _bhi]
+                    if len(_bb) < 2:
+                        continue
+                    _bn      = len(_bb)
+                    _bwon    = sum(1 for r in _bb if r.get("uitkomst") == "gewonnen")
+                    _bgev    = sum(float(r.get("ev_score") or 0) for r in _bb) / _bn
+                    _bwl     = sum(float(r.get("winst_verlies") or 0) for r in _bb)
+                    _binzet  = sum(float(r.get("inzet") or 0) for r in _bb)
+                    _broi    = (_bwl / _binzet * 100) if _binzet > 0 else 0.0
+                    _bvoor   = _bgev * 100
+                    _bdelta  = _broi - _bvoor
+                    _bsig    = "🟢" if _bdelta >= -5 else ("🟡" if _bdelta >= -15 else "🔴")
+                    _calib_rows.append({
+                        "EV Bucket": _bl, "N": _bn,
+                        "Win %": f"{_bwon/_bn*100:.0f}%",
+                        "Voorspeld ROI": f"{_bvoor:+.1f}%",
+                        "Werkelijk ROI": f"{_broi:+.1f}%",
+                        "Delta": f"{_bdelta:+.1f}% {_bsig}",
+                    })
+                if _calib_rows:
+                    st.dataframe(pd.DataFrame(_calib_rows), hide_index=True, use_container_width=True)
+                    st.caption("🟢 delta ≥ −5%  ·  🟡 delta −5% tot −15%  ·  🔴 delta < −15%")
+
+                # ── Modelnauwkeurigheid per sport ─────────────────────────────────
+                st.markdown("##### 🏟️ Modelnauwkeurigheid per sport")
+                _sport_model_rows = []
+                for _bsport in sorted({r.get("sport", "?") for r in _model_bets}):
+                    _sr = [r for r in _model_bets if r.get("sport", "") == _bsport]
+                    if len(_sr) < 3:
+                        continue
+                    _s_won   = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen")
+                    _s_inzet = sum(float(r.get("inzet") or 0) for r in _sr)
+                    _s_wl    = sum(float(r.get("winst_verlies") or 0) for r in _sr)
+                    _s_ev    = [float(r.get("ev_score") or 0) for r in _sr]
+                    _s_gev   = sum(_s_ev) / len(_s_ev)
+                    _s_roi   = (_s_wl / _s_inzet * 100) if _s_inzet > 0 else 0.0
+                    _s_bias  = _s_roi - _s_gev * 100
+                    _s_sig   = "🟢" if abs(_s_bias) < 10 else ("🟡" if abs(_s_bias) < 20 else "🔴")
+                    # Waarschuwing als sport significant onder verwachting presteert
+                    if _s_gev > 0 and _s_roi < _s_gev * 100 * 0.5 and _s_roi < 0:
+                        st.warning(f"⚠️ {_bsport} presteert significant onder verwachting "
+                                   f"(voorspeld {_s_gev*100:+.1f}%, werkelijk {_s_roi:+.1f}%)")
+                    _sport_model_rows.append({
+                        "Sport": _bsport, "N": len(_sr),
+                        "Win %": f"{_s_won/len(_sr)*100:.0f}%",
+                        "Gem. EV": f"{_s_gev:+.3f}",
+                        "ROI": f"{_s_roi:+.1f}%",
+                        "Model bias": f"{_s_bias:+.1f}% {_s_sig}",
+                    })
+                if _sport_model_rows:
+                    st.dataframe(pd.DataFrame(_sport_model_rows), hide_index=True, use_container_width=True)
     
             # ── Per bet type ─────────────────────────────────────────────────────
             st.markdown("---")

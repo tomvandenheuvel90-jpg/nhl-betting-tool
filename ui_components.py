@@ -437,6 +437,58 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
 
         st.progress(bet["composite"], text=f"Composite: {composite_pct}%")
 
+        # ── Score opbouw — model-transparantie ────────────────────────────────
+        _opp_f   = float(bet.get("opp_factor") or 0.5)
+        _rel_f   = float(bet.get("reliability") or 0.0)
+        _lm_hr   = float(bet.get("linemate_hr") or 0.0)
+        _s_hr    = float(bet.get("season_hr")   or 0.0)
+        _no_s    = bool(bet.get("no_season_data"))
+        # Effectieve gewichten (seizoen-gewicht = 0 als geen historische data)
+        _eff_lm_w = 0.70 if _no_s else 0.35
+        _eff_s_w  = 0.00 if _no_s else 0.35
+
+        def _opp_label(f: float) -> str:
+            return "🟢 Gunstig" if f >= 0.62 else ("⚪ Neutraal" if f >= 0.45 else "🔴 Moeilijk")
+
+        def _rel_label(f: float) -> str:
+            return "Hoog" if f >= 0.75 else ("Matig" if f >= 0.40 else "Laag")
+
+        _breakdown_items = [
+            (f"Linemate HR  ·  {_eff_lm_w*100:.0f}%",  _lm_hr, _eff_lm_w * _lm_hr,
+             f"{_lm_hr*100:.0f}%"),
+            (f"Seizoen HR  ·  {_eff_s_w*100:.0f}%",    _s_hr,  _eff_s_w  * _s_hr,
+             f"{_s_hr*100:.0f}%" if not _no_s else "—  geen data"),
+            ("Tegenstander  ·  20%",                    _opp_f, 0.20 * _opp_f,
+             _opp_label(_opp_f)),
+            ("Betrouwbaarheid  ·  10%",                 _rel_f, 0.10 * _rel_f,
+             _rel_label(_rel_f)),
+        ]
+        _bd_rows_html = ""
+        for _bd_label, _bd_val, _bd_contrib, _bd_disp in _breakdown_items:
+            _bar_w = int(_bd_val * 72)   # schaal 0-1 naar 0-72 px
+            _bar_c = ("#7c3aed" if _bd_contrib >= 0.20
+                      else ("#4ade80" if _bd_contrib >= 0.12 else "#6868a0"))
+            _bd_rows_html += (
+                f"<div style='display:flex;align-items:center;gap:8px;padding:3px 0;"
+                f"border-bottom:1px solid #16163a;'>"
+                f"<span style='color:#8888b8;font-size:0.72rem;min-width:160px;'>"
+                f"{_bd_label}</span>"
+                f"<div style='background:#1a1a3e;border-radius:3px;height:6px;"
+                f"width:72px;flex-shrink:0;'>"
+                f"<div style='background:{_bar_c};width:{_bar_w}px;height:6px;"
+                f"border-radius:3px;'></div></div>"
+                f"<span style='color:#c4b5fd;font-size:0.72rem;'>{_bd_disp}</span>"
+                f"</div>"
+            )
+        st.markdown(
+            f"<div style='background:#0a0a22;border-radius:8px;padding:8px 12px;"
+            f"margin:6px 0 2px 0;border:1px solid #1e1e40;'>"
+            f"<div style='font-size:0.70rem;color:#6868a0;margin-bottom:5px;'>"
+            f"🔍 Score opbouw</div>"
+            f"{_bd_rows_html}</div>",
+            unsafe_allow_html=True,
+        )
+
         if bet.get("no_linemate_hr"):
             st.warning("⚠️ **Onvoldoende data** — Linemate hit rate niet gevonden in screenshot. "
                        "EV is uitsluitend gebaseerd op historische statistieken.")
