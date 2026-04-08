@@ -223,6 +223,19 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - **NBA hist_* veldnamen fix**: `sports/nba.py` geeft nu aliassen mee: `avg_points → hist_points_avg`, `avg_rebounds → hist_rebounds_avg`, etc. Scorer kon hiervoor geen seizoens-HR berekenen voor NBA props.
 - **Combo stats NBA**: `scorer.py` herkent nu PRA (Points+Rebounds+Assists), RA, PA als combinatie-props. `_get_raw_and_line()` telt de losse waarden op; `_get_hist_lam()` gebruikt de juiste veldnaam.
 - **Debug-sleutels fix**: `analysis.py` gebruikt `_dbg_raw`, `_dbg_traceback` etc.; `streamlit_app.py` gebruikt nu ook de `_dbg_` prefix (was zonder prefix → debug-info werd nooit getoond).
+- **Feedback loop + Model Prestaties**: `db.py` slaat `rating` en `composite` op in zowel `favorieten` als `resultaten`. `analysis.py` geeft `opp_factor`, `reliability`, `no_season_data` mee in het verrijkte bet-object. `ui_components.py` toont een "Score opbouw" sectie in de prop-kaart. De 📊 Bankroll tab heeft een "🧠 Model Prestaties" sectie met EV-kalibratie, rating-tiers en per-sport bias.
+- **Compacte prop-kaarten**: `render_bet_card()` in `ui_components.py` is volledig herschreven naar pure HTML. Geen `st.metric()` of `st.progress()` meer. Bevat: 4 stat-chips naast elkaar (LM HR / Sez HR / Odds / Sample), 4px composite-balk, score-opbouw pills (Linemate%, Seizoen%, Tegenstander, Betrouwbaarheid). Parameter `dimmed=bool` voor gedimd weergeven van gefilterde props.
+- **Tijdzone fix**: `db.py` heeft een `_now_local()` helper die UTC+2 (CEST) gebruikt als fallback en een `TZ` env var ondersteunt. Alle `datetime.datetime.now()` calls vervangen.
+- **EV-sortering fix**: sort-key `float(x.get("ev") or 0)` behandelde `ev=0.0` als None. Vervangen door `x.get("ev") if x.get("ev") is not None else -999.0` zodat de sortering altijd correct is.
+- **Alle props tonen (ook negatieve EV)**: `_display_props = enriched` (was `enriched_ranked`). Props die de filter niet halen worden gedimd weergegeven (60% opacity). Zo zijn alle props van meerdere screenshots altijd globaal zichtbaar, gesorteerd van hoog naar laag EV.
+- **Bet365 verificatie standaard uitgeschakeld**: checkbox `💰 Bet365 odds verificatie` in de Analyse-tab, standaard UIT. Linemate-odds worden gebruikt. API-code volledig intact. Schakel in voor eenmalige verificatie.
+- **Odds API `sport=None` fix**: `(sport or "").upper()` in alle drie de functies in `sports/odds_api.py`. Voorkomt crash bij MLB/andere bets waarbij Claude Vision het sport-veld niet invult.
+- **Parlay suggesties gesplitst per grootte**: `generate_parlay_suggestions()` in `analysis.py` retourneert nu maximaal 2 twee-leg parlays + 2 drie-leg parlays (was: top 3 gemengd). Elk parlay-object heeft `n_legs` en `same_team_warning` velden. UI toont ze gesplitst in blokken per grootte.
+- **Same-team correlatie-penalty**: same-team combos werden voorheen volledig uitgesloten. Nu toegelaten maar met automatische odds-korting van −15% (`_SAME_TEAM_CORR_DISCOUNT = 0.85`), conform de SGP-penalty die bookmakers hanteren. UI toont een ⚠️ met uitleg.
+- **Auto-parlay naar Parlay Builder**: de "Sla op" knop bij auto-parlay suggesties stuurt de legs nu naar de Parlay Builder tab (was: direct opslaan met hardcoded inzet €10). Gebruiker stelt inzet in en slaat op vanuit de Parlay Builder.
+- **Open bet P&L fix**: `upsert_resultaat()` in `db.py` boekte bij `uitkomst="open"` een `winst_verlies = -inzet`. Nu is dat `0.0` — P&L wordt alleen geboekt bij gewonnen of verloren.
+- **Shortlist P&L display fix**: caption in de Shortlist toont P&L alleen bij gesettlede bets (gewonnen/verloren). Bij open bets staat er "P&L: —".
+- **ev_score None crash**: `float(_fav.get('ev_score', 0))` kan crashen als Supabase `null` retourneert. Vervangen door `float(_fav.get('ev_score') or 0)` op alle plekken in Shortlist en Dashboard.
 
 ---
 
@@ -239,8 +252,12 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - [ ] Parlay: leg-niveau odds aanpassen in opgeslagen parlays
 - [ ] Automatisch duplicaten detecteren bij toevoegen van een bet
 - [ ] Parlays die vóór de settlement-fix zijn opgeslagen staan nog niet in `resultaten` — eventueel handmatig herstellen via db.py
-- [ ] Meerdere screenshots: props met negatieve EV worden gefilterd — overweeg optie "toon alles" zodat gebruiker ook negatieve EV props kan zien en zelf kan beslissen
-- [x] Soccer Bet365 whitelist: `is_soccer_bet365_market()` in `prompts.py` — alleen markten die op Bet365 beschikbaar zijn worden doorgelaten. Whitelist: 1X2, Double Chance, BTTS, Over/Under, Asian Handicap, Draw No Bet, Corners, Anytime Scorer, Multi Scorer (2+), Assist, Shots, Shots on Target, Keeper Saves. First Goalscorer is uitdrukkelijk uitgesloten.
+- [x] Meerdere screenshots: alle props (incl. negatieve EV) worden nu getoond, gesorteerd op EV. Gefilterde props zijn gedimd weergegeven.
+- [x] Soccer Bet365 whitelist: `is_soccer_bet365_market()` in `prompts.py`.
+- [x] Bet365 verificatie standaard uitgeschakeld — Linemate-odds worden gebruikt.
+- [x] Open bet P&L fix — `upsert_resultaat()` boekt nu `wl=0.0` voor open bets.
+- [x] Auto-parlay stuurt nu naar Parlay Builder in plaats van direct opslaan met vaste inzet.
+- [x] Parlay suggesties gesplitst in 2-leg en 3-leg, same-team correlatie-penalty −15%.
 - [ ] **OPEN BUG — NBA-spelers bij voetbal-screenshots**: ondanks meerdere fixes (detect_sports_from_matches uitgebreid, fallback aangepast, teamnaam-detectie toegevoegd) blijft de app NBA-spelersdata ophalen bij Championship Flashscore screenshots. Nog niet volledig opgelost. Volgende stap: debug-output toevoegen zodat zichtbaar is welke sport/competition Claude Vision teruggeeft én wat detect_sports_from_matches retourneert. Mogelijk moet de Streamlit-app herstart worden na de laatste push.
 
 ---
