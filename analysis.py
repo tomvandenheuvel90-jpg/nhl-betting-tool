@@ -783,7 +783,7 @@ def enrich_bet(bet: dict, cache: dict,
     _lm_hr    = float(_raw_hr) if _hr_ok else 0.0
     _eff_lm_w = linemate_weight if _hr_ok else 0.0
 
-    odds  = bet.get("linemate_odds", 1.0)
+    odds  = float(bet.get("linemate_odds") or 1.0)
     score = composite_score(
         linemate_hit_rate=_lm_hr,
         sample_size=sample_n,
