@@ -396,7 +396,7 @@ def render_top3(top3: list):
         )
 
 
-def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, session_id: str = ""):
+def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, session_id: str = "", dimmed: bool = False):
     sport_icon    = SPORT_ICONS.get(bet["sport"].upper(), "⚽")
     ev_val        = bet["ev"]
     ev_str        = f"+{ev_val:.3f}" if ev_val >= 0 else f"{ev_val:.3f}"
@@ -500,9 +500,12 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
         )
 
     # ── Volledige kaart als HTML ──────────────────────────────────────────────
+    _card_bg      = "#0d0d20" if dimmed else "#11112b"
+    _card_border  = "#1e1e38" if dimmed else "#2a2a58"
+    _card_opacity = "opacity:0.60;" if dimmed else ""
     card_html = f"""
-<div style='background:#11112b;border:1px solid #2a2a58;border-radius:12px;
-     padding:11px 13px 8px 13px;margin-bottom:8px;'>
+<div style='background:{_card_bg};border:1px solid {_card_border};border-radius:12px;
+     padding:11px 13px 8px 13px;margin-bottom:8px;{_card_opacity}'>
 
   <div style='display:flex;justify-content:space-between;align-items:center;
        margin-bottom:3px;'>

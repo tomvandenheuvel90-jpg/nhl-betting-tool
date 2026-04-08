@@ -631,7 +631,7 @@ with tab_analyse:
                         for i, bet in enumerate(bets):
                             enriched.append(enrich_bet(bet, cache, linemate_weight=lm_w, season_weight=s_w))
                             prog.progress((i + 1) / len(bets))
-                        enriched.sort(key=lambda x: float(x.get("ev") or 0), reverse=True)
+                        enriched.sort(key=lambda x: (x.get("ev") if x.get("ev") is not None else -999.0), reverse=True)
                         st.write(f"✅ {len(enriched)} props gescoord")
 
                         # Bet365 verificatie (optioneel)
@@ -660,8 +660,9 @@ with tab_analyse:
                                 def _ev_rank(b):
                                     s = b.get("bet365", {}).get("status", "unknown")
                                     if s == "unavailable":   return -999.0
-                                    if s == "different_line": return b["ev"] * 0.85
-                                    return b["ev"]
+                                    ev_b = b.get("ev") if b.get("ev") is not None else -998.0
+                                    if s == "different_line": return ev_b * 0.85
+                                    return ev_b
                                 enriched.sort(key=_ev_rank, reverse=True)
 
                         elif odds_api and odds_api._API_KEY and odds_api.is_limit_reached():
@@ -717,8 +718,8 @@ with tab_analyse:
                 if _gefilterd_n > 0:
                     st.markdown(
                         f'<small style="color:#a0c4ff;">ℹ️ <b>{len(enriched)} props gescoord</b> — '
-                        f'<b>{len(enriched_ranked)} getoond</b> na filtering '
-                        f'({_gefilterd_n} weggevallen: negatieve EV of te klein sample)</small>',
+                        f'<b>{len(enriched_ranked)} positieve EV</b> · '
+                        f'{_gefilterd_n} negatieve EV of klein sample (worden ook getoond)</small>',
                         unsafe_allow_html=True,
                     )
                 _auto_parlays   = generate_parlay_suggestions(enriched_ranked)
@@ -846,15 +847,18 @@ with tab_analyse:
                         st.success(f"✅ Parlay {_api} opgeslagen!")
                         st.rerun()
 
-            # Alle props — gesorteerd van beste naar slechtste EV (enriched_ranked)
-            _display_props = enriched_ranked if enriched_ranked else enriched
+            # Alle props — gesorteerd van beste naar slechtste EV (alle screenshots gecombineerd)
+            # enriched is al gesorteerd op EV (hoog→laag) inclusief negatieve EV props
+            _display_props = enriched  # toon alle props, zodat meerdere screenshots correct worden gecombineerd
             st.markdown("---")
             st.markdown("### 📊 Alle props")
             _fav_ids_set = {f["id"] for f in db.load_favorieten()}
             _cur_sid     = st.session_state.get("current_session_id", "")
+            _enriched_ids = {(b["player"], b["bet_type"]) for b in enriched_ranked}
             for i, bet in enumerate(_display_props, 1):
-                _is_fav = db.make_fav_id(bet["player"], bet["bet_type"]) in _fav_ids_set
-                render_bet_card(bet, i, len(_display_props), is_fav=_is_fav, session_id=_cur_sid)
+                _is_fav   = db.make_fav_id(bet["player"], bet["bet_type"]) in _fav_ids_set
+                _in_ranked = (bet["player"], bet["bet_type"]) in _enriched_ids
+                render_bet_card(bet, i, len(_display_props), is_fav=_is_fav, session_id=_cur_sid, dimmed=not _in_ranked)
 
         st.caption("⚠️ Statistische analyse ter ondersteuning. Wedden brengt financiële risico's. Speel verantwoord.")
 
