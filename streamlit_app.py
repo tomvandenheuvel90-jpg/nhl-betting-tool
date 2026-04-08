@@ -530,6 +530,14 @@ with tab_analyse:
         help="Schakel uit om de NHL roster scan over te slaan en de analyse te versnellen.",
     )
 
+    if "bet365_verify_enabled" not in st.session_state:
+        st.session_state.bet365_verify_enabled = False
+    st.session_state.bet365_verify_enabled = st.checkbox(
+        "💰 Bet365 odds verificatie (TheOddsAPI)",
+        value=st.session_state.bet365_verify_enabled,
+        help="Schakel in om odds te verifiëren via Bet365. Standaard uitgeschakeld — Linemate-odds worden gebruikt.",
+    )
+
     analyze_btn = st.button(
         "🔍 Analyseer",
         use_container_width=True,
@@ -634,8 +642,8 @@ with tab_analyse:
                         enriched.sort(key=lambda x: (x.get("ev") if x.get("ev") is not None else -999.0), reverse=True)
                         st.write(f"✅ {len(enriched)} props gescoord")
 
-                        # Bet365 verificatie (optioneel)
-                        if odds_api and odds_api._API_KEY and not odds_api.is_limit_reached():
+                        # Bet365 verificatie (optioneel — alleen als handmatig ingeschakeld)
+                        if st.session_state.get("bet365_verify_enabled") and odds_api and odds_api._API_KEY and not odds_api.is_limit_reached():
                             _to_check = [b for b in enriched if b["ev"] > 0]
                             if _to_check:
                                 st.write(f"💰 Bet365 verificatie voor {len(_to_check)} props...")
@@ -665,7 +673,7 @@ with tab_analyse:
                                     return ev_b
                                 enriched.sort(key=_ev_rank, reverse=True)
 
-                        elif odds_api and odds_api._API_KEY and odds_api.is_limit_reached():
+                        elif st.session_state.get("bet365_verify_enabled") and odds_api and odds_api._API_KEY and odds_api.is_limit_reached():
                             st.write("ℹ️ Bet365 verificatie overgeslagen (maandlimiet bereikt)")
 
                     # Wedstrijd-analyses per sport
