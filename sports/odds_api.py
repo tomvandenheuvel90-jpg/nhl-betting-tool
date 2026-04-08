@@ -342,7 +342,7 @@ def check_bet365_availability(
     if not _API_KEY:
         return empty
 
-    sport_key = SPORT_KEYS.get(sport.upper())
+    sport_key = SPORT_KEYS.get((sport or "").upper())
     if not sport_key:
         return empty
 
@@ -447,7 +447,7 @@ def get_match_odds_h2h(sport: str, home_team: str, away_team: str) -> dict:
     if not _API_KEY:
         return {**empty, "source": "no_api_key"}
 
-    sport_key = SPORT_KEYS.get(sport.upper())
+    sport_key = SPORT_KEYS.get((sport or "").upper())
     if not sport_key:
         return empty
 
@@ -545,7 +545,7 @@ def get_match_odds_spreads(sport: str, home_team: str, away_team: str) -> dict:
     if not _API_KEY:
         return {**empty, "source": "no_api_key"}
 
-    sport_key = SPORT_KEYS.get(sport.upper())
+    sport_key = SPORT_KEYS.get((sport or "").upper())
     if not sport_key:
         return empty
 
