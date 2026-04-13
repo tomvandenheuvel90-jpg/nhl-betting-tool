@@ -2272,6 +2272,26 @@ with tab_parlay:
                         _changed = True
                 if _changed:
                     db.update_parlay(_prl.get("id",""), {"legs_json": _upd_legs})
+                    # Auto-settle: als één leg gemist → gehele parlay verloren
+                    if ((_prl.get("uitkomst") or "open") == "open"
+                            and any(v == "gemist" for v in _upd_legs.values())):
+                        _auto_id    = _prl.get("id","")
+                        _auto_inzet = float(_prl.get("inzet", 10) or 10)
+                        _auto_odds  = float(_prl.get("gecombineerde_odds", 1.0) or 1.0)
+                        db.update_parlay(_auto_id, {
+                            "uitkomst":      "verloren",
+                            "winst_verlies": round(-_auto_inzet, 2),
+                        })
+                        _auto_fav = {
+                            "odds":      _auto_odds,
+                            "datum":     datetime.date.today().isoformat(),
+                            "speler":    f"🎰 Parlay ({len(_prl_legs)} legs)",
+                            "bet":       ", ".join(str(l.get("player","")) for l in _prl_legs[:3]) or "Parlay",
+                            "sport":     "Parlay",
+                            "ev_score":  float(_prl.get("ev_score") or 0.0),
+                            "props_json": _prl_legs,
+                        }
+                        db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav, "verloren", _auto_inzet)
                     st.rerun()
 
                 _oc1, _oc2, _oc3 = st.columns(3)

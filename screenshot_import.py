@@ -470,6 +470,7 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
                             game_date, match, bm, bet_obj)
         else:
             _save_as_single(db, player, desc, bet_obj, status, stake)
+        _reset(context)
         return
 
     # ── Shortlist: opslaan als favoriet + resultaat ──────────────────────────
@@ -532,11 +533,12 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
     props_json = []
     legs_json  = {}
     for leg in edited_legs:
-        _player   = leg.get("player") or match or "—"
+        _player   = leg.get("player") or ""
         _market   = leg.get("market") or "Player Prop"
         _sel      = leg.get("selection") or ""
         _bet_type = f"{_market} — {_sel}" if _sel else _market
-        _leg_odds = float(leg.get("odds") or 0)
+        _raw_odds = leg.get("odds")
+        _leg_odds = float(_raw_odds) if _raw_odds is not None else None
 
         props_json.append({
             "player":   _player,
