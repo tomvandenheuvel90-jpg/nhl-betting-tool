@@ -334,11 +334,12 @@ def save_favorieten(favs: list) -> None:
         pass
 
 
-def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "") -> None:
+def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date: str = "") -> None:
     datum = datetime.date.today().isoformat()
     row = {
         "id":                fav_id,
         "datum":             datum,
+        "game_date":         game_date or datum,  # datum wedstrijd; default = vandaag
         "speler":            bet.get("player", ""),
         "bet":               bet.get("bet_type", ""),
         "odds":              round(float(bet.get("odds", 0)), 2),
@@ -358,7 +359,7 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "") -> None:
             # Nieuwe kolommen bestaan mogelijk nog niet — probeer zonder optionele kolommen
             try:
                 row_basic = {k: v for k, v in row.items()
-                             if k not in ("source_session_id", "rating", "composite")}
+                             if k not in ("source_session_id", "rating", "composite", "game_date")}
                 _supabase.table("favorieten").upsert(row_basic).execute()
                 return
             except Exception:

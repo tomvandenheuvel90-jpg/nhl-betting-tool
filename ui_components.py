@@ -396,7 +396,7 @@ def render_top3(top3: list):
         )
 
 
-def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, session_id: str = "", dimmed: bool = False):
+def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, session_id: str = "", dimmed: bool = False, game_date: str = ""):
     sport_icon    = SPORT_ICONS.get(bet["sport"].upper(), "⚽")
     ev_val        = bet["ev"]
     ev_str        = f"+{ev_val:.3f}" if ev_val >= 0 else f"{ev_val:.3f}"
@@ -580,7 +580,7 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
                 if _fav_adj is not None and abs(_fav_adj - float(bet["odds"])) > 0.001:
                     _composite = bet.get("composite", 0.5)
                     _adj_ev    = _composite * (_fav_adj - 1) - (1 - _composite)
-                    db.add_favoriet(fid, {**bet, "odds": _fav_adj, "ev": _adj_ev}, source_session_id=session_id)
+                    db.add_favoriet(fid, {**bet, "odds": _fav_adj, "ev": _adj_ev}, source_session_id=session_id, game_date=game_date)
                 else:
-                    db.add_favoriet(fid, bet, source_session_id=session_id)
+                    db.add_favoriet(fid, bet, source_session_id=session_id, game_date=game_date)
             st.rerun()

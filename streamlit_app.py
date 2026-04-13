@@ -906,7 +906,7 @@ with tab_favorieten:
         _m_bet_det = st.text_input("Details", key="m_bet_det",
                                     placeholder="bijv. Anytime Goal Scorer, Over 2.5 goals, Colorado Avalanche to win")
         _m_bet     = f"{_m_bet_cat} — {_m_bet_det.strip()}" if _m_bet_det.strip() else _m_bet_cat
-        _mf5, _mf6, _mf7 = st.columns(3)
+        _mf5, _mf6, _mf7, _mf8 = st.columns(4)
         _m_inzet   = _mf5.number_input("Inzet (€)", min_value=0.10, value=10.0,
                                          step=1.0, format="%.2f", key="m_inzet")
         _m_uitkomst = _mf6.selectbox("Uitkomst", ["open","gewonnen","verloren"],
@@ -914,6 +914,7 @@ with tab_favorieten:
         _m_ev      = _mf7.number_input("EV (optioneel)", min_value=-1.0, max_value=5.0,
                                         value=0.0, step=0.01, format="%.3f",
                                         key="m_ev")
+        _m_game_date = _mf8.date_input("Wedstrijddatum", value=datetime.date.today(), key="m_game_date")
         if st.button("➕ Toevoegen aan favorieten", key="m_add_fav",
                      disabled=not _m_speler):
             _m_bet_obj = {
@@ -927,7 +928,7 @@ with tab_favorieten:
                 "source":   "handmatig",
             }
             _m_fid = db.make_fav_id(_m_speler, _m_bet)
-            db.add_favoriet(_m_fid, _m_bet_obj)
+            db.add_favoriet(_m_fid, _m_bet_obj, game_date=_m_game_date.isoformat())
             if _m_uitkomst != "open":
                 db.upsert_resultaat(_m_fid, _m_bet_obj, _m_uitkomst, _m_inzet)
             st.success(f"✅ '{_m_speler} — {_m_bet}' toegevoegd!")
@@ -955,7 +956,31 @@ with tab_favorieten:
             _sc4.markdown(kpi_card("📈", "ROI", f"{_froi:+.1f}%", f"over {len(_done)} bets", positive=(_froi > 0) if _froi != 0 else None, tooltip=f"{_froi:+.4f}%"), unsafe_allow_html=True)
             st.markdown("---")
 
-        for _idx, _fav in enumerate(_favs):
+        # ── Splits favorieten in actief vs. verlopen ──────────────────────────
+        _today_iso = datetime.date.today().isoformat()
+
+        def _fav_game_date(fav: dict) -> str:
+            # Gebruik game_date als aanwezig, anders datum (wanneer toegevoegd)
+            return fav.get("game_date") or fav.get("datum") or _today_iso
+
+        def _fav_is_expired(fav: dict) -> bool:
+            """Verlopen = game_date < vandaag EN geen inzet geplaatst."""
+            _fid = fav.get("id", "")
+            _res = _res_map.get(_fid, {})
+            _uitkomst = _res.get("uitkomst", "")
+            # Bets die geplaatst zijn (open/gewonnen/verloren) altijd tonen
+            if _uitkomst:
+                return False
+            return _fav_game_date(fav) < _today_iso
+
+        _favs_active  = [f for f in _favs if not _fav_is_expired(f)]
+        _favs_expired = [f for f in _favs if _fav_is_expired(f)]
+
+        if not _favs_active and not _favs_expired:
+            st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen actieve bets.</small>', unsafe_allow_html=True)
+
+        # Actieve bets
+        for _idx, _fav in enumerate(_favs_active):
             _fid      = _fav.get("id", "")
             _res      = _res_map.get(_fid, {})
             _uitkomst = _res.get("uitkomst", "")
@@ -1032,6 +1057,23 @@ with tab_favorieten:
                             "hit_rate": None,
                         })
                         st.success(f"✅ Toegevoegd aan Parlay Builder — ga naar 🎯 tab")
+
+        # ── Verlopen bets (ingeklapt) ─────────────────────────────────────────
+        if _favs_expired:
+            with st.expander(f"🕐 Verlopen bets ({len(_favs_expired)}) — wedstrijd al gespeeld, niet ingezet", expanded=False):
+                st.caption("Deze bets staan nog in je database. Je kunt ze handmatig verwijderen.")
+                for _idx_e, _fav_e in enumerate(_favs_expired):
+                    _fid_e  = _fav_e.get("id", "")
+                    _gd_e   = _fav_game_date(_fav_e)
+                    _ev_e   = f"{float(_fav_e.get('ev_score') or 0):+.3f}"
+                    _ec1, _ec2 = st.columns([5, 1])
+                    _ec1.markdown(
+                        f"**{_fav_e.get('speler','')}** · {_fav_e.get('bet','')} "
+                        f"@ {_fav_e.get('odds','')}  ·  EV {_ev_e}  ·  📅 {_gd_e}"
+                    )
+                    if _ec2.button("🗑️", key=f"del_exp_{_fid_e}_{_idx_e}", help="Verwijder"):
+                        db.remove_favoriet(_fid_e)
+                        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2547,7 +2589,7 @@ with tab_history:
                             "ev":       _hev,
                             "sport":    _hp.get("sport",""),
                             "source_session_id": _sid,
-                        }, source_session_id=_sid)
+                        }, source_session_id=_sid, game_date=datetime.date.today().isoformat())
                         st.success(f"✅ {_player} toegevoegd aan Shortlist")
                         st.rerun()
                     # Parlay knop
