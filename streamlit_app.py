@@ -967,16 +967,9 @@ with tab_favorieten:
 
         def _fav_is_expired(fav: dict) -> bool:
             """Verlopen = game_date < vandaag.
-            Uitzondering: gesettlede bets (gewonnen/verloren) altijd tonen.
-            Open (geplaatst maar niet gesettled) bets met verstreken datum → ook verbergen;
-            ze zijn al zichtbaar in de Geplaatste Bets tab.
+            Alle bets met een verstreken datum worden verborgen,
+            ook gewonnen/verloren — die staan al in de Geplaatste Bets tab.
             """
-            _fid = fav.get("id", "")
-            _res = _res_map.get(_fid, {})
-            _uitkomst = _res.get("uitkomst", "")
-            # Alleen écht gesettlede bets (gewonnen/verloren) vrijstellen van de datumfilter
-            if _uitkomst in ("gewonnen", "verloren"):
-                return False
             return _fav_game_date(fav) < _today_iso
 
         _favs_active  = [f for f in _favs if not _fav_is_expired(f)]
