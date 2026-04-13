@@ -961,15 +961,21 @@ with tab_favorieten:
 
         def _fav_game_date(fav: dict) -> str:
             # Gebruik game_date als aanwezig, anders datum (wanneer toegevoegd)
-            return fav.get("game_date") or fav.get("datum") or _today_iso
+            # [:10] → strip eventuele timestamp-suffix van Supabase ("2026-04-12 00:00:00" → "2026-04-12")
+            gd = fav.get("game_date") or fav.get("datum") or _today_iso
+            return str(gd)[:10]
 
         def _fav_is_expired(fav: dict) -> bool:
-            """Verlopen = game_date < vandaag EN geen inzet geplaatst."""
+            """Verlopen = game_date < vandaag.
+            Uitzondering: gesettlede bets (gewonnen/verloren) altijd tonen.
+            Open (geplaatst maar niet gesettled) bets met verstreken datum → ook verbergen;
+            ze zijn al zichtbaar in de Geplaatste Bets tab.
+            """
             _fid = fav.get("id", "")
             _res = _res_map.get(_fid, {})
             _uitkomst = _res.get("uitkomst", "")
-            # Bets die geplaatst zijn (open/gewonnen/verloren) altijd tonen
-            if _uitkomst:
+            # Alleen écht gesettlede bets (gewonnen/verloren) vrijstellen van de datumfilter
+            if _uitkomst in ("gewonnen", "verloren"):
                 return False
             return _fav_game_date(fav) < _today_iso
 
