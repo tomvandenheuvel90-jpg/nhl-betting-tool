@@ -2330,6 +2330,11 @@ with tab_geplaatst:
     st.markdown("### 📋 Geplaatste Weddenschappen")
     st.caption("Alle weddenschappen die je hebt ingezet, gerangschikt per maand en week.")
 
+    _sc_client_g = anthropic.Anthropic(api_key=api_key) if ANTHROPIC_AVAILABLE and api_key else None
+    screenshot_import.render_screenshot_import("geplaatste_bets", client=_sc_client_g)
+
+    st.markdown("---")
+
     from datetime import date as _date
 
     _alle_res_gp = db.load_resultaten()
