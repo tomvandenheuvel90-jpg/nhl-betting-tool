@@ -334,7 +334,8 @@ with tab_dashboard:
     # ── Welkomstregel ─────────────────────────────────────────────────────────
     st.markdown("### 🏠 Dashboard")
     _dsh_datum_str = datetime.date.today().strftime("%-d %B %Y")
-    st.caption(f"📅 {_dsh_datum_str}  ·  {len(_dsh_open)} open {'bet' if len(_dsh_open) == 1 else 'bets'}  ·  {len(_dsh_favorieten)} in Shortlist")
+    _dsh_fav_actief_count = sum(1 for f in _dsh_favorieten if str(f.get("game_date") or f.get("datum") or datetime.date.today().isoformat())[:10] >= datetime.date.today().isoformat())
+    st.caption(f"📅 {_dsh_datum_str}  ·  {len(_dsh_open)} open {'bet' if len(_dsh_open) == 1 else 'bets'}  ·  {_dsh_fav_actief_count} in Shortlist")
 
     # ── KPI-kaartjes (gebruikt globale kpi_card helper) ───────────────────────
 
@@ -452,10 +453,15 @@ with tab_dashboard:
     with _dcol_r:
         # Shortlist preview
         st.markdown("#### ⭐ Shortlist")
-        if not _dsh_favorieten:
+        _dsh_today = datetime.date.today().isoformat()
+        _dsh_favorieten_actief = [
+            f for f in _dsh_favorieten
+            if str(f.get("game_date") or f.get("datum") or _dsh_today)[:10] >= _dsh_today
+        ]
+        if not _dsh_favorieten_actief:
             st.markdown('<small style="color:#a0c4ff;">ℹ️ Shortlist is leeg — voeg props toe via Analyse of Analyse Geschiedenis.</small>', unsafe_allow_html=True)
         else:
-            for _df in _dsh_favorieten[:5]:
+            for _df in _dsh_favorieten_actief[:5]:
                 _df_ev = float(_df.get("ev_score") or 0)
                 _ev_kleur = "#4ade80" if _df_ev >= 0.05 else "#facc15"
                 st.markdown(
@@ -466,8 +472,8 @@ with tab_dashboard:
                     f"</div>",
                     unsafe_allow_html=True,
                 )
-            if len(_dsh_favorieten) > 5:
-                st.caption(f"+ {len(_dsh_favorieten) - 5} meer → ga naar Shortlist tab")
+            if len(_dsh_favorieten_actief) > 5:
+                st.caption(f"+ {len(_dsh_favorieten_actief) - 5} meer → ga naar Shortlist tab")
 
         st.markdown("---")
 
