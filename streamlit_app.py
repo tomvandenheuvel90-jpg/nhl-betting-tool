@@ -106,6 +106,7 @@ from ui_components import (
 
 from scorer import ev, rating
 import db
+import screenshot_import
 
 try:
     from sports import odds_api
@@ -939,6 +940,9 @@ with tab_favorieten:
                 db.upsert_resultaat(_m_fid, _m_bet_obj, _m_uitkomst, _m_inzet)
             st.success(f"✅ '{_m_speler} — {_m_bet}' toegevoegd!")
             st.rerun()
+
+    _sc_client = anthropic.Anthropic(api_key=api_key) if ANTHROPIC_AVAILABLE and api_key else None
+    screenshot_import.render_screenshot_import("shortlist", client=_sc_client)
 
     st.markdown("---")
     _favs    = db.load_favorieten()
@@ -2108,6 +2112,9 @@ with tab_parlay:
                         help="Leeg het formulier"):
         st.session_state.parlay_form_ver += 1
         st.rerun()
+
+    _sc_client_p = anthropic.Anthropic(api_key=api_key) if ANTHROPIC_AVAILABLE and api_key else None
+    screenshot_import.render_screenshot_import("parlay", client=_sc_client_p)
 
     # ── Props uit analyse (optioneel, ingeklapt) ──────────────────────────────
     if all_props_parlay:

@@ -350,6 +350,9 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
         # Model-kalibratie velden — voor feedback loop in Bankroll tab
         "rating":            bet.get("rating", ""),
         "composite":         round(float(bet.get("composite") or 0), 4),
+        # Screenshot import velden
+        "import_method":     bet.get("import_method", ""),
+        "bookmaker":         bet.get("bookmaker", ""),
     }
     if _using_supabase:
         try:
@@ -359,7 +362,8 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
             # Nieuwe kolommen bestaan mogelijk nog niet — probeer zonder optionele kolommen
             try:
                 row_basic = {k: v for k, v in row.items()
-                             if k not in ("source_session_id", "rating", "composite", "game_date")}
+                             if k not in ("source_session_id", "rating", "composite",
+                                          "game_date", "import_method", "bookmaker")}
                 _supabase.table("favorieten").upsert(row_basic).execute()
                 return
             except Exception:
@@ -437,6 +441,9 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
         # Model-kalibratie velden — doorgegeven vanuit favoriet voor feedback loop
         "rating":            fav.get("rating", ""),
         "composite":         float(fav.get("composite") or 0),
+        # Screenshot import velden
+        "import_method":     fav.get("import_method", ""),
+        "bookmaker":         fav.get("bookmaker", ""),
     }
     if _using_supabase:
         try:
@@ -446,7 +453,8 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
             # Kolom bestaat mogelijk nog niet — probeer zonder optionele kolommen
             try:
                 row_basic = {k: v for k, v in row.items()
-                             if k not in ("source_session_id", "is_parlay", "rating", "composite")}
+                             if k not in ("source_session_id", "is_parlay", "rating",
+                                          "composite", "import_method", "bookmaker")}
                 _supabase.table("resultaten").upsert(row_basic).execute()
                 return
             except Exception:
