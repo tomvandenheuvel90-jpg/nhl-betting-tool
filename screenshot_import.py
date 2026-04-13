@@ -18,71 +18,104 @@ import streamlit as st
 IMPORT_MODEL = "claude-sonnet-4-6"
 
 _SYSTEM_PROMPT = (
-    "You are a sports betting data extraction assistant. You will receive "
-    "a screenshot from either Bet365 or BetCity (Dutch bookmaker). "
-    "Extract all bet data and return ONLY valid JSON. No explanation, "
-    "no markdown, no code blocks. Raw JSON only."
+    "You are a sports betting data extraction assistant. "
+    "Extract all bet data from the screenshot and return ONLY valid JSON. "
+    "No explanation, no markdown, no code blocks. Raw JSON only."
 )
 
-_USER_PROMPT = """Extract the bet information from this screenshot.
-This is either a Bet365 or BetCity screenshot. Key layout hints:
+# ── Basis JSON-instructie (beide bookmakers) ───────────────────────────────────
 
-BetCity shows "Weddenschap geplaatst" as confirmation header,
-uses "Ref." for reference code, shows "Inzet" for stake,
-"Uitbetaling" for payout, "BET BUILDER" label for multi-leg bets,
-legs shown with player/team name + market type in Dutch
-(e.g. "Meer dan 0.5 slagen", "Minder dan 15.5 outs")
-Bet365 shows "Bet Placed" or "Bet Confirmed", uses "Bet Receipt"
-header, shows odds per leg, reference starts with "O/",
-stake shown as currency amount
-
-Return this exact JSON structure:
+_BASE_PROMPT = """Return this exact JSON structure — fill every field you can read:
 {
-  "bookmaker": "bet365",
-  "bet_type": "single",
-  "sport": "MLB",
-  "stake": 10.0,
-  "total_odds": 2.50,
-  "potential_payout": 25.0,
+  "bookmaker": "<betcity or bet365>",
+  "bet_type": "<single | parlay | bet_builder>",
+  "sport": "<MLB | NBA | NHL | NFL | Soccer | Tennis | Other>",
+  "stake": <number>,
+  "total_odds": <number>,
+  "potential_payout": <number>,
   "currency": "EUR",
   "status": "pending",
-  "reference": "O/123456789",
+  "reference": "<reference code or null>",
   "legs": [
     {
-      "description": "Andy Pages - Meer dan 0.5 slagen",
-      "market": "Player Hits O/U",
-      "selection": "Over 0.5",
-      "line": 0.5,
-      "odds": 1.85,
-      "player": "Andy Pages",
-      "team": "Los Angeles Dodgers"
+      "description": "<full description as shown on screen>",
+      "market": "<market type in English>",
+      "selection": "<Over X | Under X | Yes | team name | etc.>",
+      "line": <number or null>,
+      "odds": <decimal odds or null>,
+      "player": "<player name or null>",
+      "team": "<team name or null>"
     }
   ],
-  "match": "Los Angeles Dodgers vs San Francisco Giants",
-  "game_date": "2026-04-13",
-  "raw_notes": null
+  "match": "<Team A vs Team B or null>",
+  "game_date": "<YYYY-MM-DD or null>",
+  "raw_notes": "<any other useful text or null>"
 }
 
-Valid values:
-- bookmaker: "bet365" | "betcity" | "unknown"
-- bet_type: "single" | "parlay" | "bet_builder"
-- sport: "MLB" | "NBA" | "NHL" | "NFL" | "Soccer" | "Tennis" | "Other"
-- currency: "EUR" | "USD" | "GBP"
-
 Rules:
-- All odds must be in DECIMAL format (European style, e.g. 1.85 not -118)
-- If a field is not visible in the screenshot, use null
-- For BetCity Dutch markets, keep the original Dutch description in 'description'
-  but translate market/selection to English
-- stake and payout should be plain numbers without currency symbol
-- If you see "Sessie" timer or "Vergunninghouder Kansspelautoriteit"
-  that confirms it is BetCity Netherlands"""
+- All odds must be DECIMAL (European format, e.g. 1.85 not -118)
+- Use null for any field not visible
+- stake and potential_payout are plain numbers, no currency symbol
+- "Meer dan X" = Over X  |  "Minder dan X" = Under X
+- If multiple separate bets appear on screen, extract the most complete/prominent one
+  (prefer a parlay/multi-leg bet over individual single bets)"""
+
+# ── BetCity-specifieke instructie ─────────────────────────────────────────────
+
+_BETCITY_PROMPT = """This is a BetCity (Dutch bookmaker) screenshot.
+
+BetCity layout hints:
+- Green "Weddenschap geplaatst" banner = bet confirmation
+- Reference code shown as "Ref. XXXX" (e.g. Ref. YL8270949631W)
+- "BET BUILDER" label = multi-leg same-game parlay
+- Legs shown in green bold text, market label in gray below each leg
+- "Inzet" = stake amount (bottom of screen)
+- "Uitbetaling" = potential payout
+- "Sessie" timer and "Vergunninghouder Kansspelautoriteit" confirm BetCity NL
+- Dutch market names to translate:
+    "Slagen +/-"              → Hits O/U
+    "Werper - Outs +/-"       → Pitcher Outs O/U
+    "Totaal aantal honken +/-" → Total Bases O/U
+    "Meer dan X slagen"       → Player Hits Over X
+    "Minder dan X outs"       → Pitcher Outs Under X
+    "Minder dan X honken"     → Total Bases Under X
+    "Reguliere Speeltijd"     → Match Result (Regular Time)
+
+""" + _BASE_PROMPT
+
+# ── Bet365-specifieke instructie ──────────────────────────────────────────────
+
+_BET365_PROMPT = """This is a Bet365 NL screenshot.
+
+Bet365 NL layout hints:
+- "MIJN BETS" heading = bet slip overview page showing placed bets
+- "DUBBEL" = 2-leg parlay, "TREBLE" = 3-leg parlay (otherwise called by leg count)
+- Reference/ID shown as "ID XXXXXXXXXX" at the bottom of each bet
+- Date format: "DD mmm JJJJ, HH:MM" (e.g. "10 apr 2026, 15:55")
+- "Cash-out nu" button may appear — ignore it
+- "Reguliere Speeltijd" = Regular Time (soccer market)
+- Each bet block shows: match name, long market description, player/selection + odds chip
+- Parlay (DUBBEL etc.): all legs shown above the summary row with total odds + inzet + uitbetaling
+- Dutch market translations:
+    "Strikeouts Geworden door Speler - Inclusief Extra Innings" → Pitcher Strikeouts O/U
+    "Meer dan X"   → Over X
+    "Minder dan X" → Under X
+    "Reguliere Speeltijd" → Match Result (Regular Time)
+
+If the screen shows multiple separate bets, extract the one with the most complete information
+(prefer a parlay/DUBBEL with a clear inzet + uitbetaling summary).
+
+""" + _BASE_PROMPT
+
+_PROMPTS = {
+    "betcity": _BETCITY_PROMPT,
+    "bet365":  _BET365_PROMPT,
+}
 
 
 # ─── Vision API ───────────────────────────────────────────────────────────────
 
 def _detect_mime(data: bytes) -> str:
-    """Detecteer MIME-type op basis van magic bytes."""
     if data[:4] == b'\x89PNG':
         return "image/png"
     if data[:3] == b'\xff\xd8\xff':
@@ -90,13 +123,15 @@ def _detect_mime(data: bytes) -> str:
     return "image/jpeg"
 
 
-def extract_bet_from_screenshot(client, image_bytes: bytes) -> dict:
+def extract_bet_from_screenshot(client, image_bytes: bytes, bookmaker: str = "betcity") -> dict:
     """
     Stuur screenshot naar Vision API en retourneer parsed JSON dict.
+    bookmaker: "betcity" of "bet365" — bepaalt welke prompt gebruikt wordt.
     Gooit ValueError als de JSON ongeldig is.
     """
-    mime = _detect_mime(image_bytes)
-    b64  = base64.standard_b64encode(image_bytes).decode()
+    mime    = _detect_mime(image_bytes)
+    b64     = base64.standard_b64encode(image_bytes).decode()
+    prompt  = _PROMPTS.get(bookmaker, _BETCITY_PROMPT)
 
     resp = client.messages.create(
         model=IMPORT_MODEL,
@@ -112,7 +147,7 @@ def extract_bet_from_screenshot(client, image_bytes: bytes) -> dict:
                 },
                 {
                     "type": "text",
-                    "text": _USER_PROMPT,
+                    "text": prompt,
                 },
             ],
         }],
@@ -135,12 +170,11 @@ def extract_bet_from_screenshot(client, image_bytes: bytes) -> dict:
 # ─── Session-state helpers ────────────────────────────────────────────────────
 
 def _sk(context: str, suffix: str) -> str:
-    """Maak een unieke session-state sleutel voor een context."""
     return f"sc_{context}_{suffix}"
 
 
 def _init_state(context: str) -> None:
-    for k, default in [("state", "idle"), ("data", None), ("error", None)]:
+    for k, default in [("state", "idle"), ("data", None), ("error", None), ("bookmaker", "betcity")]:
         key = _sk(context, k)
         if key not in st.session_state:
             st.session_state[key] = default
@@ -155,7 +189,7 @@ def render_screenshot_import(context: str, client=None) -> None:
     context : "shortlist" of "parlay"
     client  : anthropic.Anthropic instantie (of None als niet beschikbaar)
     """
-    import db  # lokale import om circulaire afhankelijkheid te voorkomen
+    import db
 
     _init_state(context)
     state = st.session_state[_sk(context, "state")]
@@ -175,6 +209,39 @@ def _render_upload(context: str, client) -> None:
             "De gegevens worden automatisch herkend — je kunt ze daarna nog aanpassen."
         )
 
+        # ── Bookmaker selector ────────────────────────────────────────────────
+        st.markdown("**Welke bookmaker?**")
+        bm_col1, bm_col2 = st.columns(2)
+
+        # Huidige selectie ophalen uit session state
+        current_bm = st.session_state[_sk(context, "bookmaker")]
+
+        betcity_selected = current_bm == "betcity"
+        bet365_selected  = current_bm == "bet365"
+
+        # Visuele stijl: geselecteerde knop heeft andere kleur via CSS-class trick
+        betcity_label = "🔵 BetCity ✓" if betcity_selected else "🔵 BetCity"
+        bet365_label  = "🟢 Bet365 ✓"  if bet365_selected  else "🟢 Bet365"
+
+        if bm_col1.button(betcity_label, key=_sk(context, "btn_betcity"),
+                          use_container_width=True,
+                          type="primary" if betcity_selected else "secondary"):
+            st.session_state[_sk(context, "bookmaker")] = "betcity"
+            st.rerun()
+
+        if bm_col2.button(bet365_label, key=_sk(context, "btn_bet365"),
+                          use_container_width=True,
+                          type="primary" if bet365_selected else "secondary"):
+            st.session_state[_sk(context, "bookmaker")] = "bet365"
+            st.rerun()
+
+        selected_bm = st.session_state[_sk(context, "bookmaker")]
+        bm_display  = "🔵 BetCity" if selected_bm == "betcity" else "🟢 Bet365"
+        st.caption(f"Geselecteerd: **{bm_display}**")
+
+        st.markdown("---")
+
+        # ── File uploader ─────────────────────────────────────────────────────
         uploaded = st.file_uploader(
             "Kies een PNG of JPG screenshot (max 10 MB)",
             type=["png", "jpg", "jpeg"],
@@ -192,7 +259,7 @@ def _render_upload(context: str, client) -> None:
             st.warning(f"⚠️ Groot bestand ({mb:.1f} MB). Verwerking kan iets langer duren.")
 
         if st.button(
-            "📸 Analyseer screenshot",
+            f"📸 Analyseer {bm_display} screenshot",
             type="primary",
             key=_sk(context, "analyze_btn"),
         ):
@@ -206,9 +273,11 @@ def _render_upload(context: str, client) -> None:
             img_bytes = uploaded.read()
             with st.spinner("Screenshot analyseren… even geduld."):
                 last_exc = None
-                for attempt in range(2):  # retry once on failure
+                for attempt in range(2):
                     try:
-                        data = extract_bet_from_screenshot(client, img_bytes)
+                        data = extract_bet_from_screenshot(client, img_bytes, bookmaker=selected_bm)
+                        # Zet bookmaker expliciet op basis van gebruikersselectie
+                        data["bookmaker"] = selected_bm
                         st.session_state[_sk(context, "data")]  = data
                         st.session_state[_sk(context, "state")] = "confirm"
                         st.session_state[_sk(context, "error")] = None
@@ -217,8 +286,7 @@ def _render_upload(context: str, client) -> None:
                     except Exception as exc:
                         last_exc = exc
                         if attempt == 0:
-                            continue  # retry
-                # Both attempts failed
+                            continue
                 st.session_state[_sk(context, "error")] = str(last_exc)
                 st.error(
                     "Kon screenshot niet uitlezen. Vul de weddenschap handmatig in."
@@ -257,7 +325,7 @@ def _render_confirmation(context: str, db) -> None:
         "Wedstrijd / Event",
         value=data.get("match") or "",
         key=_sk(context, "match"),
-        placeholder="bijv. Yankees vs Red Sox",
+        placeholder="bijv. NY Mets @ LA Dodgers",
     )
 
     # Odds / Inzet / Uitbetaling
@@ -310,7 +378,7 @@ def _render_confirmation(context: str, db) -> None:
     )
 
     # ── Legs ──────────────────────────────────────────────────────────────────
-    legs_raw   = data.get("legs") or []
+    legs_raw    = data.get("legs") or []
     edited_legs = []
 
     if legs_raw:
@@ -404,7 +472,6 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
 
     fav_id = db.make_fav_id(player, desc)
 
-    # Bet-object in hetzelfde formaat als handmatige invoer
     bet_obj = {
         # voor add_favoriet
         "player":        player,
@@ -430,7 +497,7 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         try:
             db.add_favoriet(fav_id, bet_obj, game_date=game_date.isoformat())
             db.upsert_resultaat(fav_id, bet_obj, status, stake)
-            st.success(f"✅ Weddenschap opgeslagen in Shortlist!")
+            st.success("✅ Weddenschap opgeslagen in Shortlist!")
         except Exception as exc:
             st.error(f"Fout bij opslaan: {exc}")
             return
@@ -439,7 +506,6 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         if "parlay_legs" not in st.session_state:
             st.session_state.parlay_legs = []
 
-        # Voeg elke leg toe aan de parlay builder
         legs_to_add = edited_legs if edited_legs else [{
             "description": desc,
             "player":      player,
