@@ -226,10 +226,17 @@ def render_screenshot_import(context: str, client=None) -> None:
 
 def _render_upload(context: str, client) -> None:
     with st.expander("📸 Importeer via screenshot", expanded=False):
-        st.caption(
-            "Upload een bevestigingsscherm van Bet365 of BetCity. "
-            "De gegevens worden automatisch ingevuld — je kunt ze daarna nog aanpassen."
-        )
+        if context in ("shortlist", "parlay"):
+            st.caption(
+                "Upload een bevestigingsscherm van Bet365 of BetCity. "
+                "De weddenschap wordt direct geregistreerd als geplaatste weddenschap — "
+                "je kunt de gegevens nog aanpassen voor je opslaat."
+            )
+        else:
+            st.caption(
+                "Upload een bevestigingsscherm van Bet365 of BetCity. "
+                "De gegevens worden automatisch ingevuld — je kunt ze daarna nog aanpassen."
+            )
 
         # Bookmaker knoppen
         st.markdown("**Welke bookmaker?**")
@@ -486,31 +493,13 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         _reset(context)
         return
 
-    # ── Parlay Builder: legs in session state zetten ─────────────────────────
+    # ── Parlay Builder: direct opslaan als geplaatste weddenschap ────────────
     if context == "parlay":
-        if "parlay_legs" not in st.session_state:
-            st.session_state.parlay_legs = []
-
-        legs_to_add = edited_legs if edited_legs else [{
-            "description": desc, "player": player,
-            "market": desc, "selection": "", "odds": odds,
-        }]
-        for leg in legs_to_add:
-            _leg_odds = float(leg.get("odds") or odds)
-            _player   = leg.get("player") or player
-            _market   = leg.get("market") or desc
-            _sel      = leg.get("selection") or ""
-            _bet_type = f"{_market} — {_sel}" if _sel else _market
-            st.session_state.parlay_legs.append({
-                "player":   _player,
-                "sport":    sport,
-                "bet_type": _bet_type,
-                "odds":     _leg_odds,
-                "hit_rate": None,
-            })
-
-        n = len(legs_to_add)
-        st.success(f"✅ {n} leg{'s' if n > 1 else ''} toegevoegd aan Parlay Builder!")
+        if is_multi and edited_legs:
+            _save_as_parlay(db, edited_legs, odds, stake, status, sport,
+                            game_date, match, bm, bet_obj)
+        else:
+            _save_as_single(db, player, desc, bet_obj, status, stake)
         _reset(context)
         return
 
@@ -583,8 +572,6 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
     except Exception as exc:
         st.error(f"Fout bij opslaan: {exc}")
         return
-
-    _reset_context = None  # caller resets via _reset()
 
 
 def _reset(context: str) -> None:

@@ -922,11 +922,23 @@ with tab_favorieten:
                                         value=0.0, step=0.01, format="%.3f",
                                         key="m_ev")
         _m_game_date = _mf8.date_input("Wedstrijddatum", value=datetime.date.today(), key="m_game_date")
+        _m_direct_inzet = st.checkbox(
+            "📋 Direct inzetten als geplaatste weddenschap",
+            key="m_direct_inzet", value=False,
+            help="Registreert de bet ook direct in Geplaatste Bets (status: open). "
+                 "Zelfde als op de 'Geplaatst' knop drukken na het toevoegen.",
+        )
         if st.button("➕ Toevoegen aan favorieten", key="m_add_fav",
                      disabled=not _m_speler):
             _m_bet_obj = {
+                # add_favoriet leest: player, bet_type, ev, odds, sport
                 "player":   _m_speler,
                 "bet_type": _m_bet,
+                # upsert_resultaat leest: speler, bet, ev_score, datum, odds, sport
+                "speler":   _m_speler,
+                "bet":      _m_bet,
+                "ev_score": _m_ev,
+                "datum":    _m_game_date.isoformat(),
                 "sport":    _m_sport,
                 "odds":     _m_odds,
                 "ev":       _m_ev,
@@ -936,7 +948,7 @@ with tab_favorieten:
             }
             _m_fid = db.make_fav_id(_m_speler, _m_bet)
             db.add_favoriet(_m_fid, _m_bet_obj, game_date=_m_game_date.isoformat())
-            if _m_uitkomst != "open":
+            if _m_uitkomst != "open" or _m_direct_inzet:
                 db.upsert_resultaat(_m_fid, _m_bet_obj, _m_uitkomst, _m_inzet)
             st.success(f"✅ '{_m_speler} — {_m_bet}' toegevoegd!")
             st.rerun()
@@ -2214,10 +2226,18 @@ with tab_parlay:
         else:
             st.success(f"✅ Positieve EV ({_ev_s2})")
 
+        _p_direct = st.checkbox(
+            "📋 Direct registreren als geplaatste weddenschap",
+            key="parlay_direct", value=False,
+            help="Voegt de parlay ook direct toe aan Geplaatste Bets met status 'open'. "
+                 "Je kunt de uitkomst later settleren in de Geplaatste Bets tab.",
+        )
+
         _pb1, _pb2 = st.columns(2)
         if _pb1.button("⭐ Sla parlay op", use_container_width=True, type="primary"):
+            _new_prl_id = str(uuid.uuid4())[:8]
             db.save_parlay({
-                "id":                 str(uuid.uuid4())[:8],
+                "id":                 _new_prl_id,
                 "datum":              datetime.datetime.now().isoformat(),
                 "props_json":         list(_legs),
                 "gecombineerde_odds": round(_comb_odds, 4),
@@ -2228,6 +2248,25 @@ with tab_parlay:
                 "winst_verlies":      0.0,
                 "legs_json":          {l.get("player","")+"_"+l.get("bet_type",""): "open" for l in _legs},
             })
+            if _p_direct:
+                _prl_fav_direct = {
+                    "player":        f"🎰 Parlay ({len(_legs)} legs)",
+                    "bet_type":      f"Parlay ({len(_legs)} legs)",
+                    "sport":         "Parlay",
+                    "odds":          round(_comb_odds, 4),
+                    "ev":            round(_p_ev, 6) if _p_ev is not None else 0.0,
+                    "ev_score":      round(_p_ev, 6) if _p_ev is not None else 0.0,
+                    "speler":        f"🎰 Parlay ({len(_legs)} legs)",
+                    "bet":           ", ".join(
+                        l.get("player","") or l.get("bet_type","") for l in _legs[:3]
+                    ),
+                    "datum":         datetime.datetime.now().isoformat(),
+                    "import_method": "handmatig",
+                    "bookmaker":     "",
+                    "rating":        "",
+                    "composite":     0.0,
+                }
+                db.upsert_resultaat(f"parlay_{_new_prl_id}", _prl_fav_direct, "open", float(_inzet))
             st.session_state.parlay_legs = []
             st.success("✅ Parlay opgeslagen!")
             st.rerun()
