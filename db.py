@@ -428,8 +428,8 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
     row  = {
         "id":                fav_id,
         "datum":             fav.get("datum", datetime.date.today().isoformat()),
-        "speler":            fav.get("speler", ""),
-        "bet":               fav.get("bet", ""),
+        "speler":            fav.get("speler") or fav.get("player", ""),
+        "bet":               fav.get("bet") or fav.get("bet_type", ""),
         "odds":              odds,
         "inzet":             round(inzet, 2),
         "uitkomst":          uitkomst,
