@@ -199,6 +199,7 @@ for _k, _v in [
     ("bk_view",           "7 Dagen"),
     ("bk_selected_day",   None),
     ("injuries_enabled",  False),
+    ("gp_editing",        None),
 ]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -2533,13 +2534,16 @@ with tab_geplaatst:
                             _b_icon = "✅" if _b_uit == "gewonnen" else ("❌" if _b_uit == "verloren" else "⏳")
                             _b_wl   = _b.get("winst_verlies",0)
                             _b_wl_s = f"€{_b_wl:+.2f}" if _b_uit != "open" else "—"
-                            _bc1, _bc2, _bc3, _bc4, _bc5, _bc6 = st.columns([3, 1, 1, 1, 1, 0.5])
+                            _bc1, _bc2, _bc3, _bc4, _bc5, _bc6, _bc7 = st.columns([3, 1, 1, 1, 1, 0.4, 0.4])
                             _bc1.write(f"{_b_icon} **{_b.get('speler','')}** — {_b.get('bet','')}")
                             _bc2.write(f"@ {_b.get('odds','—')}")
                             _bc3.write(f"€{_b.get('inzet',0):.2f}")
                             _bc4.write(_b_wl_s)
                             _bc5.caption(_b.get("datum",""))
-                            if _bc6.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder weddenschap"):
+                            if _bc6.button("✏️", key=f"gpedit_{_b_id}", help="Bewerk weddenschap"):
+                                st.session_state.gp_editing = _b_id
+                                st.rerun()
+                            if _bc7.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder weddenschap"):
                                 if str(_b_id).startswith("parlay_"):
                                     _orig_prl_id = str(_b_id)[len("parlay_"):]
                                     if _b.get("uitkomst") == "open":
@@ -2552,6 +2556,82 @@ with tab_geplaatst:
                                 else:
                                     db.remove_resultaat(_b_id)
                                 st.rerun()
+
+                            # ── Inline edit-formulier ──────────────────────
+                            if st.session_state.gp_editing == _b_id:
+                                _sport_opts_e = ["NHL", "NBA", "MLB", "Voetbal", "Overig", "Parlay"]
+                                _cur_sport_e  = _b.get("sport", "Overig")
+                                _sport_idx_e  = _sport_opts_e.index(_cur_sport_e) if _cur_sport_e in _sport_opts_e else 4
+                                _uit_opts_e   = ["open", "gewonnen", "verloren"]
+                                _cur_uit_e    = _b.get("uitkomst", "open")
+                                _uit_idx_e    = _uit_opts_e.index(_cur_uit_e) if _cur_uit_e in _uit_opts_e else 0
+                                try:
+                                    _cur_datum_e = datetime.date.fromisoformat(_b.get("datum","")[:10])
+                                except Exception:
+                                    _cur_datum_e = datetime.date.today()
+
+                                with st.form(key=f"gp_edit_{_b_id}"):
+                                    st.markdown("**✏️ Weddenschap wijzigen**")
+                                    _ef1, _ef2 = st.columns(2)
+                                    _e_speler = _ef1.text_input(
+                                        "Speler / Team", value=_b.get("speler",""))
+                                    _e_sport  = _ef2.selectbox(
+                                        "Sport", _sport_opts_e, index=_sport_idx_e)
+                                    _ef3, _ef4 = st.columns(2)
+                                    _e_bet    = _ef3.text_input(
+                                        "Bet omschrijving", value=_b.get("bet",""))
+                                    _e_odds   = _ef4.number_input(
+                                        "Odds", min_value=1.01, max_value=10_000.0,
+                                        value=float(_b.get("odds") or 1.5),
+                                        step=0.05, format="%.2f")
+                                    _ef5, _ef6, _ef7 = st.columns(3)
+                                    _e_inzet  = _ef5.number_input(
+                                        "Inzet (€)", min_value=0.01, max_value=100_000.0,
+                                        value=float(_b.get("inzet") or 10.0),
+                                        step=1.0, format="%.2f")
+                                    _e_uit    = _ef6.selectbox(
+                                        "Uitkomst", _uit_opts_e, index=_uit_idx_e)
+                                    _e_datum  = _ef7.date_input(
+                                        "Datum", value=_cur_datum_e)
+                                    _fcol1, _fcol2 = st.columns(2)
+                                    _save_e   = _fcol1.form_submit_button(
+                                        "💾 Opslaan", type="primary", use_container_width=True)
+                                    _cancel_e = _fcol2.form_submit_button(
+                                        "↩️ Annuleren", use_container_width=True)
+
+                                if _save_e:
+                                    _upd_fav = {
+                                        "speler":        _e_speler,
+                                        "player":        _e_speler,
+                                        "bet":           _e_bet,
+                                        "bet_type":      _e_bet,
+                                        "sport":         _e_sport,
+                                        "odds":          _e_odds,
+                                        "datum":         _e_datum.isoformat(),
+                                        "ev_score":      float(_b.get("ev_score") or 0),
+                                        "rating":        _b.get("rating", ""),
+                                        "composite":     float(_b.get("composite") or 0),
+                                        "import_method": _b.get("import_method", ""),
+                                        "bookmaker":     _b.get("bookmaker", ""),
+                                    }
+                                    db.upsert_resultaat(_b_id, _upd_fav, _e_uit, _e_inzet)
+                                    if str(_b_id).startswith("parlay_"):
+                                        _ep_id = str(_b_id)[len("parlay_"):]
+                                        _ep_wl = (round(_e_inzet * (_e_odds - 1), 2)
+                                                  if _e_uit == "gewonnen"
+                                                  else round(-_e_inzet, 2)
+                                                  if _e_uit == "verloren" else 0.0)
+                                        db.update_parlay(_ep_id, {
+                                            "inzet":              float(_e_inzet),
+                                            "gecombineerde_odds": float(_e_odds),
+                                            "uitkomst":           _e_uit,
+                                            "winst_verlies":      _ep_wl,
+                                        })
+                                    st.session_state.gp_editing = None
+                                    st.rerun()
+                                if _cancel_e:
+                                    st.session_state.gp_editing = None
+                                    st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
