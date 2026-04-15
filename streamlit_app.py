@@ -367,14 +367,20 @@ with tab_dashboard:
     _streak_val = f"{_dsh_streak_cnt}×" if _dsh_gedaan else "—"
     _streak_sub = _streak_soort if _dsh_gedaan else ""
     _streak_pos = (True if _dsh_streak_type == "gewonnen" else False) if _dsh_gedaan else None
-    _open_val   = str(len(_dsh_open))
-    _open_sub   = "open weddenschappen" if len(_dsh_open) != 1 else "open weddenschap"
-    _open_pos   = None if len(_dsh_open) == 0 else False
+    _dsh_open_te_winnen = sum(
+        float(r.get("inzet", 0)) * (float(r.get("odds", 1) or 1) - 1)
+        for r in _dsh_open
+        if r.get("inzet") is not None
+    )
+    _open_val   = f"€{_dsh_open_inzet:.0f}" if _dsh_open else "—"
+    _open_sub   = (f"{len(_dsh_open)} {'bet' if len(_dsh_open) == 1 else 'bets'} · te winnen €{_dsh_open_te_winnen:.0f}"
+                   if _dsh_open else "geen open bets")
+    _open_pos   = None
 
     _kr4, _kr5, _kr6 = st.columns(3)
     _kr4.markdown(kpi_card("🎯", "Win rate", _wr_val, _wr_sub, _wr_pos, tooltip=_wr_val), unsafe_allow_html=True)
     _kr5.markdown(kpi_card(_dsh_streak_icon, "Streak", _streak_val, _streak_sub, _streak_pos), unsafe_allow_html=True)
-    _kr6.markdown(kpi_card("⏳", "Open bets", _open_val, _open_sub, _open_pos), unsafe_allow_html=True)
+    _kr6.markdown(kpi_card("⏳", "Open inzet", _open_val, _open_sub, _open_pos), unsafe_allow_html=True)
 
     st.markdown("---")
 
