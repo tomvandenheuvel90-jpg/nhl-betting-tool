@@ -521,7 +521,7 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
 
     props_json = []
     legs_json  = {}
-    for leg in edited_legs:
+    for i, leg in enumerate(edited_legs):
         _player   = leg.get("player") or ""
         _market   = leg.get("market") or "Player Prop"
         _sel      = leg.get("selection") or ""
