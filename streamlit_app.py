@@ -2343,44 +2343,71 @@ with tab_parlay:
             ):
                 _upd_legs = dict(_prl_lj)
                 _changed  = False
+                _leg_opts = ["open", "geraakt", "gemist", "void"]
                 for _pleg in _prl_legs:
                     _lk  = str(_pleg.get("player","")) + "_" + str(_pleg.get("bet_type",""))
                     _lst = _upd_legs.get(_lk, "open")
                     _plc1, _plc2 = st.columns([3, 2])
                     _plc1.write(f"**{_pleg.get('player','')}** — {_pleg.get('bet_type','')} @ {_pleg.get('odds','—')}")
                     _nst = _plc2.selectbox(
-                        "Status", options=["open","geraakt","gemist"],
-                        index=["open","geraakt","gemist"].index(_lst) if _lst in ["open","geraakt","gemist"] else 0,
+                        "Status", options=_leg_opts,
+                        index=_leg_opts.index(_lst) if _lst in _leg_opts else 0,
                         key=f"legst_{_prl.get('id','')}_{_lk}", label_visibility="collapsed",
                     )
                     if _nst != _lst:
                         _upd_legs[_lk] = _nst
                         _changed = True
                 if _changed:
-                    db.update_parlay(_prl.get("id",""), {"legs_json": _upd_legs})
-                    # Auto-settle: als één leg gemist → gehele parlay verloren
-                    if ((_prl.get("uitkomst") or "open") == "open"
-                            and any(v == "gemist" for v in _upd_legs.values())):
+                    # Herbereken gecombineerde odds: void legs tellen niet mee
+                    _eff_odds = 1.0
+                    for _leg_item in _prl_legs:
+                        _lk_item = str(_leg_item.get("player","")) + "_" + str(_leg_item.get("bet_type",""))
+                        if _upd_legs.get(_lk_item, "open") != "void":
+                            try:
+                                _eff_odds *= float(_leg_item.get("odds") or 1.0)
+                            except Exception:
+                                pass
+                    _eff_odds = round(max(_eff_odds, 1.0), 4)
+                    _stored_odds = float(_prl.get("gecombineerde_odds", 1.0) or 1.0)
+                    _upd_parlay_fields = {"legs_json": _upd_legs}
+                    if abs(_eff_odds - _stored_odds) > 0.001:
+                        _upd_parlay_fields["gecombineerde_odds"] = _eff_odds
+                    db.update_parlay(_prl.get("id",""), _upd_parlay_fields)
+                    # Auto-settle op basis van leg-statussen (alleen als parlay nog open is)
+                    if (_prl.get("uitkomst") or "open") == "open":
                         _auto_id    = _prl.get("id","")
                         _auto_inzet = float(_prl.get("inzet", 10) or 10)
-                        _auto_odds  = float(_prl.get("gecombineerde_odds", 1.0) or 1.0)
-                        db.update_parlay(_auto_id, {
-                            "uitkomst":      "verloren",
-                            "winst_verlies": round(-_auto_inzet, 2),
-                        })
-                        _auto_fav = {
-                            "odds":      _auto_odds,
-                            "datum":     datetime.date.today().isoformat(),
-                            "speler":    f"🎰 Parlay ({len(_prl_legs)} legs)",
-                            "bet":       ", ".join(str(l.get("player","")) for l in _prl_legs[:3]) or "Parlay",
-                            "sport":     "Parlay",
-                            "ev_score":  float(_prl.get("ev_score") or 0.0),
+                        _auto_fav_base = {
+                            "odds":       _eff_odds,
+                            "datum":      datetime.date.today().isoformat(),
+                            "speler":     f"🎰 Parlay ({len(_prl_legs)} legs)",
+                            "bet":        ", ".join(str(l.get("player","")) for l in _prl_legs[:3]) or "Parlay",
+                            "sport":      "Parlay",
+                            "ev_score":   float(_prl.get("ev_score") or 0.0),
                             "props_json": _prl_legs,
                         }
-                        db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav, "verloren", _auto_inzet)
+                        # Alle leg-statussen ophalen (ook voor legs die nog niet gewijzigd zijn)
+                        _all_keys     = [str(l.get("player","")) + "_" + str(l.get("bet_type","")) for l in _prl_legs]
+                        _all_statuses = [_upd_legs.get(k, "open") for k in _all_keys]
+                        if any(s == "gemist" for s in _all_statuses):
+                            # Eén leg gemist → parlay verloren
+                            db.update_parlay(_auto_id, {"uitkomst": "verloren", "winst_verlies": round(-_auto_inzet, 2)})
+                            db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "verloren", _auto_inzet)
+                        elif all(s != "open" for s in _all_statuses) and _all_statuses:
+                            # Alle legs gesettled, geen gemist
+                            if all(s == "void" for s in _all_statuses):
+                                # Alle legs void → parlay void
+                                db.update_parlay(_auto_id, {"uitkomst": "void", "winst_verlies": 0.0})
+                                db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "void", _auto_inzet)
+                            else:
+                                # Alle legs geraakt (of mix geraakt+void) → parlay gewonnen
+                                # Uitbetaling op basis van effectieve odds (zonder void legs)
+                                _pw = round(_auto_inzet * _eff_odds - _auto_inzet, 2)
+                                db.update_parlay(_auto_id, {"uitkomst": "gewonnen", "winst_verlies": _pw})
+                                db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "gewonnen", _auto_inzet)
                     st.rerun()
 
-                _oc1, _oc2, _oc3, _oc4 = st.columns(4)
+                _oc1, _oc2, _oc3 = st.columns(3)
                 if (_prl.get("uitkomst") or "open") == "open":
                     if _oc1.button("✅ Gewonnen", key=f"pwon_{_prl.get('id','')}"):
                         _prl_id    = _prl.get("id","")
@@ -2388,42 +2415,6 @@ with tab_parlay:
                         _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
                         _pw = round(_prl_inzet * _prl_odds - _prl_inzet, 2)
                         db.update_parlay(_prl_id, {"uitkomst":"gewonnen","winst_verlies":_pw})
-                        # Sla ook op in resultaten zodat het zichtbaar is in Geplaatste Bets + Bankroll
-                        _prl_legs = _prl.get("props_json", []) or []  # was incorrectly "legs"
-                        _prl_fav  = {
-                            "odds":      _prl_odds,
-                            "datum":     datetime.date.today().isoformat(),  # settlement date, not creation date
-                            "speler":    f"🎰 Parlay ({len(_prl_legs)} legs)",
-                            "bet":       ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
-                            "sport":     "Parlay",
-                            "ev_score":  float(_prl.get("ev_score") or 0.0),
-                            "props_json": _prl_legs,  # bewaar legs voor per-sport breakdown
-                        }
-                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "gewonnen", _prl_inzet)
-                        st.rerun()
-                    if _oc2.button("❌ Verloren", key=f"plost_{_prl.get('id','')}"):
-                        _prl_id    = _prl.get("id","")
-                        _prl_inzet = _prl.get("inzet", 10)
-                        _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
-                        db.update_parlay(_prl_id, {"uitkomst":"verloren","winst_verlies":round(-_prl_inzet,2)})
-                        # Sla ook op in resultaten zodat het zichtbaar is in Geplaatste Bets + Bankroll
-                        _prl_legs = _prl.get("props_json", []) or []  # was incorrectly "legs"
-                        _prl_fav  = {
-                            "odds":      _prl_odds,
-                            "datum":     datetime.date.today().isoformat(),  # settlement date, not creation date
-                            "speler":    f"🎰 Parlay ({len(_prl_legs)} legs)",
-                            "bet":       ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
-                            "sport":     "Parlay",
-                            "ev_score":  float(_prl.get("ev_score") or 0.0),
-                            "props_json": _prl_legs,  # bewaar legs voor per-sport breakdown
-                        }
-                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "verloren", _prl_inzet)
-                        st.rerun()
-                    if _oc3.button("⚪ Void", key=f"pvoid_{_prl.get('id','')}"):
-                        _prl_id    = _prl.get("id","")
-                        _prl_inzet = _prl.get("inzet", 10)
-                        _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
-                        db.update_parlay(_prl_id, {"uitkomst":"void","winst_verlies":0.0})
                         _prl_legs = _prl.get("props_json", []) or []
                         _prl_fav  = {
                             "odds":      _prl_odds,
@@ -2434,14 +2425,31 @@ with tab_parlay:
                             "ev_score":  float(_prl.get("ev_score") or 0.0),
                             "props_json": _prl_legs,
                         }
-                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "void", _prl_inzet)
+                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "gewonnen", _prl_inzet)
+                        st.rerun()
+                    if _oc2.button("❌ Verloren", key=f"plost_{_prl.get('id','')}"):
+                        _prl_id    = _prl.get("id","")
+                        _prl_inzet = _prl.get("inzet", 10)
+                        _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
+                        db.update_parlay(_prl_id, {"uitkomst":"verloren","winst_verlies":round(-_prl_inzet,2)})
+                        _prl_legs = _prl.get("props_json", []) or []
+                        _prl_fav  = {
+                            "odds":      _prl_odds,
+                            "datum":     datetime.date.today().isoformat(),
+                            "speler":    f"🎰 Parlay ({len(_prl_legs)} legs)",
+                            "bet":       ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
+                            "sport":     "Parlay",
+                            "ev_score":  float(_prl.get("ev_score") or 0.0),
+                            "props_json": _prl_legs,
+                        }
+                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "verloren", _prl_inzet)
                         st.rerun()
                 else:
                     _wv  = _prl.get("winst_verlies", 0) or 0
                     _uit = _prl.get("uitkomst") or ""
                     _kl  = "#4ade80" if _wv > 0 else ("#a0a0c0" if _uit == "void" else "#f87171")
                     st.markdown(f"<span style='color:{_kl};font-weight:700'>Uitkomst: {_uit.upper()} · W/V: €{_wv:.2f}</span>", unsafe_allow_html=True)
-                if _oc4.button("🗑️ Verwijder", key=f"pdel_{_prl.get('id','')}"):
+                if _oc3.button("🗑️ Verwijder", key=f"pdel_{_prl.get('id','')}"):
                     db.delete_parlay(_prl.get("id",""))
                     st.rerun()
 
