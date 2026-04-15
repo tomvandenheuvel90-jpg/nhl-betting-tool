@@ -422,6 +422,8 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
         wl = round(inzet * (odds - 1), 2)
     elif uitkomst == "verloren":
         wl = round(-inzet, 2)
+    elif uitkomst == "void":
+        wl = 0.0  # inzet teruggestort, netto neutraal
     else:  # "open" — nog niet gesettled, geen P&L boeken
         wl = 0.0
     _is_parlay = str(fav_id).startswith("parlay_")

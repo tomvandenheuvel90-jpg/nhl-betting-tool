@@ -274,7 +274,7 @@ with tab_dashboard:
         _dp_uitkomst = _dp.get("uitkomst") or "open"
         _dp_datum = (
             datetime.date.today().isoformat()
-            if _dp_uitkomst in ("gewonnen", "verloren")
+            if _dp_uitkomst in ("gewonnen", "verloren", "void")
             else (_dp.get("datum") or datetime.date.today().isoformat())[:10]
         )
         _dsh_resultaten.append({
@@ -292,7 +292,7 @@ with tab_dashboard:
         })
 
     _dsh_open        = [r for r in _dsh_resultaten if r.get("uitkomst") == "open"]
-    _dsh_gedaan      = [r for r in _dsh_resultaten if r.get("uitkomst") in ("gewonnen","verloren")]
+    _dsh_gedaan      = [r for r in _dsh_resultaten if r.get("uitkomst") in ("gewonnen","verloren","void")]
     _dsh_start_bk    = float(db.get_setting("start_bankroll") or 0.0)
 
     # ── KPI berekeningen ──────────────────────────────────────────────────────
@@ -302,7 +302,9 @@ with tab_dashboard:
     _dsh_roi         = (_dsh_total_wl / _dsh_total_inzet * 100) if _dsh_total_inzet > 0 else 0.0
     _dsh_wr          = (_dsh_won / len(_dsh_gedaan) * 100) if _dsh_gedaan else 0.0
     _dsh_mutations_total = db.get_bankroll_mutations_total()
-    _dsh_huidig_saldo = (_dsh_start_bk + _dsh_mutations_total + _dsh_total_wl) if _dsh_start_bk > 0 else None
+    # Deducteer openstaande inzetten direct van het saldo (stake al gecommitteerd)
+    _dsh_open_inzet   = sum(float(r.get("inzet", 0)) for r in _dsh_open)
+    _dsh_huidig_saldo = (_dsh_start_bk + _dsh_mutations_total + _dsh_total_wl - _dsh_open_inzet) if _dsh_start_bk > 0 else None
 
     # Streak berekenen
     def _dsh_streak(results: list) -> tuple:
@@ -429,6 +431,16 @@ with tab_dashboard:
                         "winst_verlies": round(-_dop_inzet_val, 2),
                     })
                 st.rerun()
+            if _dopd.button("⚪ Void", key=f"dsh_void_{_dop_id}", use_container_width=True):
+                _dop_inzet_val = float(_dop.get("inzet", 10))
+                _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val)
+                if str(_dop_id).startswith("parlay_"):
+                    db.update_parlay(str(_dop_id)[len("parlay_"):], {
+                        "uitkomst": "void",
+                        "winst_verlies": 0.0,
+                    })
+                st.rerun()
     else:
         st.success("✅ Geen open weddenschappen — alles is up-to-date.")
 
@@ -444,7 +456,7 @@ with tab_dashboard:
             st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen afgeronde weddenschappen.</small>', unsafe_allow_html=True)
         else:
             for _dr in _dsh_recent:
-                _dr_icon = "✅" if _dr.get("uitkomst") == "gewonnen" else "❌"
+                _dr_icon = "✅" if _dr.get("uitkomst") == "gewonnen" else ("⚪" if _dr.get("uitkomst") == "void" else "❌")
                 _dr_wl   = _dr.get("winst_verlies", 0)
                 _dr_wl_s = f"+€{abs(_dr_wl):.0f}" if _dr_wl >= 0 else f"-€{abs(_dr_wl):.0f}"
                 _dr_kleur = "#4ade80" if _dr_wl >= 0 else "#f87171"
@@ -923,7 +935,7 @@ with tab_favorieten:
         _mf5, _mf6, _mf7, _mf8 = st.columns(4)
         _m_inzet   = _mf5.number_input("Inzet (€)", min_value=0.10, value=10.0,
                                          step=1.0, format="%.2f", key="m_inzet")
-        _m_uitkomst = _mf6.selectbox("Uitkomst", ["open","gewonnen","verloren"],
+        _m_uitkomst = _mf6.selectbox("Uitkomst", ["open","gewonnen","verloren","void"],
                                       key="m_uitkomst")
         _m_ev      = _mf7.number_input("EV (optioneel)", min_value=-1.0, max_value=5.0,
                                         value=0.0, step=0.01, format="%.3f",
@@ -971,7 +983,7 @@ with tab_favorieten:
         st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen favorieten. Klik op ⭐ in een prop-kaart om te bewaren of voeg er handmatig een toe.</small>', unsafe_allow_html=True)
     else:
         # Samenvatting als er afgeronde resultaten zijn
-        _done = [r for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen", "verloren")]
+        _done = [r for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen", "verloren", "void")]
         if _done:
             _fn_won   = sum(1 for r in _done if r.get("uitkomst") == "gewonnen")
             _fn_lost  = len(_done) - _fn_won
@@ -1012,7 +1024,7 @@ with tab_favorieten:
             _fid      = _fav.get("id", "")
             _res      = _res_map.get(_fid, {})
             _uitkomst = _res.get("uitkomst", "")
-            _icon     = "✅" if _uitkomst == "gewonnen" else ("❌" if _uitkomst == "verloren" else "⏳")
+            _icon     = "✅" if _uitkomst == "gewonnen" else ("❌" if _uitkomst == "verloren" else ("⚪" if _uitkomst == "void" else "⏳"))
             _ev_disp  = f"{float(_fav.get('ev_score') or 0):+.3f}"
 
             with st.expander(
@@ -1025,7 +1037,9 @@ with tab_favorieten:
                     _cap = f"Sport: {_fav.get('sport','')} · Bet365: {_fav.get('bet365_status','')}"
                     if _res:
                         _cap += f"  ·  Inzet: €{_res.get('inzet',0):.2f}"
-                        if _uitkomst in ("gewonnen", "verloren"):
+                        if _uitkomst == "void":
+                            _cap += "  ·  P&L: ⚪ Void"
+                        elif _uitkomst in ("gewonnen", "verloren"):
                             _r_wl = _res.get('winst_verlies', 0)
                             _cap += f"  ·  P&L: {'+€' if _r_wl >= 0 else '-€'}{abs(_r_wl):.2f}"
                         else:
@@ -1125,11 +1139,11 @@ with tab_bankroll:
 
     # Gesettlede parlays die (nog) niet in resultaten staan toevoegen
     _bk_settled_ids = {str(r.get("id","")) for r in _bk_all_raw
-                       if r.get("uitkomst") in ("gewonnen","verloren")}
+                       if r.get("uitkomst") in ("gewonnen","verloren","void")}
     _bk_all_settled = [r for r in _bk_all_raw
-                       if r.get("uitkomst") in ("gewonnen","verloren")]
+                       if r.get("uitkomst") in ("gewonnen","verloren","void")]
     for _bkp in _all_parlays_bk:
-        if (_bkp.get("uitkomst") or "open") not in ("gewonnen","verloren"):
+        if (_bkp.get("uitkomst") or "open") not in ("gewonnen","verloren","void"):
             continue
         _bkp_id = f"parlay_{_bkp['id']}"
         if _bkp_id in _bk_settled_ids:
@@ -1160,7 +1174,15 @@ with tab_bankroll:
     _bk_total_wl      = sum(r.get("winst_verlies",0) for r in _bk_all_settled)
     _start_bk_saved   = float(db.get_setting("start_bankroll") or 0.0)
     _mutations_total  = db.get_bankroll_mutations_total()
-    _bk_balance       = _start_bk_saved + _mutations_total + _bk_total_wl if _start_bk_saved > 0 else None
+    # Deducteer openstaande inzetten (stake al gecommitteerd, nog niet gesettled)
+    _bk_all_raw_ids   = {str(r.get("id","")) for r in _bk_all_raw}
+    _bk_open_inzet    = sum(float(r.get("inzet",0)) for r in _bk_all_raw if r.get("uitkomst") == "open")
+    _bk_open_inzet   += sum(
+        float(p.get("inzet") or 0)
+        for p in _all_parlays_bk
+        if (p.get("uitkomst") or "open") == "open" and f"parlay_{p['id']}" not in _bk_all_raw_ids
+    )
+    _bk_balance       = _start_bk_saved + _mutations_total + _bk_total_wl - _bk_open_inzet if _start_bk_saved > 0 else None
 
     # ── HEADER ───────────────────────────────────────────────────────────────
     _7d_cutoff = (_bk_today - datetime.timedelta(days=6)).isoformat()
@@ -1454,7 +1476,7 @@ with tab_bankroll:
                                               value=10.0, step=1.0, format="%.2f", key="db_inzet")
             _db_uitkomst = _db6.selectbox(
                 "Uitkomst",
-                ["open (nog niet gespeeld)", "gewonnen", "verloren"],
+                ["open (nog niet gespeeld)", "gewonnen", "verloren", "void"],
                 key="db_uitkomst",
                 help="Kies 'open' als je de bet al geplaatst hebt maar de uitkomst nog onbekend is.",
             )
@@ -1503,7 +1525,7 @@ with tab_bankroll:
             st.caption(f"{len(_openstaand)} bet(s) nog niet afgerond — klik op gewonnen of verloren om te registreren.")
             for _op in sorted(_openstaand, key=lambda r: r.get("datum",""), reverse=True):
                 _op_id = _op.get("id","")
-                _oc1, _oc2, _oc3, _oc4, _oc5 = st.columns([3, 1, 1, 1, 1])
+                _oc1, _oc2, _oc3, _oc4, _oc5, _oc6 = st.columns([3, 0.9, 0.8, 0.8, 0.8, 0.7])
                 _oc1.write(f"**{_op.get('speler','')}** — {_op.get('bet','')}  @ {_op.get('odds','—')} | €{_op.get('inzet',0):.2f}")
                 _oc2.caption(_op.get("datum","")[:10])
                 if _oc3.button("✅ Win", key=f"opwon_{_op_id}"):
@@ -1529,7 +1551,18 @@ with tab_bankroll:
                             "winst_verlies": round(-float(_op.get("inzet", 10)), 2),
                         })
                     st.rerun()
-                if _oc5.button("🗑️", key=f"opdel_{_op_id}", help="Verwijder"):
+                if _oc5.button("⚪ Void", key=f"opvoid_{_op_id}"):
+                    _op_inzet_val = float(_op.get("inzet", 10))
+                    _op_upd = dict(_op)
+                    _op_upd["uitkomst"] = "void"
+                    db.upsert_resultaat(_op_id, _op_upd, "void", _op_inzet_val)
+                    if str(_op_id).startswith("parlay_"):
+                        db.update_parlay(str(_op_id)[len("parlay_"):], {
+                            "uitkomst": "void",
+                            "winst_verlies": 0.0,
+                        })
+                    st.rerun()
+                if _oc6.button("🗑️", key=f"opdel_{_op_id}", help="Verwijder"):
                     if str(_op_id).startswith("parlay_"):
                         # Open parlay staat niet in resultaten → verwijder uit parlays tabel
                         db.delete_parlay(str(_op_id)[len("parlay_"):])
@@ -1618,7 +1651,7 @@ with tab_bankroll:
             return True
     
         _alle_res = [r for r in db.load_resultaten() if _bk_filter(r)]
-        _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren")]
+        _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren", "void")]
     
         # ── Parlays laden (één keer, hergebruikt voor per-sport en Parlay ROI) ────
         _all_parlays_bk = db.load_parlays()
@@ -1632,7 +1665,7 @@ with tab_bankroll:
             if str(r.get("id", "")).startswith("parlay_")
         }
         for _p in _all_parlays_bk:
-            if (_p.get("uitkomst") or "open") not in ("gewonnen", "verloren"):
+            if (_p.get("uitkomst") or "open") not in ("gewonnen", "verloren", "void"):
                 continue
             _p_res_id = f"parlay_{_p['id']}"
             if _p_res_id in _bk_bestaande_prl_ids:
@@ -1725,7 +1758,8 @@ with tab_bankroll:
     
             # Huidig saldo (alleen als startbankroll ingesteld)
             if _start_bk_saved > 0:
-                _huidig_saldo = _start_bk_saved + _bt_wl
+                _bk_flt_open_inzet = sum(float(r.get("inzet",0)) for r in _alle_res if r.get("uitkomst") == "open")
+                _huidig_saldo = _start_bk_saved + _mutations_total + _bt_wl - _bk_flt_open_inzet
                 _groei_pct    = (_bt_wl / _start_bk_saved * 100) if _start_bk_saved > 0 else 0.0
                 _bmc1, _bmc2, _bmc3, _bmc4 = st.columns(4)
                 _bmc1.markdown(kpi_card("🏦", "Startbankroll", f"€{_start_bk_saved:.2f}"), unsafe_allow_html=True)
@@ -2060,7 +2094,7 @@ with tab_bankroll:
         _kr1.metric("Full Kelly %",    f"{_k_full*100:.1f}%")
         _kr2.metric("Geadviseerde %",  f"{_k_advised*100:.1f}%")
         if _start_bk_saved > 0:
-            _k_euro = _start_bk_saved * _k_advised + sum(r.get("winst_verlies",0) for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen","verloren"))
+            _k_euro = _start_bk_saved * _k_advised + sum(r.get("winst_verlies",0) for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen","verloren","void"))
             _k_euro = max(0.0, _k_euro * _k_advised)
             _kr3.metric("Inzet bij huidig saldo", f"€{_k_euro:.2f}")
         if _k_full <= 0:
@@ -2340,7 +2374,7 @@ with tab_parlay:
                         db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav, "verloren", _auto_inzet)
                     st.rerun()
 
-                _oc1, _oc2, _oc3 = st.columns(3)
+                _oc1, _oc2, _oc3, _oc4 = st.columns(4)
                 if (_prl.get("uitkomst") or "open") == "open":
                     if _oc1.button("✅ Gewonnen", key=f"pwon_{_prl.get('id','')}"):
                         _prl_id    = _prl.get("id","")
@@ -2379,11 +2413,29 @@ with tab_parlay:
                         }
                         db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "verloren", _prl_inzet)
                         st.rerun()
+                    if _oc3.button("⚪ Void", key=f"pvoid_{_prl.get('id','')}"):
+                        _prl_id    = _prl.get("id","")
+                        _prl_inzet = _prl.get("inzet", 10)
+                        _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
+                        db.update_parlay(_prl_id, {"uitkomst":"void","winst_verlies":0.0})
+                        _prl_legs = _prl.get("props_json", []) or []
+                        _prl_fav  = {
+                            "odds":      _prl_odds,
+                            "datum":     datetime.date.today().isoformat(),
+                            "speler":    f"🎰 Parlay ({len(_prl_legs)} legs)",
+                            "bet":       ", ".join([str(l.get("player","")) for l in _prl_legs[:3]]) or "Parlay",
+                            "sport":     "Parlay",
+                            "ev_score":  float(_prl.get("ev_score") or 0.0),
+                            "props_json": _prl_legs,
+                        }
+                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "void", _prl_inzet)
+                        st.rerun()
                 else:
-                    _wv = _prl.get("winst_verlies", 0) or 0
-                    _kl = "#4ade80" if _wv >= 0 else "#f87171"
-                    st.markdown(f"<span style='color:{_kl};font-weight:700'>Uitkomst: {(_prl.get('uitkomst') or '').upper()} · W/V: €{_wv:.2f}</span>", unsafe_allow_html=True)
-                if _oc3.button("🗑️ Verwijder", key=f"pdel_{_prl.get('id','')}"):
+                    _wv  = _prl.get("winst_verlies", 0) or 0
+                    _uit = _prl.get("uitkomst") or ""
+                    _kl  = "#4ade80" if _wv > 0 else ("#a0a0c0" if _uit == "void" else "#f87171")
+                    st.markdown(f"<span style='color:{_kl};font-weight:700'>Uitkomst: {_uit.upper()} · W/V: €{_wv:.2f}</span>", unsafe_allow_html=True)
+                if _oc4.button("🗑️ Verwijder", key=f"pdel_{_prl.get('id','')}"):
                     db.delete_parlay(_prl.get("id",""))
                     st.rerun()
 
@@ -2438,7 +2490,7 @@ with tab_geplaatst:
         # ── Filters ──────────────────────────────────────────────────────────
         _gp_c1, _gp_c2, _gp_c3 = st.columns(3)
         _gp_sport    = _gp_c1.selectbox("Sport", ["Alles","NHL","NBA","MLB","Voetbal","Overig"], key="gp_sport")
-        _gp_uitkomst = _gp_c2.selectbox("Uitkomst", ["Alles","open","gewonnen","verloren"], key="gp_uitkomst")
+        _gp_uitkomst = _gp_c2.selectbox("Uitkomst", ["Alles","open","gewonnen","verloren","void"], key="gp_uitkomst")
         _gp_zoek     = _gp_c3.text_input("🔍 Zoek speler", key="gp_zoek", placeholder="naam...")
 
         _gp_data = _alle_res_gp
@@ -2453,7 +2505,7 @@ with tab_geplaatst:
             st.markdown('<small style="color:#a0c4ff;">ℹ️ Geen weddenschappen gevonden met deze filters.</small>', unsafe_allow_html=True)
         else:
             # ── Totaalsamenvatting ────────────────────────────────────────────
-            _gp_afgerond = [r for r in _gp_data if r.get("uitkomst") in ("gewonnen","verloren")]
+            _gp_afgerond = [r for r in _gp_data if r.get("uitkomst") in ("gewonnen","verloren","void")]
             if _gp_afgerond:
                 _gp_won   = sum(1 for r in _gp_afgerond if r.get("uitkomst") == "gewonnen")
                 _gp_inzet = sum(r.get("inzet", 0) for r in _gp_afgerond)
@@ -2505,7 +2557,7 @@ with tab_geplaatst:
             for _maand, _weken in _maand_dict.items():
                 # Maand samenvatting
                 _m_rijen    = [r for wk in _weken.values() for r in wk]
-                _m_afgerond = [r for r in _m_rijen if r.get("uitkomst") in ("gewonnen","verloren")]
+                _m_afgerond = [r for r in _m_rijen if r.get("uitkomst") in ("gewonnen","verloren","void")]
                 _m_won      = sum(1 for r in _m_afgerond if r.get("uitkomst") == "gewonnen")
                 _m_inzet    = sum(r.get("inzet",0) for r in _m_afgerond)
                 _m_wl       = sum(r.get("winst_verlies",0) for r in _m_afgerond)
@@ -2518,7 +2570,7 @@ with tab_geplaatst:
                 ):
                     for _week, _bets in _weken.items():
                         # Week samenvatting
-                        _w_afgerond = [r for r in _bets if r.get("uitkomst") in ("gewonnen","verloren")]
+                        _w_afgerond = [r for r in _bets if r.get("uitkomst") in ("gewonnen","verloren","void")]
                         _w_won      = sum(1 for r in _w_afgerond if r.get("uitkomst") == "gewonnen")
                         _w_inzet    = sum(r.get("inzet",0) for r in _w_afgerond)
                         _w_wl       = sum(r.get("winst_verlies",0) for r in _w_afgerond)
@@ -2537,9 +2589,9 @@ with tab_geplaatst:
                         for _b in _bets:
                             _b_id   = _b.get("id","")
                             _b_uit  = _b.get("uitkomst","")
-                            _b_icon = "✅" if _b_uit == "gewonnen" else ("❌" if _b_uit == "verloren" else "⏳")
+                            _b_icon = "✅" if _b_uit == "gewonnen" else ("❌" if _b_uit == "verloren" else ("⚪" if _b_uit == "void" else "⏳"))
                             _b_wl   = _b.get("winst_verlies",0)
-                            _b_wl_s = f"€{_b_wl:+.2f}" if _b_uit != "open" else "—"
+                            _b_wl_s = "⚪ Void" if _b_uit == "void" else (f"€{_b_wl:+.2f}" if _b_uit not in ("open",) else "—")
                             _b_inzet_val = _b.get("inzet")
                             _b_odds_val  = _b.get("odds")
                             if _b_inzet_val is not None and _b_odds_val is not None:
@@ -2575,7 +2627,7 @@ with tab_geplaatst:
                                 _sport_opts_e = ["NHL", "NBA", "MLB", "Voetbal", "Overig", "Parlay"]
                                 _cur_sport_e  = _b.get("sport", "Overig")
                                 _sport_idx_e  = _sport_opts_e.index(_cur_sport_e) if _cur_sport_e in _sport_opts_e else 4
-                                _uit_opts_e   = ["open", "gewonnen", "verloren"]
+                                _uit_opts_e   = ["open", "gewonnen", "verloren", "void"]
                                 _cur_uit_e    = _b.get("uitkomst", "open")
                                 _uit_idx_e    = _uit_opts_e.index(_cur_uit_e) if _cur_uit_e in _uit_opts_e else 0
                                 try:
@@ -2633,7 +2685,8 @@ with tab_geplaatst:
                                         _ep_wl = (round(_e_inzet * (_e_odds - 1), 2)
                                                   if _e_uit == "gewonnen"
                                                   else round(-_e_inzet, 2)
-                                                  if _e_uit == "verloren" else 0.0)
+                                                  if _e_uit == "verloren"
+                                                  else 0.0)  # void en open: 0
                                         db.update_parlay(_ep_id, {
                                             "inzet":              float(_e_inzet),
                                             "gecombineerde_odds": float(_e_odds),
