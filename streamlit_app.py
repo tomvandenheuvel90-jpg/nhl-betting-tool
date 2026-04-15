@@ -400,7 +400,13 @@ with tab_dashboard:
                 _dop_dag = _dop.get("datum","")[:10]
             _dopa, _dopb, _dopc, _dopd, _dope = st.columns([3, 1, 1, 1, 1])
             _dopa.write(f"**{_dop.get('speler','')}** — {_dop.get('bet','')}")
-            _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · €{_dop.get('inzet',0):.0f} · {_dop_dag}")
+            _dop_inzet_tw = _dop.get("inzet")
+            _dop_odds_tw  = _dop.get("odds")
+            if _dop_inzet_tw is not None and _dop_odds_tw is not None:
+                _dop_te_winnen_s = f"€{round(float(_dop_inzet_tw) * (float(_dop_odds_tw) - 1), 2):.2f}"
+            else:
+                _dop_te_winnen_s = "—"
+            _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · inzet €{_dop.get('inzet',0):.0f} · te winnen {_dop_te_winnen_s} · {_dop_dag}")
             if _dopb.button("✅ Win",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
                 _dop_inzet_val = float(_dop.get("inzet", 10))
                 _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
@@ -2533,9 +2539,16 @@ with tab_geplaatst:
                             _b_icon = "✅" if _b_uit == "gewonnen" else ("❌" if _b_uit == "verloren" else "⏳")
                             _b_wl   = _b.get("winst_verlies",0)
                             _b_wl_s = f"€{_b_wl:+.2f}" if _b_uit != "open" else "—"
-                            _bc1, _bc2, _bc3, _bc4, _bc5, _bc6 = st.columns([3, 1, 1, 1, 1, 0.5])
+                            _b_inzet_val = _b.get("inzet")
+                            _b_odds_val  = _b.get("odds")
+                            if _b_inzet_val is not None and _b_odds_val is not None:
+                                _b_te_winnen_s = f"€{round(float(_b_inzet_val) * (float(_b_odds_val) - 1), 2):.2f}"
+                            else:
+                                _b_te_winnen_s = "—"
+                            _bc1, _bc2, _bc2b, _bc3, _bc4, _bc5, _bc6 = st.columns([3, 0.9, 0.9, 0.9, 0.9, 0.9, 0.5])
                             _bc1.write(f"{_b_icon} **{_b.get('speler','')}** — {_b.get('bet','')}")
                             _bc2.write(f"@ {_b.get('odds','—')}")
+                            _bc2b.write(_b_te_winnen_s)
                             _bc3.write(f"€{_b.get('inzet',0):.2f}")
                             _bc4.write(_b_wl_s)
                             _bc5.caption(_b.get("datum",""))
