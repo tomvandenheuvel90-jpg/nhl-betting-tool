@@ -536,7 +536,7 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
             "odds":     _leg_odds,
             "hit_rate": None,
         })
-        legs_json[f"{_player}_{_bet_type}"] = "open"
+        legs_json[f"{i}_{_player}_{_bet_type}"] = "open"
 
     if status == "gewonnen":
         wl = round(float(stake) * (odds - 1), 2)
