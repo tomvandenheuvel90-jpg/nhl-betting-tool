@@ -1070,7 +1070,7 @@ with tab_favorieten:
                 )
                 # Gebruik de (eventueel aangepaste) odds bij opslaan
                 _fav_met_odds = {**_fav, "odds": _odds}
-                _cpl, _cw, _cl, _cp = st.columns(4)
+                _cpl, _cw, _cl, _cv, _cp = st.columns(5)
                 if _cpl.button("📋 Geplaatst", key=f"placed_{_fid}_{_idx}", use_container_width=True,
                                help="Markeer als geplaatst (uitkomst nog onbekend)"):
                     db.upsert_resultaat(_fid, _fav_met_odds, "open", _inzet)
@@ -1080,6 +1080,10 @@ with tab_favorieten:
                     st.rerun()
                 if _cl.button("❌ Verloren", key=f"lost_{_fid}_{_idx}", use_container_width=True):
                     db.upsert_resultaat(_fid, _fav_met_odds, "verloren", _inzet)
+                    st.rerun()
+                if _cv.button("⚪ Void",     key=f"void_{_fid}_{_idx}",  use_container_width=True,
+                               help="Inzet teruggestort (geen P&L)"):
+                    db.upsert_resultaat(_fid, _fav_met_odds, "void", _inzet)
                     st.rerun()
                 if _cp.button("⏳ Reset",    key=f"reset_{_fid}_{_idx}", use_container_width=True):
                     db.remove_resultaat(_fid)
@@ -2100,8 +2104,8 @@ with tab_bankroll:
         _kr1.metric("Full Kelly %",    f"{_k_full*100:.1f}%")
         _kr2.metric("Geadviseerde %",  f"{_k_advised*100:.1f}%")
         if _start_bk_saved > 0:
-            _k_euro = _start_bk_saved * _k_advised + sum(r.get("winst_verlies",0) for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen","verloren","void"))
-            _k_euro = max(0.0, _k_euro * _k_advised)
+            _k_current_bk = _start_bk_saved + sum(r.get("winst_verlies",0) for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen","verloren","void"))
+            _k_euro = max(0.0, _k_current_bk * _k_advised)
             _kr3.metric("Inzet bij huidig saldo", f"€{_k_euro:.2f}")
         if _k_full <= 0:
             _kr4.metric("EV", "❌ Negatief", help="Geen positieve verwachte waarde bij deze odds + hit rate.")

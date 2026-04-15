@@ -521,11 +521,21 @@ def save_parlay(parlay: dict) -> None:
             _supabase.table("parlays").upsert(row).execute()
             return
         except Exception as e:
-            import logging; logging.warning(f"Supabase save_parlay: {e}")
+            import logging; logging.warning(f"Supabase save_parlay (full): {e}")
+            # Retry without legs_json — kolom bestaat mogelijk nog niet in Supabase
+            try:
+                row_no_legs = {k: v for k, v in row.items() if k != "legs_json"}
+                _supabase.table("parlays").upsert(row_no_legs).execute()
+                return
+            except Exception as e2:
+                import logging; logging.warning(f"Supabase save_parlay (fallback): {e2}")
     existing = load_parlays()
     existing = [p for p in existing if p.get("id") != parlay["id"]]
     existing.insert(0, parlay)
-    _local_path("parlays.json").write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+    try:
+        _local_path("parlays.json").write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 def update_parlay(parlay_id: str, updates: dict) -> None:
@@ -539,12 +549,23 @@ def update_parlay(parlay_id: str, updates: dict) -> None:
             _supabase.table("parlays").update(row).eq("id", parlay_id).execute()
             return
         except Exception as e:
-            import logging; logging.warning(f"Supabase update_parlay: {e}")
+            import logging; logging.warning(f"Supabase update_parlay (full): {e}")
+            # Retry without legs_json — kolom bestaat mogelijk nog niet in Supabase
+            try:
+                row_no_legs = {k: v for k, v in row.items() if k != "legs_json"}
+                if row_no_legs:
+                    _supabase.table("parlays").update(row_no_legs).eq("id", parlay_id).execute()
+                return
+            except Exception as e2:
+                import logging; logging.warning(f"Supabase update_parlay (fallback): {e2}")
     existing = load_parlays()
     for p in existing:
         if p.get("id") == parlay_id:
             p.update(updates)
-    _local_path("parlays.json").write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+    try:
+        _local_path("parlays.json").write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 def delete_parlay(parlay_id: str) -> None:
