@@ -625,6 +625,174 @@ def get_probable_pitchers(home_team_name: str, away_team_name: str,
     return result
 
 
+# ─── Matchup analyse voor player props ───────────────────────────────────────
+
+def get_today_opponent_team(team_name: str) -> str:
+    """
+    Zoek de naam van het tegenteam voor een MLB team in de wedstrijd van vandaag.
+    Geeft "" als er geen wedstrijd gevonden is.
+
+    Wordt gebruikt voor pitcher props: welk team staat er tegenover?
+    """
+    if not team_name:
+        return ""
+    try:
+        games = get_today_games()
+    except Exception:
+        return ""
+
+    search = team_name.strip().lower()
+    for g in games:
+        h = g.get("home_team_name", "").lower()
+        a = g.get("away_team_name", "").lower()
+        if search in h or h in search:
+            return g.get("away_team_name", "")
+        if search in a or a in search:
+            return g.get("home_team_name", "")
+    return ""
+
+
+def get_opposing_pitcher_stats(player_team_name: str) -> dict:
+    """
+    Haal de startende werper van de TEGENSTANDER op voor een batter prop-analyse.
+
+    Stap 1: Vind de wedstrijd van vandaag voor het team van de batter.
+    Stap 2: Identificeer het tegenteam en welke kant (home/away) de batter speelt.
+    Stap 3: Haal de probable pitcher van de tegenstander op via get_probable_pitchers().
+
+    Geeft dict:
+      {pitcher_name, pitcher_era, pitcher_k9, pitcher_whip, pitcher_hits9}
+    of {} als geen wedstrijd/pitcher gevonden.
+
+    Gebruik: in enrich_bet() als opponent_stats voor hitting props (hits, RBI, runs, etc.)
+    Zo krijgt de opponent_factor in scorer.py echte pitcher-kwaliteitsdata in plaats van 0.5.
+    """
+    if not player_team_name:
+        return {}
+
+    cache_key = f"mlb_opp_pitcher_{player_team_name.strip().lower().replace(' ', '_')}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        games = get_today_games()
+    except Exception:
+        return {}
+
+    search = player_team_name.strip().lower()
+    home_name = away_name = ""
+    player_side = None
+
+    for g in games:
+        h = g.get("home_team_name", "").lower()
+        a = g.get("away_team_name", "").lower()
+        if search in h or h in search:
+            home_name   = g["home_team_name"]
+            away_name   = g["away_team_name"]
+            player_side = "home"
+            break
+        if search in a or a in search:
+            home_name   = g["home_team_name"]
+            away_name   = g["away_team_name"]
+            player_side = "away"
+            break
+
+    if not home_name or not player_side:
+        cache_set(cache_key, {}, ttl_hours=1)
+        return {}
+
+    try:
+        pitchers = get_probable_pitchers(home_name, away_name)
+    except Exception:
+        return {}
+
+    # Tegenovergestelde kant = opponent pitcher
+    opp_side    = "away" if player_side == "home" else "home"
+    opp_pitcher = pitchers.get(opp_side, {})
+
+    if not opp_pitcher:
+        cache_set(cache_key, {}, ttl_hours=1)
+        return {}
+
+    result = {
+        "pitcher_name":  opp_pitcher.get("name", "Onbekend"),
+        "pitcher_era":   float(opp_pitcher.get("era")   or 0.0),
+        "pitcher_k9":    float(opp_pitcher.get("k_per_9") or 0.0),
+        "pitcher_whip":  float(opp_pitcher.get("whip")  or 0.0),
+        "pitcher_hits9": float(opp_pitcher.get("hits_per_9") or 0.0),
+    }
+    _log.info(
+        f"[MLB] Opp pitcher voor {player_team_name}: {result['pitcher_name']} "
+        f"(ERA {result['pitcher_era']}, K/9 {result['pitcher_k9']})"
+    )
+    cache_set(cache_key, result, ttl_hours=2)
+    return result
+
+
+def get_team_strikeout_rate(team_name: str) -> dict:
+    """
+    Haal de strikeout-rate (K%) van een team ALS SLAGTEAM op.
+
+    Hoge K-rate = de lineup wordt makkelijk uitgestruck = gunstig voor pitcher K props.
+    MLB seizoensgemiddelde K-rate ligt rond de 22–23%.
+
+    Drempelwaarden voor opponent_factor in scorer.py:
+      > 26%  → 0.70 (gunstig voor pitcher)
+      > 22%  → 0.55 (neutraal)
+      ≤ 22%  → 0.36 (moeilijk — lineup maakt veel contact)
+
+    Geeft: {team_k_rate: float, team_so: int, team_pa: int} of {}.
+    """
+    if not team_name:
+        return {}
+
+    cache_key = f"mlb_team_krate_{team_name.strip().lower().replace(' ', '_')}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    team_id = _find_team_id(team_name)
+    if not team_id:
+        return {}
+
+    season = _current_season()
+    data   = _get(
+        f"{BASE}/teams/{team_id}/stats"
+        f"?stats=season&group=hitting&season={season}&sportId=1"
+    )
+
+    splits = data.get("stats", [{}])[0].get("splits", [])
+    if not splits:
+        return {}
+
+    stat = splits[0].get("stat", {})
+
+    def _i(k):
+        try:
+            return int(stat.get(k, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    so = _i("strikeOuts")
+    pa = _i("plateAppearances")
+    ab = _i("atBats")
+
+    denom = pa if pa > 0 else ab
+    if denom == 0 or so == 0:
+        return {}
+
+    k_rate = round(so / denom, 4)
+    result = {
+        "team_k_rate": k_rate,
+        "team_so":     so,
+        "team_pa":     denom,
+    }
+    _log.info(f"[MLB] Team K-rate {team_name}: {k_rate:.1%} ({so} SO / {denom} PA)")
+    cache_set(cache_key, result, ttl_hours=4)
+    return result
+
+
 # ─── Auto-props helpers ───────────────────────────────────────────────────────
 
 def get_today_games() -> list:

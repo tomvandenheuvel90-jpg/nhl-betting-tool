@@ -759,6 +759,36 @@ def enrich_bet(bet: dict, cache: dict,
                         pos_code = player.get("primaryPosition", {}).get("code", "")
                         pos_type = "pitching" if pos_code == "1" else "hitting"
                         player_stats = mlb.get_player_stats(player.get("id"), position_type=pos_type)
+
+                        # ── Matchup-analyse ──────────────────────────────────
+                        # Bepaal het team van de speler: eerst team_hint uit de bet,
+                        # daarna currentTeam van de MLB API (staat in het player-object).
+                        _mlb_team = team_hint or (
+                            (player.get("currentTeam") or {}).get("name", "")
+                        )
+                        if _mlb_team:
+                            if pos_type == "hitting":
+                                # Hitter prop (hits, RBI, runs, total bases, HR):
+                                # haal de startende werper van de TEGENSTANDER op.
+                                # Die pitcher-ERA / K9 stuurt de opponent_factor in scorer.py.
+                                try:
+                                    _opp = mlb.get_opposing_pitcher_stats(_mlb_team)
+                                    if _opp:
+                                        opponent_stats = _opp
+                                        opponent_name  = _opp.get("pitcher_name", "")
+                                except Exception as _e:
+                                    _log.warning(f"[enrich_bet] MLB opp pitcher fout: {_e}")
+                            else:
+                                # Pitcher prop (strikeouts, enz.):
+                                # haal de K-rate van het TEGENOVERSTAANDE slagteam op.
+                                # Hoge K-rate = gunstig voor de pitcher prop.
+                                try:
+                                    _opp_team = mlb.get_today_opponent_team(_mlb_team)
+                                    if _opp_team:
+                                        opponent_name  = _opp_team
+                                        opponent_stats = mlb.get_team_strikeout_rate(_opp_team)
+                                except Exception as _e:
+                                    _log.warning(f"[enrich_bet] MLB opp K-rate fout: {_e}")
             elif sport in SOCCER_COMPS:
                 # Alleen spelerdata ophalen voor player props (Goals, Assists,
                 # Shots on Target, enz.). Team-bets (1X2, BTTS, Over/Under)

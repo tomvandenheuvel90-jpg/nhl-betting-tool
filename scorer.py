@@ -262,7 +262,30 @@ def _opponent_factor(bet_type: str, opponent_stats: dict, sport: str = "NHL") ->
             else:
                 return 0.38
 
-    # NBA, MLB: te weinig defensieve data voor betrouwbare factor
+    elif sport == "MLB":
+        bt = bet_type.lower()
+
+        # ── Pitcher strikeout prop → opposing team K-rate ─────────────────
+        # Hoge K-rate van de tegenliggende lineup = gunstig voor de pitcher.
+        # MLB seizoensgemiddelde K-rate ≈ 22–23%.
+        if "strikeout" in bt or (bt.endswith(" k") and "k_9" not in bt):
+            k_rate = float(opponent_stats.get("team_k_rate") or 0.0)
+            if k_rate > 0.26:    return 0.70   # hoog K-team → makkelijk te strikeoutten
+            elif k_rate > 0.22:  return 0.55   # gemiddeld
+            elif k_rate > 0.0:   return 0.36   # laag K-team → lineup maakt veel contact
+            return 0.50                         # geen data beschikbaar
+
+        # ── Hitter props (hits, RBI, runs, total bases, HR) → pitcher ERA ──
+        # Slechte pitcher (hoge ERA) = gunstig voor de batter.
+        # MLB seizoensgemiddelde ERA ≈ 4.35.
+        pitcher_era = float(opponent_stats.get("pitcher_era") or 0.0)
+        if pitcher_era > 0.0:
+            if pitcher_era > 4.50:    return 0.68   # ruim onder gemiddeld → gunstig
+            elif pitcher_era > 3.80:  return 0.52   # iets boven gemiddeld → neutraal
+            else:                     return 0.36   # elite pitcher → moeilijk voor batters
+        return 0.50                                  # geen pitcher-data beschikbaar
+
+    # NBA: te weinig defensieve data voor betrouwbare factor
     return 0.5
 
 

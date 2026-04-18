@@ -2082,7 +2082,101 @@ with tab_bankroll:
                 _pc2.metric("Gewonnen",          f"{_p_won}/{_p_n}")
                 _pc3.metric("Totaal W/V",        f"€{_p_wv:.2f}")
                 _pc4.metric("Parlay ROI",        f"{_p_roi:.1f}%")
-    
+
+                # ── Parlay Leg Accuracy ───────────────────────────────────────────
+                # Analyseer per leg of die geraakt of gemist was, ongeacht parlay-uitkomst.
+                # Geeft een eerlijk beeld van de kwaliteit van individuele picks.
+                st.markdown("---")
+                st.markdown("#### 🎲 Parlay Leg Accuracy")
+                st.caption(
+                    "Hoeveel individuele parlay-legs waren correct, ongeacht de parlay-uitkomst. "
+                    "Geeft een eerlijker beeld van pick-kwaliteit dan alleen parlay win/loss."
+                )
+
+                def _find_leg_status(legs_dict, player, bet_type, idx):
+                    """Zoek leg-status op via exacte key, index-prefix of positie."""
+                    _exact = f"{player}_{bet_type}"
+                    if _exact in legs_dict:
+                        return legs_dict[_exact]
+                    _indexed = f"{idx}_{player}_{bet_type}"
+                    if _indexed in legs_dict:
+                        return legs_dict[_indexed]
+                    _vals = list(legs_dict.values())
+                    return _vals[idx] if idx < len(_vals) else "open"
+
+                _settled_prl = [
+                    p for p in _all_parlays_bk
+                    if (p.get("uitkomst") or "open") in ("gewonnen", "verloren")
+                ]
+
+                # Verzamel alle leg-uitkomsten (alleen geraakt/gemist)
+                _leg_records = []  # list of {"sport": str, "status": str}
+                for _pla in _settled_prl:
+                    _props_la  = _pla.get("props_json") or []
+                    _legs_la   = _pla.get("legs_json")
+                    if not _legs_la or not isinstance(_legs_la, dict):
+                        continue
+                    for _li, _prop_la in enumerate(_props_la):
+                        _st_la = _find_leg_status(
+                            _legs_la,
+                            str(_prop_la.get("player") or ""),
+                            str(_prop_la.get("bet_type") or ""),
+                            _li,
+                        )
+                        if _st_la in ("geraakt", "gemist"):
+                            _leg_records.append({
+                                "sport":  _prop_la.get("sport") or "Overig",
+                                "status": _st_la,
+                            })
+
+                if not _leg_records:
+                    st.info(
+                        "💡 Nog geen leg-uitkomsten bijgehouden. "
+                        "Markeer individuele legs als **geraakt** of **gemist** in de "
+                        "Parlay Builder tab na afloop van een wedstrijd."
+                    )
+                else:
+                    _la_n    = len(_leg_records)
+                    _la_hit  = sum(1 for r in _leg_records if r["status"] == "geraakt")
+                    _la_miss = _la_n - _la_hit
+                    _la_hr   = _la_hit / _la_n * 100 if _la_n else 0
+
+                    _lac1, _lac2, _lac3, _lac4 = st.columns(4)
+                    _lac1.metric("Legs bijgehouden", _la_n)
+                    _lac2.metric("Geraakt ✅",        _la_hit)
+                    _lac3.metric("Gemist ❌",         _la_miss)
+                    _lac4.metric("Leg Hit Rate",      f"{_la_hr:.1f}%")
+
+                    # Per sport
+                    _la_sport: dict = {}
+                    for _rec in _leg_records:
+                        _sp = _rec["sport"]
+                        _la_sport.setdefault(_sp, {"n": 0, "hit": 0})
+                        _la_sport[_sp]["n"] += 1
+                        if _rec["status"] == "geraakt":
+                            _la_sport[_sp]["hit"] += 1
+
+                    if len(_la_sport) > 1:
+                        _la_rows = [
+                            {
+                                "Sport":    _sp,
+                                "Legs":     _d["n"],
+                                "Geraakt":  _d["hit"],
+                                "Gemist":   _d["n"] - _d["hit"],
+                                "Hit Rate": f"{_d['hit']/_d['n']*100:.0f}%",
+                            }
+                            for _sp, _d in sorted(
+                                _la_sport.items(),
+                                key=lambda x: x[1]["n"],
+                                reverse=True,
+                            )
+                        ]
+                        st.dataframe(
+                            pd.DataFrame(_la_rows),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
         # ── Kelly Criterion Calculator ───────────────────────────────────────────
         st.markdown("---")
         st.markdown("#### 🧮 Kelly Criterion Calculator")
