@@ -640,14 +640,23 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
     legs_json  = {}
     for i, leg in enumerate(edited_legs):
         _player   = leg.get("player") or ""
+        _team     = leg.get("team") or ""
         _market   = leg.get("market") or "Player Prop"
         _sel      = leg.get("selection") or ""
-        _bet_type = f"{_market} — {_sel}" if _sel else _market
+        # Voorkom dubbele teamnaam bij match-niveau bets: als de selection
+        # gelijk is aan de teamnaam/speler, gebruik alleen de markt.
+        _sel_clean = (_sel or "").strip().lower()
+        _pl_clean  = (_player or "").strip().lower()
+        if _sel_clean and _pl_clean and _sel_clean == _pl_clean:
+            _bet_type = _market
+        else:
+            _bet_type = f"{_market} — {_sel}" if _sel else _market
         _raw_odds = leg.get("odds")
         _leg_odds = float(_raw_odds) if _raw_odds is not None else None
 
         props_json.append({
             "player":   _player,
+            "team":     _team,
             "sport":    sport,
             "bet_type": _bet_type,
             "odds":     _leg_odds,

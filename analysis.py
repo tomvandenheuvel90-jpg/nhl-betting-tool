@@ -719,6 +719,7 @@ def enrich_bet(bet: dict, cache: dict,
     player_stats   = {}
     opponent_stats = {}
     opponent_name  = None
+    player_team    = ""   # Team uit API-lookup; wordt teruggeschreven als team_hint leeg is
     cache_key = f"{sport}::{player_name}"
 
     if cache_key in cache:
@@ -726,6 +727,7 @@ def enrich_bet(bet: dict, cache: dict,
         player_stats   = cached.get("player_stats", {})
         opponent_name  = cached.get("opponent")
         opponent_stats = cached.get("opponent_stats", {})
+        player_team    = cached.get("player_team", "")
     else:
         try:
             if sport == "NHL":
@@ -738,6 +740,7 @@ def enrich_bet(bet: dict, cache: dict,
                     player_id, team = nhl.find_player(player_name)
                     if player_id:
                         player_stats  = nhl.get_player_stats(player_id)
+                        player_team   = team or ""
                         opponent_name = nhl.get_opponent(team) if team else None
                         if opponent_name:
                             opponent_stats = nhl.get_team_defense(opponent_name)
@@ -749,6 +752,13 @@ def enrich_bet(bet: dict, cache: dict,
                     player = nba.find_player(player_name)
                     if player:
                         player_stats = nba.get_player_stats(player["id"])
+                        # nba.find_player-dict kan team_abbreviation of team_name bevatten
+                        player_team = (
+                            player.get("team_abbreviation")
+                            or player.get("team")
+                            or player.get("team_name")
+                            or ""
+                        )
             elif sport == "MLB":
                 # Alleen spelerdata ophalen voor player props (Hits, Home Runs,
                 # Strikeouts, enz.). Moneyline / Run Line / Game Total lopen via
@@ -766,6 +776,7 @@ def enrich_bet(bet: dict, cache: dict,
                         _mlb_team = team_hint or (
                             (player.get("currentTeam") or {}).get("name", "")
                         )
+                        player_team = _mlb_team or ""
                         if _mlb_team:
                             if pos_type == "hitting":
                                 # Hitter prop (hits, RBI, runs, total bases, HR):
@@ -799,6 +810,12 @@ def enrich_bet(bet: dict, cache: dict,
                     if player:
                         player_stats   = soccer.get_player_stats(player.get("id"), player.get("team_id"), comp)
                         opponent_stats = soccer.get_team_defense(player.get("team_id")) if player.get("team_id") else {}
+                        # soccer.find_player kan team_name / team teruggeven
+                        player_team = (
+                            player.get("team_name")
+                            or player.get("team")
+                            or ""
+                        )
         except Exception as exc:
             _log.warning(f"[enrich_bet] Datafout voor {player_name}: {exc}")
 
@@ -806,6 +823,7 @@ def enrich_bet(bet: dict, cache: dict,
             "player_stats":   player_stats,
             "opponent":       opponent_name,
             "opponent_stats": opponent_stats,
+            "player_team":    player_team,
         }
 
     _raw_hr   = bet.get("hit_rate")
@@ -827,10 +845,15 @@ def enrich_bet(bet: dict, cache: dict,
     ev_score = ev(score["composite"], odds)
     rat      = rating(ev_score, score["composite"])
 
+    # Team: prefereer wat Claude Vision heeft ingevuld; anders de via de
+    # sport-API gevonden ploeg van de speler. Zo blijft de teamnaam altijd
+    # zichtbaar op de prop-kaart, ook als Linemate het niet in beeld had.
+    _resolved_team = team_hint or player_team
+
     return {
         "player":         player_name,
         "sport":          bet.get("sport", "?"),
-        "team":           team_hint,
+        "team":           _resolved_team,
         "bet_type":       bet_type,
         "odds":           odds,
         "sample":         bet.get("sample", "?"),

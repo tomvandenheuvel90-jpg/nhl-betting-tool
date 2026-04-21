@@ -42,6 +42,43 @@ def render_option_box(col, opt: dict, best: dict):
         )
 
 
+def _clean_match_bet_type(label: str, home_team: str, away_team: str) -> str:
+    """
+    Converteert een match-optie-label naar een compact markt-label zonder
+    de teamnaam. Voorkomt dubbele teamnamen in Shortlist / Geplaatste Bets
+    omdat de teamnaam al in het 'player' veld ("Team A vs Team B") zit.
+
+    Voorbeelden:
+      "🏠 Nashville Predators wint"     → "Thuis winnen"
+      "✈️ Winnipeg Jets wint"           → "Uit winnen"
+      "🔄 OT / SO"                      → "OT / SO"
+      "🤝 Gelijkspel"                   → "Gelijkspel"
+      "🏠 Edmonton Oilers -1.5 RL"      → "Thuis -1.5 RL"
+      "✈️ Toronto Maple Leafs +1.5 RL"  → "Uit +1.5 RL"
+      "🏠 LA Lakers -4.5"               → "Thuis -4.5"
+    """
+    s = str(label or "").strip()
+    # Strip leading icon
+    for _ico in ("🏠 ", "✈️ ", "🤝 ", "🔄 "):
+        if s.startswith(_ico):
+            _prefix = ("Thuis" if _ico == "🏠 " else
+                       "Uit"   if _ico == "✈️ " else "")
+            s = s[len(_ico):]
+            # Strip de teamnaam als die voorkomt aan het begin
+            if home_team and s.startswith(home_team):
+                s = s[len(home_team):].strip()
+            elif away_team and s.startswith(away_team):
+                s = s[len(away_team):].strip()
+            # "wint" → alleen richting teruggeven
+            if s.lower().startswith("wint"):
+                return f"{_prefix} winnen".strip() if _prefix else "Winnen"
+            # Overige markten: combineer richting + rest (bijv. "Thuis -1.5 RL")
+            if _prefix and s:
+                return f"{_prefix} {s}".strip()
+            return s or _prefix
+    return s
+
+
 def render_fav_button(ma: dict, sport_label: str, bet_source: str):
     """Opslaan-knop voor wedstrijd (beste optie) als favoriet."""
     best = ma.get("best")
@@ -52,7 +89,7 @@ def render_fav_button(ma: dict, sport_label: str, bet_source: str):
         "player":      f"{ma['home_team']} vs {ma['away_team']}",
         "sport":       sport_label,
         "team":        ma["home_team"][:3].upper(),
-        "bet_type":    best["label"].replace("🏠 ", "").replace("✈️ ", "").replace("🤝 ", "").replace("🔄 ", ""),
+        "bet_type":    _clean_match_bet_type(best["label"], ma["home_team"], ma["away_team"]),
         "odds":        best["odds"],
         "ev":          best["ev"],
         "rating":      best["rating"],
@@ -423,6 +460,12 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
     # ── Caption-regel ─────────────────────────────────────────────────────────
     b365_label    = bet.get("bet365", {}).get("label", "")
     caption_parts = [bet["bet_type"], bet["sport"]]
+    # Team van de speler (bijv. "EDM") — alleen tonen als aanwezig en niet al
+    # in de spelernaam zit (voorkomt "McDavid · EDM · vs TOR" bij namen als
+    # "Edmonton Oilers vs Toronto Maple Leafs").
+    _team_val = str(bet.get("team") or "").strip()
+    if _team_val and _team_val.lower() not in str(bet.get("player") or "").lower():
+        caption_parts.append(_team_val)
     if bet.get("opponent"):
         caption_parts.append(f"vs {bet['opponent']}")
     if b365_label:

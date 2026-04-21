@@ -341,6 +341,7 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
         "datum":             datum,
         "game_date":         game_date or datum,  # datum wedstrijd; default = vandaag
         "speler":            bet.get("player", ""),
+        "team":              bet.get("team", ""),   # team van speler/bet, voor display in Shortlist
         "bet":               bet.get("bet_type", ""),
         "odds":              round(float(bet.get("odds", 0)), 2),
         "ev_score":          round(float(bet.get("ev", 0)), 4),
@@ -363,7 +364,8 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
             try:
                 row_basic = {k: v for k, v in row.items()
                              if k not in ("source_session_id", "rating", "composite",
-                                          "game_date", "import_method", "bookmaker")}
+                                          "game_date", "import_method", "bookmaker",
+                                          "team")}
                 _supabase.table("favorieten").upsert(row_basic).execute()
                 return
             except Exception:
@@ -427,10 +429,30 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
     else:  # "open" — nog niet gesettled, geen P&L boeken
         wl = 0.0
     _is_parlay = str(fav_id).startswith("parlay_")
+
+    # ── Datum bepalen ─────────────────────────────────────────────────────────
+    # Bij een UPDATE (rij bestaat al, bijv. status gaat van open → gewonnen):
+    # behoud de oorspronkelijke placement-datum.
+    # Bij een NIEUWE rij: gebruik de meegegeven datum (uit bijv. screenshot
+    # upload, waar de gebruiker de wedstrijddatum invult), anders vandaag.
+    _existing_datum = ""
+    try:
+        _existing_datum = next(
+            (r.get("datum", "") for r in load_resultaten() if r.get("id") == fav_id),
+            "",
+        )
+    except Exception:
+        pass
+    if _existing_datum:
+        _datum_val = _existing_datum
+    else:
+        _datum_val = fav.get("datum") or datetime.date.today().isoformat()
+
     row  = {
         "id":                fav_id,
-        "datum":             fav.get("datum", datetime.date.today().isoformat()),
+        "datum":             _datum_val,
         "speler":            fav.get("speler") or fav.get("player", ""),
+        "team":              fav.get("team", ""),   # team van speler/bet
         "bet":               fav.get("bet") or fav.get("bet_type", ""),
         "odds":              odds,
         "inzet":             round(inzet, 2),
@@ -456,7 +478,8 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
             try:
                 row_basic = {k: v for k, v in row.items()
                              if k not in ("source_session_id", "is_parlay", "rating",
-                                          "composite", "import_method", "bookmaker")}
+                                          "composite", "import_method", "bookmaker",
+                                          "team")}
                 _supabase.table("resultaten").upsert(row_basic).execute()
                 return
             except Exception:

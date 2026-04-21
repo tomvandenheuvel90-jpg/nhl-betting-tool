@@ -1068,8 +1068,14 @@ with tab_favorieten:
                     "📊 Odds", min_value=1.01, value=_odds_default,
                     step=0.05, format="%.2f", key=f"odds_{_fid}_{_idx}",
                 )
-                # Gebruik de (eventueel aangepaste) odds bij opslaan
-                _fav_met_odds = {**_fav, "odds": _odds}
+                # Gebruik de (eventueel aangepaste) odds bij opslaan.
+                # Overschrijf _fav["datum"] met vandaag — dat veld is de datum
+                # waarop de favoriet aan de Shortlist werd toegevoegd (mogelijk
+                # weken/maanden geleden) en mag niet dienst doen als placement-
+                # datum. upsert_resultaat() behoudt vervolgens automatisch de
+                # placement-datum bij een status-update (open → gewonnen).
+                _fav_met_odds = {**_fav, "odds": _odds,
+                                 "datum": datetime.date.today().isoformat()}
                 _cpl, _cw, _cl, _cv, _cp = st.columns(5)
                 if _cpl.button("📋 Geplaatst", key=f"placed_{_fid}_{_idx}", use_container_width=True,
                                help="Markeer als geplaatst (uitkomst nog onbekend)"):
@@ -2569,6 +2575,11 @@ with tab_geplaatst:
 
     _alle_res_gp = db.load_resultaten()
 
+    # Laad alle parlays één keer, zodat we per parlay-rij de legs kunnen tonen
+    # in een expander. Map op de *resultaten*-id (= "parlay_<orig>").
+    _gp_all_parlays    = db.load_parlays()
+    _gp_parlays_by_rid = {f"parlay_{p['id']}": p for p in _gp_all_parlays}
+
     # ── Open en ontbrekende parlays toevoegen ─────────────────────────────────
     # Open parlays staan nooit in resultaten; gesettlede parlays die vóór de
     # settlement-fix zijn opgeslagen kunnen ook ontbreken. Beide gevallen worden
@@ -2577,7 +2588,7 @@ with tab_geplaatst:
         r.get("id", "") for r in _alle_res_gp
         if str(r.get("id", "")).startswith("parlay_")
     }
-    for _gpp in db.load_parlays():
+    for _gpp in _gp_all_parlays:
         _gpp_res_id = f"parlay_{_gpp['id']}"
         if _gpp_res_id in _gp_bestaande_parlay_ids:
             continue  # al aanwezig in resultaten, niet dubbel tellen
@@ -2586,7 +2597,7 @@ with tab_geplaatst:
             "id":            _gpp_res_id,
             "datum":         (_gpp.get("datum") or datetime.date.today().isoformat())[:10],
             "speler":        f"🎰 Parlay ({len(_gpp_legs)} legs)",
-            "bet":           ", ".join(str(l.get("player", "")) for l in _gpp_legs[:3]) or "Parlay",
+            "bet":           f"{len(_gpp_legs)}-leg parlay",
             "sport":         "Parlay",
             "odds":          float(_gpp.get("gecombineerde_odds") or 1.0),
             "inzet":         float(_gpp.get("inzet") or 0),
@@ -2711,7 +2722,23 @@ with tab_geplaatst:
                             else:
                                 _b_te_winnen_s = "—"
                             _bc1, _bc2, _bc2b, _bc3, _bc4, _bc5, _bc6, _bc7 = st.columns([3, 0.85, 0.85, 0.85, 0.85, 0.85, 0.4, 0.4])
-                            _bc1.write(f"{_b_icon} **{_b.get('speler','')}** — {_b.get('bet','')}")
+                            # Hoofdtitel: speler + (voor niet-parlays) bet-omschrijving.
+                            # Voor parlays laten we de legs in de expander eronder zien.
+                            _b_is_parlay = str(_b_id).startswith("parlay_")
+                            # Team alleen tonen als het niet al in de speler-/bet-tekst zit
+                            _b_team = str(_b.get("team") or "").strip()
+                            _speler_disp = str(_b.get('speler','') or '')
+                            _bet_disp    = str(_b.get('bet','') or '')
+                            _team_suffix = ""
+                            if (_b_team
+                                and not _b_is_parlay
+                                and _b_team.lower() not in _speler_disp.lower()
+                                and _b_team.lower() not in _bet_disp.lower()):
+                                _team_suffix = f"  ·  {_b_team}"
+                            if _b_is_parlay:
+                                _bc1.write(f"{_b_icon} **{_speler_disp}**{_team_suffix}")
+                            else:
+                                _bc1.write(f"{_b_icon} **{_speler_disp}** — {_bet_disp}{_team_suffix}")
                             _bc2.write(f"@ {_b.get('odds','—')}")
                             _bc2b.write(_b_te_winnen_s)
                             _bc3.write(f"€{_b.get('inzet',0):.2f}")
@@ -2721,7 +2748,7 @@ with tab_geplaatst:
                                 st.session_state.gp_editing = _b_id
                                 st.rerun()
                             if _bc7.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder weddenschap"):
-                                if str(_b_id).startswith("parlay_"):
+                                if _b_is_parlay:
                                     _orig_prl_id = str(_b_id)[len("parlay_"):]
                                     if _b.get("uitkomst") == "open":
                                         # Open parlay staat niet in resultaten → verwijder uit parlays tabel
@@ -2733,6 +2760,58 @@ with tab_geplaatst:
                                 else:
                                     db.remove_resultaat(_b_id)
                                 st.rerun()
+
+                            # ── Parlay legs: uitklapbaar per parlay-rij ────
+                            if _b_is_parlay:
+                                _parlay_obj  = _gp_parlays_by_rid.get(_b_id)
+                                _parlay_legs = (_parlay_obj or {}).get("props_json") or []
+                                _leg_status  = (_parlay_obj or {}).get("legs_json") or {}
+                                if _parlay_legs:
+                                    _exp_label = (
+                                        f"🎰 {len(_parlay_legs)} legs"
+                                        f"  ·  gecomb. odds {_b.get('odds','—')}"
+                                    )
+                                    with st.expander(_exp_label, expanded=False):
+                                        for _li, _lg in enumerate(_parlay_legs):
+                                            _lg_player = str(_lg.get("player") or "")
+                                            _lg_team   = str(_lg.get("team") or "")
+                                            _lg_bt     = str(_lg.get("bet_type") or "")
+                                            _lg_odds   = _lg.get("odds")
+                                            _lg_odds_s = (f"@ {float(_lg_odds):.2f}"
+                                                          if _lg_odds is not None else "@ —")
+                                            # Status per leg: sleutel-conventies in de app
+                                            # wisselen ("player_bettype" en "i_player_bettype").
+                                            _lg_st = (
+                                                _leg_status.get(f"{_li}_{_lg_player}_{_lg_bt}")
+                                                or _leg_status.get(f"{_lg_player}_{_lg_bt}")
+                                                or "open"
+                                            )
+                                            _lg_ico = ("✅" if _lg_st == "geraakt"
+                                                       else "❌" if _lg_st == "gemist"
+                                                       else "⚪" if _lg_st == "void"
+                                                       else "⏳")
+                                            # Team tonen als het niet al in speler/bet-type voorkomt
+                                            _lg_team_suffix = ""
+                                            if (_lg_team
+                                                and _lg_team.lower() not in _lg_player.lower()
+                                                and _lg_team.lower() not in _lg_bt.lower()):
+                                                _lg_team_suffix = f"  ·  {_lg_team}"
+                                            st.markdown(
+                                                f"- {_lg_ico} **{_lg_player or '—'}** — "
+                                                f"{_lg_bt or '—'}  {_lg_odds_s}"
+                                                f"{_lg_team_suffix}"
+                                            )
+                                        _hk = _parlay_obj.get("hit_kans") if _parlay_obj else None
+                                        _ev = _parlay_obj.get("ev_score") if _parlay_obj else None
+                                        _foot = []
+                                        if _hk is not None:
+                                            _foot.append(f"Hit kans: {float(_hk)*100:.1f}%")
+                                        if _ev is not None:
+                                            _foot.append(f"EV: {float(_ev):+.3f}")
+                                        if _foot:
+                                            st.caption("  ·  ".join(_foot))
+                                else:
+                                    st.caption("ℹ️ Geen leg-details beschikbaar voor deze parlay.")
 
                             # ── Inline edit-formulier ──────────────────────
                             if st.session_state.gp_editing == _b_id:
