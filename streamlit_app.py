@@ -123,7 +123,29 @@ except ImportError:
 
 st.markdown(APP_CSS, unsafe_allow_html=True)
 
-# ─── Secrets ophalen ──────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _team_caption_suffix(bet: dict) -> str:
+    """
+    Geeft '  ·  Utah Hockey Club' terug als het team-veld van de bet zinvol is om
+    te tonen in een caption-regel. Anders een lege string. Zinvol betekent:
+      - niet leeg
+      - niet al in de spelernaam/bet-tekst te vinden (voorkomt duplicatie)
+      - geen match-string (bevat geen ' vs ', ' - ', ' / ', ' @ ')
+    """
+    _team = str(bet.get("team") or "").strip()
+    if not _team:
+        return ""
+    _tl = _team.lower()
+    _sp = str(bet.get("speler") or bet.get("player") or "").lower()
+    _bt = str(bet.get("bet") or bet.get("bet_type") or "").lower()
+    if _tl in _sp or _tl in _bt:
+        return ""
+    for _sep in (" vs ", " v ", " - ", " / ", " @ "):
+        if _sep in _tl:
+            return ""
+    return f"  ·  {_team}"
+
 
 def _get_secret(key: str, default: str = "") -> str:
     try:
@@ -415,7 +437,7 @@ with tab_dashboard:
                 _dop_te_winnen_s = f"€{round(float(_dop_inzet_tw) * (float(_dop_odds_tw) - 1), 2):.2f}"
             else:
                 _dop_te_winnen_s = "—"
-            _dopa.caption(f"{_dop.get('sport','')} · @ {_dop.get('odds','—')} · inzet €{_dop.get('inzet',0):.0f} · te winnen {_dop_te_winnen_s} · {_dop_dag}")
+            _dopa.caption(f"{_dop.get('sport','')}{_team_caption_suffix(_dop)} · @ {_dop.get('odds','—')} · inzet €{_dop.get('inzet',0):.0f} · te winnen {_dop_te_winnen_s} · {_dop_dag}")
             if _dopb.button("✅ Win",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
                 _dop_inzet_val = float(_dop.get("inzet", 10))
                 _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
@@ -938,6 +960,8 @@ with tab_favorieten:
         _m_bet_det = st.text_input("Details", key="m_bet_det",
                                     placeholder="bijv. Anytime Goal Scorer, Over 2.5 goals, Colorado Avalanche to win")
         _m_bet     = f"{_m_bet_cat} — {_m_bet_det.strip()}" if _m_bet_det.strip() else _m_bet_cat
+        _m_team    = st.text_input("Team (optioneel)", key="m_team",
+                                    placeholder="bijv. Utah Hockey Club — de ploeg van de speler")
         _mf5, _mf6, _mf7, _mf8 = st.columns(4)
         _m_inzet   = _mf5.number_input("Inzet (€)", min_value=0.10, value=10.0,
                                          step=1.0, format="%.2f", key="m_inzet")
@@ -967,7 +991,7 @@ with tab_favorieten:
                 "sport":    _m_sport,
                 "odds":     _m_odds,
                 "ev":       _m_ev,
-                "team":     "",
+                "team":     (_m_team or "").strip(),
                 "bet365":   {},
                 "source":   "handmatig",
             }
@@ -1040,7 +1064,7 @@ with tab_favorieten:
             ):
                 _ci, _cd = st.columns([4, 1])
                 with _ci:
-                    _cap = f"Sport: {_fav.get('sport','')} · Bet365: {_fav.get('bet365_status','')}"
+                    _cap = f"Sport: {_fav.get('sport','')}{_team_caption_suffix(_fav)} · Bet365: {_fav.get('bet365_status','')}"
                     if _res:
                         _cap += f"  ·  Inzet: €{_res.get('inzet',0):.2f}"
                         if _uitkomst == "void":
@@ -2725,16 +2749,10 @@ with tab_geplaatst:
                             # Hoofdtitel: speler + (voor niet-parlays) bet-omschrijving.
                             # Voor parlays laten we de legs in de expander eronder zien.
                             _b_is_parlay = str(_b_id).startswith("parlay_")
-                            # Team alleen tonen als het niet al in de speler-/bet-tekst zit
-                            _b_team = str(_b.get("team") or "").strip()
                             _speler_disp = str(_b.get('speler','') or '')
                             _bet_disp    = str(_b.get('bet','') or '')
-                            _team_suffix = ""
-                            if (_b_team
-                                and not _b_is_parlay
-                                and _b_team.lower() not in _speler_disp.lower()
-                                and _b_team.lower() not in _bet_disp.lower()):
-                                _team_suffix = f"  ·  {_b_team}"
+                            # Team-suffix via de centrale helper (parlay altijd leeg)
+                            _team_suffix = "" if _b_is_parlay else _team_caption_suffix(_b)
                             if _b_is_parlay:
                                 _bc1.write(f"{_b_icon} **{_speler_disp}**{_team_suffix}")
                             else:

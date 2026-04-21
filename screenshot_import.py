@@ -565,6 +565,15 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         desc   = match or "Screenshot import"
         player = match or "—"
 
+    # Team voor bet_obj:
+    #  - single bet  → team van de enige leg (Claude Vision extraheert dit uit het screenshot)
+    #  - parlay/multi → leeg (legs hebben elk hun eigen team, zie props_json)
+    #  - géén legs   → leeg (geen betrouwbare teambron; match-string is géén team)
+    if edited_legs and len(edited_legs) == 1:
+        _bet_team = (edited_legs[0].get("team") or "").strip()
+    else:
+        _bet_team = ""
+
     # Gedeeld bet-object (voor add_favoriet / upsert_resultaat)
     bet_obj = {
         "player":        player,
@@ -572,7 +581,7 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         "sport":         sport,
         "odds":          round(odds, 2),
         "ev":            0.0,
-        "team":          match or "",
+        "team":          _bet_team,
         "bet365":        {},
         "import_method": "screenshot",
         "bookmaker":     bm,
