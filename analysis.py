@@ -700,6 +700,239 @@ def _is_team_bet(player_name: str, bet_type: str,
 
 # ─── Bet verrijken ────────────────────────────────────────────────────────────
 
+# ─── Team-afkortingen ─────────────────────────────────────────────────────────
+# Hardcoded mapping full-name → afkorting, gebruikt door _abbreviate_team().
+# Keys zijn lowercase, trimmed. Zo krijgen we overal compacte tags (BUF, LAL,
+# MCI) i.p.v. lange namen als 'Buffalo Sabres' in captions.
+_TEAM_ABBREV_BY_NAME = {
+    # ─── MLB (30) ─────────────────────────────────────────────────────────
+    "arizona diamondbacks": "ARI",
+    "atlanta braves":       "ATL",
+    "baltimore orioles":    "BAL",
+    "boston red sox":       "BOS",
+    "chicago cubs":         "CHC",
+    "chicago white sox":    "CWS",
+    "cincinnati reds":      "CIN",
+    "cleveland guardians":  "CLE",
+    "colorado rockies":     "COL",
+    "detroit tigers":       "DET",
+    "houston astros":       "HOU",
+    "kansas city royals":   "KC",
+    "los angeles angels":   "LAA",
+    "los angeles dodgers":  "LAD",
+    "miami marlins":        "MIA",
+    "milwaukee brewers":    "MIL",
+    "minnesota twins":      "MIN",
+    "new york mets":        "NYM",
+    "new york yankees":     "NYY",
+    "oakland athletics":    "OAK",
+    "athletics":            "OAK",
+    "philadelphia phillies":"PHI",
+    "pittsburgh pirates":   "PIT",
+    "san diego padres":     "SD",
+    "san francisco giants": "SF",
+    "seattle mariners":     "SEA",
+    "st. louis cardinals":  "STL",
+    "st louis cardinals":   "STL",
+    "tampa bay rays":       "TB",
+    "texas rangers":        "TEX",
+    "toronto blue jays":    "TOR",
+    "washington nationals": "WSH",
+    # ─── NBA (30) ─────────────────────────────────────────────────────────
+    "atlanta hawks":            "ATL",
+    "boston celtics":           "BOS",
+    "brooklyn nets":            "BKN",
+    "charlotte hornets":        "CHA",
+    "chicago bulls":            "CHI",
+    "cleveland cavaliers":      "CLE",
+    "dallas mavericks":         "DAL",
+    "denver nuggets":           "DEN",
+    "detroit pistons":          "DET",
+    "golden state warriors":    "GSW",
+    "houston rockets":          "HOU",
+    "indiana pacers":           "IND",
+    "los angeles clippers":     "LAC",
+    "la clippers":              "LAC",
+    "los angeles lakers":       "LAL",
+    "memphis grizzlies":        "MEM",
+    "miami heat":               "MIA",
+    "milwaukee bucks":          "MIL",
+    "minnesota timberwolves":   "MIN",
+    "new orleans pelicans":     "NOP",
+    "new york knicks":          "NYK",
+    "oklahoma city thunder":    "OKC",
+    "orlando magic":            "ORL",
+    "philadelphia 76ers":       "PHI",
+    "phoenix suns":             "PHX",
+    "portland trail blazers":   "POR",
+    "sacramento kings":         "SAC",
+    "san antonio spurs":        "SAS",
+    "toronto raptors":          "TOR",
+    "utah jazz":                "UTA",
+    "washington wizards":       "WAS",
+    # ─── Soccer (top Europese clubs) ──────────────────────────────────────
+    # Premier League
+    "arsenal":                  "ARS",
+    "arsenal fc":               "ARS",
+    "aston villa":              "AVL",
+    "aston villa fc":           "AVL",
+    "afc bournemouth":          "BOU",
+    "bournemouth":              "BOU",
+    "brentford":                "BRE",
+    "brentford fc":             "BRE",
+    "brighton & hove albion":   "BHA",
+    "brighton hove albion":     "BHA",
+    "brighton":                 "BHA",
+    "chelsea":                  "CHE",
+    "chelsea fc":               "CHE",
+    "crystal palace":           "CRY",
+    "everton":                  "EVE",
+    "everton fc":               "EVE",
+    "fulham":                   "FUL",
+    "fulham fc":                "FUL",
+    "liverpool":                "LIV",
+    "liverpool fc":             "LIV",
+    "manchester city":          "MCI",
+    "manchester city fc":       "MCI",
+    "manchester united":        "MUN",
+    "manchester united fc":     "MUN",
+    "newcastle united":         "NEW",
+    "newcastle united fc":      "NEW",
+    "nottingham forest":        "NFO",
+    "tottenham":                "TOT",
+    "tottenham hotspur":        "TOT",
+    "west ham":                 "WHU",
+    "west ham united":          "WHU",
+    "wolverhampton wanderers":  "WOL",
+    "wolves":                   "WOL",
+    # La Liga
+    "real madrid":              "RMA",
+    "real madrid cf":           "RMA",
+    "fc barcelona":             "BAR",
+    "barcelona":                "BAR",
+    "atletico madrid":          "ATM",
+    "club atlético de madrid":  "ATM",
+    "sevilla":                  "SEV",
+    "sevilla fc":               "SEV",
+    "real sociedad":            "RSO",
+    "villarreal":               "VIL",
+    "villarreal cf":            "VIL",
+    "valencia":                 "VAL",
+    "valencia cf":              "VAL",
+    "athletic bilbao":          "ATH",
+    "athletic club":            "ATH",
+    # Bundesliga
+    "bayern münchen":           "BAY",
+    "bayern munich":            "BAY",
+    "fc bayern münchen":        "BAY",
+    "borussia dortmund":        "BVB",
+    "rb leipzig":               "RBL",
+    "bayer leverkusen":         "LEV",
+    "bayer 04 leverkusen":      "LEV",
+    "eintracht frankfurt":      "SGE",
+    # Serie A
+    "inter milan":              "INT",
+    "internazionale":           "INT",
+    "fc internazionale milano": "INT",
+    "ac milan":                 "MIL",
+    "juventus":                 "JUV",
+    "juventus fc":              "JUV",
+    "napoli":                   "NAP",
+    "ssc napoli":               "NAP",
+    "as roma":                  "ROM",
+    "roma":                     "ROM",
+    "lazio":                    "LAZ",
+    # Ligue 1
+    "paris saint-germain":      "PSG",
+    "paris saint-germain fc":   "PSG",
+    "olympique de marseille":   "OM",
+    "marseille":                "OM",
+    "olympique lyonnais":       "OL",
+    "lyon":                     "OL",
+    # Eredivisie
+    "ajax":                     "AJA",
+    "afc ajax":                 "AJA",
+    "psv":                      "PSV",
+    "psv eindhoven":             "PSV",
+    "feyenoord":                "FEY",
+    "feyenoord rotterdam":      "FEY",
+    "az":                        "AZ",
+    "az alkmaar":               "AZ",
+}
+
+
+def _abbreviate_team(name: str) -> str:
+    """
+    Zet een volledige teamnaam om naar een compacte afkorting (2-4 tekens).
+    Gebruikt eerst de hardcoded mapping; valt bij onbekende teams terug op
+    een heuristiek (eerste letter van elk woord voor multi-word namen, anders
+    de eerste drie letters). Lege invoer → lege output.
+    """
+    name = (name or "").strip()
+    if not name:
+        return ""
+    key = name.lower()
+    if key in _TEAM_ABBREV_BY_NAME:
+        return _TEAM_ABBREV_BY_NAME[key]
+    # Onbekend: heuristiek
+    words = [w for w in re.split(r"[\s\-]+", name) if w]
+    words = [w for w in words if w.lower() not in ("fc", "cf", "afc", "sc", "ac", "the")]
+    if len(words) >= 2:
+        return "".join(w[0] for w in words[:4]).upper()
+    if words:
+        return words[0][:3].upper()
+    return name[:3].upper()
+
+
+def lookup_player_team(player_name: str, sport: str) -> str:
+    """
+    Licht-gewicht team-lookup via de sport-API modules. Retourneert een compacte
+    afkorting (bijv. 'BUF', 'LAL', 'MCI') i.p.v. de volledige naam.
+    Gebruikt door screenshot-import wanneer de bookmaker geen team per leg toont
+    (bijv. Bet365 bet builder). Retourneert een lege string bij onbekende speler
+    of niet-ondersteunde sport.
+    """
+    if not player_name or not sport:
+        return ""
+    sp = str(sport or "").upper().strip()
+    try:
+        if sp == "NHL":
+            # nhl.find_player → (player_id, team_abbrev) of (None, None)
+            # NHL geeft al een afkorting ('BUF', 'UTA') — geen conversie nodig.
+            _pid, _team = nhl.find_player(player_name)
+            return str(_team or "")
+        if sp == "NBA":
+            player = nba.find_player(player_name)
+            if player:
+                _raw = str(
+                    player.get("team_abbreviation")
+                    or player.get("team")
+                    or player.get("team_name")
+                    or ""
+                )
+                # team_abbreviation is al kort; anders via mapping/heuristiek.
+                return _raw if len(_raw) <= 4 else _abbreviate_team(_raw)
+        if sp == "MLB":
+            player = mlb.find_player(player_name)
+            if player:
+                _ct = player.get("currentTeam") or {}
+                _raw = str(_ct.get("abbreviation") or _ct.get("name", "") or "")
+                return _raw if 0 < len(_raw) <= 4 else _abbreviate_team(_raw)
+        if sp in ("SOCCER", "VOETBAL"):
+            player = soccer.find_player(player_name)
+            if player:
+                _raw = str(
+                    player.get("tla")
+                    or player.get("team_name")
+                    or player.get("team")
+                    or ""
+                )
+                return _raw if 0 < len(_raw) <= 4 else _abbreviate_team(_raw)
+    except Exception:
+        return ""
+    return ""
+
+
 def enrich_bet(bet: dict, cache: dict,
                linemate_weight: float = 0.35,
                season_weight:   float = 0.35) -> dict:

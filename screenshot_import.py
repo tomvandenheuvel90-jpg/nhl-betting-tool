@@ -15,6 +15,12 @@ import datetime
 
 import streamlit as st
 
+try:
+    from analysis import lookup_player_team
+except Exception:  # defensief — bij import-fouten functioneert de rest nog
+    def lookup_player_team(_p: str, _s: str) -> str:
+        return ""
+
 IMPORT_MODEL = "claude-sonnet-4-6"
 
 _SYSTEM_PROMPT = (
@@ -566,11 +572,17 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         player = match or "—"
 
     # Team voor bet_obj:
-    #  - single bet  → team van de enige leg (Claude Vision extraheert dit uit het screenshot)
+    #  - single bet  → team van de enige leg (Claude Vision extraheert dit als
+    #                  het screenshot het toont). Als het leeg is én we hebben
+    #                  speler+sport, proberen we een API-lookup (NHL/NBA/MLB/Soccer).
     #  - parlay/multi → leeg (legs hebben elk hun eigen team, zie props_json)
     #  - géén legs   → leeg (geen betrouwbare teambron; match-string is géén team)
     if edited_legs and len(edited_legs) == 1:
         _bet_team = (edited_legs[0].get("team") or "").strip()
+        if not _bet_team:
+            _lp = (edited_legs[0].get("player") or "").strip()
+            if _lp and sport:
+                _bet_team = lookup_player_team(_lp, sport) or ""
     else:
         _bet_team = ""
 
@@ -645,11 +657,20 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
                     game_date, match, bm, bet_obj):
     parlay_id = uuid.uuid4().hex[:8]
 
+    # Bookmakers zoals Bet365 tonen geen team per leg — dan via API opzoeken.
+    # Cache binnen één save zodat dezelfde speler niet twee keer opgevraagd wordt.
+    _team_cache: dict = {}
+
     props_json = []
     legs_json  = {}
     for i, leg in enumerate(edited_legs):
-        _player   = leg.get("player") or ""
-        _team     = leg.get("team") or ""
+        _player   = (leg.get("player") or "").strip()
+        _team     = (leg.get("team") or "").strip()
+        if not _team and _player and sport:
+            _ck = f"{sport}::{_player}".lower()
+            if _ck not in _team_cache:
+                _team_cache[_ck] = lookup_player_team(_player, sport)
+            _team = _team_cache[_ck] or ""
         _market   = leg.get("market") or "Player Prop"
         _sel      = leg.get("selection") or ""
         # Voorkom dubbele teamnaam bij match-niveau bets: als de selection
