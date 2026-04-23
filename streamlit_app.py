@@ -167,6 +167,16 @@ if not _db_cloud:
         "Voeg `SUPABASE_URL` en `SUPABASE_KEY` toe aan je secrets voor persistente opslag."
     )
 
+# Schema-drift: toon eventuele waarschuwingen over ontbrekende Supabase-kolommen.
+# Deze waarschuwingen verschijnen als db.py een upsert-fallback heeft moeten
+# gebruiken omdat een kolom nog niet in de database is aangemaakt.
+try:
+    _drift_notes = db.get_schema_drift_notes()
+    for _note in _drift_notes:
+        st.warning(_note)
+except Exception:
+    pass
+
 # ─── Odds API initialiseren ───────────────────────────────────────────────────
 
 if odds_api:
@@ -2472,7 +2482,7 @@ with tab_parlay:
                 _upd_legs = dict(_prl_lj)
                 _changed  = False
                 _leg_opts = ["open", "geraakt", "gemist", "void"]
-                for _pleg in _prl_legs:
+                for _leg_idx, _pleg in enumerate(_prl_legs):
                     _lk  = str(_pleg.get("player","")) + "_" + str(_pleg.get("bet_type",""))
                     _lst = _upd_legs.get(_lk, "open")
                     _plc1, _plc2 = st.columns([3, 2])
@@ -2480,7 +2490,7 @@ with tab_parlay:
                     _nst = _plc2.selectbox(
                         "Status", options=_leg_opts,
                         index=_leg_opts.index(_lst) if _lst in _leg_opts else 0,
-                        key=f"legst_{_prl.get('id','')}_{_lk}", label_visibility="collapsed",
+                        key=f"legst_{_prl.get('id','')}_{_leg_idx}_{_lk}", label_visibility="collapsed",
                     )
                     if _nst != _lst:
                         _upd_legs[_lk] = _nst

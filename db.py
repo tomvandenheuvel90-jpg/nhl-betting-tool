@@ -82,6 +82,34 @@ _using_supabase = False
 _SB_RETRIES = 3
 _SB_DELAY   = 1.0  # seconden tussen pogingen
 
+# ─── Schema drift detectie ────────────────────────────────────────────────────
+# Wanneer Supabase een upsert weigert omdat een kolom ontbreekt, vallen we
+# terug op een beperktere `row_basic`. Die fallback is stil, waardoor
+# schema-drift (de Python-code kent een kolom die nog niet in de database is
+# aangemaakt) lastig te debuggen is — velden worden ogenschijnlijk opgeslagen
+# maar komen nooit terug. We verzamelen meldingen in een module-level set
+# zodat streamlit_app.py ze één keer per sessie kan tonen.
+
+_schema_drift_notes: set = set()
+
+
+def _note_schema_drift(table: str, dropped_cols: tuple, exc: Exception) -> None:
+    """Leg vast dat een upsert op `table` is teruggevallen zonder `dropped_cols`."""
+    msg = (
+        f"⚠️ Supabase-tabel '{table}' mist één of meerdere kolommen uit "
+        f"{list(dropped_cols)}. Die velden worden nu weggegooid bij opslag "
+        f"(daardoor blijven ze leeg in de UI). "
+        f"Voeg ze toe via `ALTER TABLE {table} ADD COLUMN <naam> <type>` "
+        f"in de Supabase SQL editor. "
+        f"Originele fout: {exc}"
+    )
+    _schema_drift_notes.add(msg)
+
+
+def get_schema_drift_notes() -> list:
+    """Geeft de lijst van schema-drift waarschuwingen uit deze sessie terug."""
+    return sorted(_schema_drift_notes)
+
 
 def _sb_call(fn, *args, **kwargs):
     """
@@ -359,14 +387,14 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
         try:
             _supabase.table("favorieten").upsert(row).execute()
             return
-        except Exception:
+        except Exception as _exc_full:
             # Nieuwe kolommen bestaan mogelijk nog niet — probeer zonder optionele kolommen
+            _optional_cols = ("source_session_id", "rating", "composite",
+                              "game_date", "import_method", "bookmaker", "team")
             try:
-                row_basic = {k: v for k, v in row.items()
-                             if k not in ("source_session_id", "rating", "composite",
-                                          "game_date", "import_method", "bookmaker",
-                                          "team")}
+                row_basic = {k: v for k, v in row.items() if k not in _optional_cols}
                 _supabase.table("favorieten").upsert(row_basic).execute()
+                _note_schema_drift("favorieten", _optional_cols, _exc_full)
                 return
             except Exception:
                 pass  # Supabase volledig onbeschikbaar → lokale fallback
@@ -473,14 +501,14 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
         try:
             _supabase.table("resultaten").upsert(row).execute()
             return
-        except Exception:
+        except Exception as _exc_full:
             # Kolom bestaat mogelijk nog niet — probeer zonder optionele kolommen
+            _optional_cols = ("source_session_id", "is_parlay", "rating",
+                              "composite", "import_method", "bookmaker", "team")
             try:
-                row_basic = {k: v for k, v in row.items()
-                             if k not in ("source_session_id", "is_parlay", "rating",
-                                          "composite", "import_method", "bookmaker",
-                                          "team")}
+                row_basic = {k: v for k, v in row.items() if k not in _optional_cols}
                 _supabase.table("resultaten").upsert(row_basic).execute()
+                _note_schema_drift("resultaten", _optional_cols, _exc_full)
                 return
             except Exception:
                 pass  # Supabase volledig onbeschikbaar → lokale fallback
