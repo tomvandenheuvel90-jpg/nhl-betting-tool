@@ -352,8 +352,7 @@ with tab_dashboard:
                 break
         return cnt, last
 
-    _dsh_streak_cnt, _dsh_streak_type = _dsh_streak(_dsh_gedaan)
-    _dsh_streak_icon = "🔥" if _dsh_streak_type == "gewonnen" else ("❄️" if _dsh_streak_type == "verloren" else "—")
+    # All-time streak is verhuisd naar het maand-overzicht hieronder.
 
     # Laatste analyse
     _dsh_last_analyse = _dsh_history[0] if _dsh_history else None
@@ -373,9 +372,8 @@ with tab_dashboard:
     _dsh_fav_actief_count = sum(1 for f in _dsh_favorieten if str(f.get("game_date") or f.get("datum") or datetime.date.today().isoformat())[:10] >= datetime.date.today().isoformat())
     st.caption(f"📅 {_dsh_datum_str}  ·  {len(_dsh_open)} open {'bet' if len(_dsh_open) == 1 else 'bets'}  ·  {_dsh_fav_actief_count} in Shortlist")
 
-    # ── KPI-kaartjes (gebruikt globale kpi_card helper) ───────────────────────
-
-    # Rij 1: Bankroll · P&L week · ROI
+    # ── KPI-kaartjes (algemeen / All Time) ────────────────────────────────────
+    # Streak en Open inzet zijn verhuisd naar het maand-overzicht hieronder.
     _bk_val     = f"€{_dsh_huidig_saldo:.0f}" if _dsh_huidig_saldo is not None else "—"
     _bk_sub     = f"start €{_dsh_start_bk:.0f}  ·  P&L {_dsh_total_wl:+.0f}" if _dsh_start_bk > 0 else "Stel startbankroll in via Bankroll tab"
     _bk_pos     = (True if _dsh_total_wl > 0 else False) if _dsh_start_bk > 0 and _dsh_total_wl != 0 else None
@@ -385,34 +383,108 @@ with tab_dashboard:
     _roi_val    = f"{_dsh_roi:+.0f}%" if _dsh_gedaan else "—"
     _roi_sub    = f"over {len(_dsh_gedaan)} afgeronde bets" if _dsh_gedaan else ""
     _roi_pos    = (True if _dsh_roi > 0 else False) if _dsh_gedaan and _dsh_roi != 0 else None
-
-    _kr1, _kr2, _kr3 = st.columns(3)
-    _kr1.markdown(kpi_card("🏦", "Bankroll", _bk_val, _bk_sub, _bk_pos, tooltip=_bk_val), unsafe_allow_html=True)
-    _kr2.markdown(kpi_card("💰", "P&L deze week", _wk_val, _wk_sub, _wk_pos, tooltip=_wk_val), unsafe_allow_html=True)
-    _kr3.markdown(kpi_card("📈", "ROI (totaal)", _roi_val, _roi_sub, _roi_pos, tooltip=_roi_val), unsafe_allow_html=True)
-
-    # Rij 2: Win% · Streak · Open bets teller
     _wr_val     = f"{_dsh_wr:.0f}%" if _dsh_gedaan else "—"
     _wr_sub     = f"{_dsh_won} gewonnen / {len(_dsh_gedaan) - _dsh_won} verloren" if _dsh_gedaan else ""
     _wr_pos     = (True if _dsh_wr >= 55 else False) if _dsh_gedaan else None
-    _streak_soort = "gewonnen" if _dsh_streak_type == "gewonnen" else ("verloren" if _dsh_streak_type == "verloren" else "")
-    _streak_val = f"{_dsh_streak_cnt}×" if _dsh_gedaan else "—"
-    _streak_sub = _streak_soort if _dsh_gedaan else ""
-    _streak_pos = (True if _dsh_streak_type == "gewonnen" else False) if _dsh_gedaan else None
-    _dsh_open_te_winnen = sum(
-        float(r.get("inzet", 0)) * (float(r.get("odds", 1) or 1) - 1)
-        for r in _dsh_open
-        if r.get("inzet") is not None
-    )
-    _open_val   = f"€{_dsh_open_inzet:.0f}" if _dsh_open else "—"
-    _open_sub   = (f"{len(_dsh_open)} {'bet' if len(_dsh_open) == 1 else 'bets'} · te winnen €{_dsh_open_te_winnen:.0f}"
-                   if _dsh_open else "geen open bets")
-    _open_pos   = None
 
-    _kr4, _kr5, _kr6 = st.columns(3)
+    _kr1, _kr2, _kr3, _kr4 = st.columns(4)
+    _kr1.markdown(kpi_card("🏦", "Bankroll", _bk_val, _bk_sub, _bk_pos, tooltip=_bk_val), unsafe_allow_html=True)
+    _kr2.markdown(kpi_card("💰", "P&L deze week", _wk_val, _wk_sub, _wk_pos, tooltip=_wk_val), unsafe_allow_html=True)
+    _kr3.markdown(kpi_card("📈", "ROI (totaal)", _roi_val, _roi_sub, _roi_pos, tooltip=_roi_val), unsafe_allow_html=True)
     _kr4.markdown(kpi_card("🎯", "Win rate", _wr_val, _wr_sub, _wr_pos, tooltip=_wr_val), unsafe_allow_html=True)
-    _kr5.markdown(kpi_card(_dsh_streak_icon, "Streak", _streak_val, _streak_sub, _streak_pos), unsafe_allow_html=True)
-    _kr6.markdown(kpi_card("⏳", "Open inzet", _open_val, _open_sub, _open_pos), unsafe_allow_html=True)
+
+    # ── Maand-overzicht ───────────────────────────────────────────────────────
+    st.markdown("---")
+    _NL_MONTHS = ["januari","februari","maart","april","mei","juni",
+                  "juli","augustus","september","oktober","november","december"]
+
+    # Verzamel alle (jaar, maand) combinaties met bets, plus de huidige maand
+    _dsh_today_d   = datetime.date.today()
+    _dsh_months_set = {(_dsh_today_d.year, _dsh_today_d.month)}
+    for _r in _dsh_resultaten:
+        _dt = (_r.get("datum") or "")[:10]
+        try:
+            _d_obj = datetime.date.fromisoformat(_dt)
+            _dsh_months_set.add((_d_obj.year, _d_obj.month))
+        except Exception:
+            pass
+    _dsh_months_sorted = sorted(_dsh_months_set, reverse=True)
+    _dsh_month_labels  = [f"{_NL_MONTHS[m-1].capitalize()} {y}"
+                          for y, m in _dsh_months_sorted]
+
+    _mh1, _mh2 = st.columns([2, 2])
+    with _mh1:
+        st.markdown("#### 📅 Maand-overzicht")
+    with _mh2:
+        _dsh_sel_lbl = st.selectbox(
+            "Selecteer maand", _dsh_month_labels,
+            index=0, key="dsh_month_sel",
+            label_visibility="collapsed",
+        )
+    _dsh_sel_idx = _dsh_month_labels.index(_dsh_sel_lbl)
+    _dsh_sel_y, _dsh_sel_m = _dsh_months_sorted[_dsh_sel_idx]
+
+    def _in_sel_month(r: dict) -> bool:
+        _dt = (r.get("datum") or "")[:10]
+        try:
+            _o = datetime.date.fromisoformat(_dt)
+            return _o.year == _dsh_sel_y and _o.month == _dsh_sel_m
+        except Exception:
+            return False
+
+    _dsh_m_all     = [r for r in _dsh_resultaten if _in_sel_month(r)]
+    _dsh_m_open    = [r for r in _dsh_m_all if r.get("uitkomst") == "open"]
+    _dsh_m_settled = [r for r in _dsh_m_all if r.get("uitkomst") in ("gewonnen","verloren","void")]
+    _dsh_m_won     = sum(1 for r in _dsh_m_settled if r.get("uitkomst") == "gewonnen")
+    _dsh_m_lost    = sum(1 for r in _dsh_m_settled if r.get("uitkomst") == "verloren")
+    _dsh_m_stk_set = sum(float(r.get("inzet") or 0) for r in _dsh_m_settled)
+    _dsh_m_stk_tot = sum(float(r.get("inzet") or 0) for r in _dsh_m_all)
+    _dsh_m_open_st = sum(float(r.get("inzet") or 0) for r in _dsh_m_open)
+    _dsh_m_open_pt = sum(float(r.get("inzet") or 0) * float(r.get("odds") or 1.0)
+                         for r in _dsh_m_open)
+    _dsh_m_wl      = sum(float(r.get("winst_verlies") or 0) for r in _dsh_m_settled)
+    _dsh_m_roi     = (_dsh_m_wl / _dsh_m_stk_set * 100) if _dsh_m_stk_set > 0 else 0.0
+    _dsh_m_wr      = (_dsh_m_won / len(_dsh_m_settled) * 100) if _dsh_m_settled else 0.0
+    _dsh_m_str_cnt, _dsh_m_str_typ = _dsh_streak(_dsh_m_settled)
+    _dsh_m_str_ico = ("🔥" if _dsh_m_str_typ == "gewonnen"
+                      else "❄️" if _dsh_m_str_typ == "verloren" else "—")
+
+    # Rij 1: Totaal ingezet · P&L · ROI
+    _m_pl_val  = f"€{_dsh_m_wl:+.0f}" if _dsh_m_settled else "—"
+    _m_pl_pos  = (True if _dsh_m_wl > 0 else False) if (_dsh_m_settled and _dsh_m_wl != 0) else None
+    _m_roi_val = f"{_dsh_m_roi:+.0f}%" if _dsh_m_settled else "—"
+    _m_roi_pos = (True if _dsh_m_roi > 0 else False) if (_dsh_m_settled and _dsh_m_roi != 0) else None
+    _m_stk_sub = (f"{len(_dsh_m_all)} bets ({len(_dsh_m_open)} open)"
+                  if _dsh_m_all else "geen bets in deze maand")
+
+    _mk1, _mk2, _mk3 = st.columns(3)
+    _mk1.markdown(kpi_card("💶", "Totaal ingezet",
+        f"€{_dsh_m_stk_tot:.0f}" if _dsh_m_all else "—",
+        _m_stk_sub, tooltip=f"€{_dsh_m_stk_tot:.2f}"), unsafe_allow_html=True)
+    _mk2.markdown(kpi_card("💰", "P&L maand", _m_pl_val,
+        f"{len(_dsh_m_settled)} afgerond" if _dsh_m_settled else "geen afgeronde bets",
+        _m_pl_pos, tooltip=f"€{_dsh_m_wl:+.4f}"), unsafe_allow_html=True)
+    _mk3.markdown(kpi_card("📈", "ROI maand", _m_roi_val,
+        f"over €{_dsh_m_stk_set:.0f} stake" if _dsh_m_settled else "",
+        _m_roi_pos, tooltip=_m_roi_val), unsafe_allow_html=True)
+
+    # Rij 2: Win rate · Streak · Open in maand
+    _m_wr_val  = f"{_dsh_m_wr:.0f}%" if _dsh_m_settled else "—"
+    _m_wr_sub  = f"{_dsh_m_won} W / {_dsh_m_lost} L" if _dsh_m_settled else ""
+    _m_wr_pos  = (True if _dsh_m_wr >= 55 else False) if _dsh_m_settled else None
+    _m_str_val = f"{_dsh_m_str_cnt}×" if _dsh_m_settled else "—"
+    _m_str_sub = (("gewonnen" if _dsh_m_str_typ == "gewonnen"
+                   else "verloren" if _dsh_m_str_typ == "verloren" else "")
+                  if _dsh_m_settled else "")
+    _m_str_pos = (True if _dsh_m_str_typ == "gewonnen" else False) if _dsh_m_settled else None
+    _m_op_val  = f"€{_dsh_m_open_st:.0f}" if _dsh_m_open else "—"
+    _m_op_sub  = (f"{len(_dsh_m_open)} bets · pot. uitb. €{_dsh_m_open_pt:.0f}"
+                  if _dsh_m_open else "geen open bets")
+
+    _mk4, _mk5, _mk6 = st.columns(3)
+    _mk4.markdown(kpi_card("🎯", "Win rate maand", _m_wr_val, _m_wr_sub, _m_wr_pos), unsafe_allow_html=True)
+    _mk5.markdown(kpi_card(_dsh_m_str_ico, "Streak maand", _m_str_val, _m_str_sub, _m_str_pos), unsafe_allow_html=True)
+    _mk6.markdown(kpi_card("⏳", "Open in maand", _m_op_val, _m_op_sub), unsafe_allow_html=True)
 
     st.markdown("---")
 
@@ -2713,18 +2785,130 @@ with tab_geplaatst:
 
             for _maand, _weken in _maand_dict.items():
                 # Maand samenvatting
-                _m_rijen    = [r for wk in _weken.values() for r in wk]
-                _m_afgerond = [r for r in _m_rijen if r.get("uitkomst") in ("gewonnen","verloren","void")]
-                _m_won      = sum(1 for r in _m_afgerond if r.get("uitkomst") == "gewonnen")
-                _m_inzet    = sum(r.get("inzet",0) for r in _m_afgerond)
-                _m_wl       = sum(r.get("winst_verlies",0) for r in _m_afgerond)
-                _m_wr_str   = f"{_m_won}/{len(_m_afgerond)}" if _m_afgerond else "—"
-                _m_wl_str   = f"€{_m_wl:+.2f}" if _m_afgerond else "—"
+                _m_rijen      = [r for wk in _weken.values() for r in wk]
+                _m_afgerond   = [r for r in _m_rijen if r.get("uitkomst") in ("gewonnen","verloren","void")]
+                _m_open       = [r for r in _m_rijen if r.get("uitkomst") == "open"]
+                _m_won        = sum(1 for r in _m_afgerond if r.get("uitkomst") == "gewonnen")
+                _m_inzet_set  = sum(float(r.get("inzet") or 0) for r in _m_afgerond)
+                _m_inzet_tot  = sum(float(r.get("inzet") or 0) for r in _m_rijen)
+                _m_open_st    = sum(float(r.get("inzet") or 0) for r in _m_open)
+                _m_open_pot   = sum(float(r.get("inzet") or 0) * float(r.get("odds") or 1.0) for r in _m_open)
+                _m_wl         = sum(float(r.get("winst_verlies") or 0) for r in _m_afgerond)
+                _m_roi        = (_m_wl / _m_inzet_set * 100) if _m_inzet_set > 0 else 0.0
+                _m_wr_str     = f"{_m_won}/{len(_m_afgerond)}" if _m_afgerond else "—"
+                _m_wl_str     = f"€{_m_wl:+.2f}" if _m_afgerond else "—"
+                _m_roi_str    = f"{_m_roi:+.1f}%" if _m_afgerond else "—"
+                _m_open_str   = f"{len(_m_open)} open €{_m_open_st:.0f}" if _m_open else "0 open"
 
                 with st.expander(
-                    f"📅 **{_maand}**  ·  {len(_m_rijen)} bets  ·  W/L {_m_wr_str}  ·  P&L {_m_wl_str}",
+                    f"📅 **{_maand}**  ·  {len(_m_rijen)} bets  ·  {_m_open_str}"
+                    f"  ·  Stake €{_m_inzet_tot:.0f}  ·  W/L {_m_wr_str}"
+                    f"  ·  P&L {_m_wl_str}  ·  ROI {_m_roi_str}",
                     expanded=True,
                 ):
+                    # ── Open bets samenvatting (wat staat er nog uit?) ─────
+                    if _m_open:
+                        _m_open_winst = _m_open_pot - _m_open_st
+                        st.markdown(
+                            f"<div style='background:#11112b;border:1px solid #2e2e56;"
+                            f"border-radius:6px;padding:10px 14px;margin:4px 0 10px 0;"
+                            f"font-size:0.88rem;'>"
+                            f"<span style='color:#a8aace;'>⏳ <strong>Nog open:</strong></span> "
+                            f"<span style='color:#e8eaf6;'>{len(_m_open)} bets</span>"
+                            f"<span style='color:#6868a0;'> · </span>"
+                            f"<span style='color:#e8eaf6;'>stake <strong>€{_m_open_st:.2f}</strong></span>"
+                            f"<span style='color:#6868a0;'> · </span>"
+                            f"<span style='color:#7c3aed;font-weight:600;'>"
+                            f"potenti&euml;le uitbetaling €{_m_open_pot:.2f}</span>"
+                            f"<span style='color:#6868a0;'> (winst €{_m_open_winst:+.2f})</span>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                    # ── Per-sport uitsplitsing ─────────────────────────────
+                    _per_sport: dict = OrderedDict()
+                    for _r in _m_rijen:
+                        _sp = _r.get("sport") or "Overig"
+                        if _sp not in _per_sport:
+                            _per_sport[_sp] = {
+                                "n": 0, "open": 0, "stake": 0.0,
+                                "settled_stake": 0.0, "pnl": 0.0,
+                                "won": 0, "lost": 0,
+                            }
+                        _ps = _per_sport[_sp]
+                        _ps["n"]     += 1
+                        _ps["stake"] += float(_r.get("inzet") or 0)
+                        _u = _r.get("uitkomst") or ""
+                        if _u == "open":
+                            _ps["open"] += 1
+                        elif _u in ("gewonnen", "verloren", "void"):
+                            _ps["settled_stake"] += float(_r.get("inzet") or 0)
+                            _ps["pnl"] += float(_r.get("winst_verlies") or 0)
+                            if _u == "gewonnen":
+                                _ps["won"] += 1
+                            elif _u == "verloren":
+                                _ps["lost"] += 1
+                    if len(_per_sport) > 1:
+                        _ps_rows = []
+                        # Sorteer op aantal bets aflopend
+                        _ps_sorted = sorted(_per_sport.items(),
+                                            key=lambda x: x[1]["n"], reverse=True)
+                        for _sp, _d in _ps_sorted:
+                            _spi = (SPORT_ICONS.get(_sp.upper(), "⚽")
+                                    if _sp != "Parlay" else "🎰")
+                            _r_pnl   = _d["pnl"]
+                            _r_settl = _d["won"] + _d["lost"]
+                            _r_wr    = f"{_d['won']}/{_r_settl}" if _r_settl else "—"
+                            _r_roi   = ((_r_pnl / _d["settled_stake"] * 100)
+                                        if _d["settled_stake"] > 0 else None)
+                            _pnl_col = ("#4ade80" if _r_pnl > 0
+                                        else "#f87171" if _r_pnl < 0
+                                        else "#a8aace")
+                            _pnl_str = (f"€{_r_pnl:+.2f}"
+                                        if _d["settled_stake"] > 0 else "—")
+                            _roi_str = (f"{_r_roi:+.1f}%"
+                                        if _r_roi is not None else "—")
+                            _open_col = "#7c3aed" if _d["open"] > 0 else "#6868a0"
+                            _ps_rows.append(
+                                f"<tr style='border-top:1px solid #1c1c3a;'>"
+                                f"<td style='padding:6px 10px;color:#e8eaf6;'>"
+                                f"{_spi} {_sp}</td>"
+                                f"<td style='padding:6px 10px;text-align:right;color:#e8eaf6;'>"
+                                f"{_d['n']}</td>"
+                                f"<td style='padding:6px 10px;text-align:right;color:{_open_col};'>"
+                                f"{_d['open']}</td>"
+                                f"<td style='padding:6px 10px;text-align:right;color:#e8eaf6;'>"
+                                f"€{_d['stake']:.2f}</td>"
+                                f"<td style='padding:6px 10px;text-align:right;color:#a8aace;'>"
+                                f"{_r_wr}</td>"
+                                f"<td style='padding:6px 10px;text-align:right;color:{_pnl_col};font-weight:600;'>"
+                                f"{_pnl_str}</td>"
+                                f"<td style='padding:6px 10px;text-align:right;color:{_pnl_col};'>"
+                                f"{_roi_str}</td>"
+                                f"</tr>"
+                            )
+                        st.markdown(
+                            f"<div style='background:#0e0e24;border:1px solid #2e2e56;"
+                            f"border-radius:6px;padding:8px 4px 4px 4px;margin:4px 0 12px 0;'>"
+                            f"<div style='padding:0 10px 4px 10px;color:#a8aace;"
+                            f"font-size:0.82rem;font-weight:600;'>📊 Per sport</div>"
+                            f"<table style='width:100%;border-collapse:collapse;"
+                            f"font-size:0.85rem;'>"
+                            f"<thead><tr style='color:#6868a0;font-size:0.78rem;"
+                            f"text-transform:uppercase;letter-spacing:0.4px;'>"
+                            f"<th style='padding:4px 10px;text-align:left;'>Sport</th>"
+                            f"<th style='padding:4px 10px;text-align:right;'>Bets</th>"
+                            f"<th style='padding:4px 10px;text-align:right;'>Open</th>"
+                            f"<th style='padding:4px 10px;text-align:right;'>Stake</th>"
+                            f"<th style='padding:4px 10px;text-align:right;'>W/L</th>"
+                            f"<th style='padding:4px 10px;text-align:right;'>P&amp;L</th>"
+                            f"<th style='padding:4px 10px;text-align:right;'>ROI</th>"
+                            f"</tr></thead><tbody>"
+                            + "".join(_ps_rows) +
+                            f"</tbody></table></div>",
+                            unsafe_allow_html=True,
+                        )
+
                     for _week, _bets in _weken.items():
                         # Week samenvatting
                         _w_afgerond = [r for r in _bets if r.get("uitkomst") in ("gewonnen","verloren","void")]
