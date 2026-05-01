@@ -1826,7 +1826,7 @@ with tab_bankroll:
                             "inzet":         round(r.get("inzet", 0) / n, 2),
                             "winst_verlies": round(r.get("winst_verlies", 0) / n, 2),
                             "ev_score":      0.0,
-                            "odds":          float(leg.get("odds", 1.0)),
+                            "odds":          float(leg.get("odds") or 1.0),
                             "bet":           leg.get("bet_type", ""),
                             "speler":        leg.get("player", ""),
                             "_parlay_id":    r_id,
