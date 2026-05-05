@@ -165,6 +165,27 @@ def get_schema_drift_notes() -> list:
     return sorted(_schema_drift_notes)
 
 
+def _clear_schema_drift_notes_for(table: str) -> None:
+    """Verwijder alle eerder geregistreerde fouten voor `table`.
+
+    Wordt aangeroepen wanneer een Supabase-operatie op die tabel WEL slaagt,
+    zodat oude rode banners niet eeuwig blijven hangen in een lang-lopend
+    Streamlit-proces. Zonder deze cleanup zou de waarschuwing van een eerder
+    gefaalde save voor altijd in beeld blijven, ook nadat het probleem
+    (RLS, ontbrekende kolom, etc.) is opgelost.
+    """
+    needle = f"tabel '{table}'"
+    stale = [n for n in _schema_drift_notes if needle in n]
+    for n in stale:
+        _schema_drift_notes.discard(n)
+
+
+def clear_all_schema_drift_notes() -> None:
+    """Wis ALLE schema-drift waarschuwingen — bijv. als de gebruiker
+    expliciet op 'verberg' drukt of na een handmatige reload."""
+    _schema_drift_notes.clear()
+
+
 def _sb_call(fn, *args, **kwargs):
     """
     Voer een Supabase-aanroep uit met retry-logica.
@@ -797,6 +818,10 @@ def set_setting(key: str, value) -> bool:
                 _supabase.table("settings").upsert({"key": key, "value": str(value)}).execute()
             ))
             saved_anywhere = True
+            # Supabase werkt weer → eventuele oude rode banner over deze tabel
+            # mag verdwijnen; anders blijft die hangen voor de levensduur van
+            # het Python-proces (Streamlit Cloud herstart maar zelden).
+            _clear_schema_drift_notes_for("settings")
         except Exception as exc:
             sb_exc = exc
             _note_schema_drift("settings", ("key", "value"), exc)
@@ -890,6 +915,8 @@ def load_bankroll_mutations() -> list:
             data = res.data or []
             # Lokale backup updaten zodat we bij netwerkfout iets hebben
             _write_local_mutations(data)
+            # Werken weer → oude waarschuwing weghalen
+            _clear_schema_drift_notes_for("bankroll_mutations")
             return data
         except Exception as exc:
             _note_schema_drift("bankroll_mutations",
@@ -919,6 +946,7 @@ def save_bankroll_mutation(bedrag: float, omschrijving: str, datum: str = "") ->
         try:
             _sb_call(lambda: _supabase.table("bankroll_mutations").upsert(row).execute())
             saved_anywhere = True
+            _clear_schema_drift_notes_for("bankroll_mutations")
         except Exception as exc:
             sb_exc = exc
             _note_schema_drift("bankroll_mutations",
