@@ -1749,9 +1749,10 @@ with tab_bankroll:
         # `settings` tabel ontbreekt of niet schrijfbaar is, en dat de waarde
         # bij elke Streamlit-herstart wegvalt. Toon een duidelijke uitleg
         # in plaats van stilletjes "—".
-        if _start_bk_saved == 0 and any(
-            r.get("uitkomst") in ("gewonnen", "verloren") for r in _alle_res
-        ):
+        # _bk_all_settled is al hierboven gedefinieerd en bevat alle settled
+        # bets (gewonnen/verloren/void). _alle_res komt pas later — gebruik
+        # _bk_all_settled hier zodat de variabele al bekend is.
+        if _start_bk_saved == 0 and _bk_all_settled:
             st.error(
                 "⚠️ **Startbankroll staat op €0 maar er zijn al gesettlede bets.** "
                 "Op Streamlit Cloud verdwijnen lokale JSON-bestanden bij elke "
