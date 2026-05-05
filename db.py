@@ -112,15 +112,51 @@ _schema_drift_notes: set = set()
 
 
 def _note_schema_drift(table: str, dropped_cols: tuple, exc: Exception) -> None:
-    """Leg vast dat een upsert op `table` is teruggevallen zonder `dropped_cols`."""
-    msg = (
-        f"⚠️ Supabase-tabel '{table}' mist één of meerdere kolommen uit "
-        f"{list(dropped_cols)}. Die velden worden nu weggegooid bij opslag "
-        f"(daardoor blijven ze leeg in de UI). "
-        f"Voeg ze toe via `ALTER TABLE {table} ADD COLUMN <naam> <type>` "
-        f"in de Supabase SQL editor. "
-        f"Originele fout: {exc}"
-    )
+    """Leg vast dat een Supabase-upsert op `table` is mislukt of teruggevallen.
+
+    Postgres-foutcodes worden gebruikt om de juiste oorzaak te tonen:
+    - 42501  → Row Level Security blokkeert (geen policy voor anon)
+    - 42P01  → tabel bestaat niet
+    - 42703  → kolom bestaat niet (echte schema-drift)
+    Andere fouten worden generiek getoond zonder valse claims.
+    """
+    # Probeer de Postgres-foutcode te bemachtigen (supabase-py exceptions
+    # hebben vaak een .code attribuut, of een dict met 'code' in de message)
+    code = ""
+    try:
+        code = getattr(exc, "code", "") or ""
+        if not code and isinstance(getattr(exc, "args", [None])[0], dict):
+            code = exc.args[0].get("code", "") or ""
+    except Exception:
+        pass
+    code = str(code)
+
+    if code == "42501":
+        msg = (
+            f"⚠️ Supabase-tabel '{table}': Row Level Security blokkeert het "
+            f"schrijven. Draai dit in de Supabase SQL editor:\n\n"
+            f"`ALTER TABLE {table} DISABLE ROW LEVEL SECURITY;`\n\n"
+            f"Originele fout: {exc}"
+        )
+    elif code == "42P01":
+        msg = (
+            f"⚠️ Supabase-tabel '{table}' bestaat nog niet. Maak hem aan "
+            f"via de SQL in CLAUDE.md (zie 'Supabase-tabellen die NODIG zijn'). "
+            f"Originele fout: {exc}"
+        )
+    elif code == "42703":
+        msg = (
+            f"⚠️ Supabase-tabel '{table}' mist één of meerdere kolommen uit "
+            f"{list(dropped_cols)}. Die velden worden nu weggegooid bij opslag "
+            f"(daardoor blijven ze leeg in de UI). "
+            f"Voeg ze toe via `ALTER TABLE {table} ADD COLUMN <naam> <type>` "
+            f"in de Supabase SQL editor. Originele fout: {exc}"
+        )
+    else:
+        msg = (
+            f"⚠️ Supabase-fout op tabel '{table}': opslag is mislukt. "
+            f"Originele fout: {exc}"
+        )
     _schema_drift_notes.add(msg)
 
 
