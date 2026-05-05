@@ -75,17 +75,34 @@ berekent de Expected Value (EV) per prop, en beheert een bet slip / parlay build
 | `favorieten` | Bewaarde bets (speler, bet, odds, EV, sport, bet365_status) |
 | `resultaten` | Geplaatste + afgeronde bets (inzet, uitkomst, P&L, datum) |
 | `parlays` | Opgeslagen parlays (legs, gecombineerde odds, hit kans, EV) |
-| `settings` | App-instellingen (bijv. startbankroll) — `settings.json` |
-| `bankroll_mutations.json` | Opnames en stortingen buiten bets om (lokaal JSON) |
+| `settings` | App-instellingen (bijv. startbankroll) — Supabase tabel `settings` (source of truth), `settings.json` als backup-cache |
+| `bankroll_mutations` | Opnames en stortingen buiten bets om — Supabase tabel `bankroll_mutations` (source of truth), `bankroll_mutations.json` als backup-cache |
 
 Lokale fallback-bestanden: `analyse_geschiedenis.json`, (favorieten/resultaten via Supabase of JSON).
 Geschiedenis wordt gesnoeid na 7 dagen, tenzij gekoppeld aan een geplaatste weddenschap.
 
 **Bankroll mutatie-functies (db.py):**
-- `load_bankroll_mutations()` — lijst van opnames/stortingen
-- `save_bankroll_mutation(bedrag, omschrijving, datum)` — voeg toe; bedrag > 0 = storting, < 0 = opname
-- `delete_bankroll_mutation(id)` — verwijder op id
-- `get_bankroll_mutations_total()` — netto som van alle mutaties
+- `load_bankroll_mutations()` — Supabase eerst, lokale JSON als fallback. Synchroniseert Supabase-data naar de lokale JSON als backup-cache.
+- `save_bankroll_mutation(bedrag, omschrijving, datum)` — schrijft naar Supabase + lokale JSON. Raised RuntimeError als beide falen. bedrag > 0 = storting, < 0 = opname.
+- `delete_bankroll_mutation(id)` — verwijdert in Supabase + lokale JSON
+- `get_bankroll_mutations_total()` — netto som van alle mutaties (defensief tegen None / niet-numerieke waarden)
+- `_migrate_local_mutations_if_needed()` — kopieert eventuele lokale `bankroll_mutations.json`-rijen die nog niet in Supabase staan, eenmalig per sessie
+
+**Supabase-tabellen die NODIG zijn voor de bankroll** (Streamlit Cloud-fix):
+```sql
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bankroll_mutations (
+    id           TEXT PRIMARY KEY,
+    datum        TEXT NOT NULL,
+    bedrag       REAL NOT NULL,
+    omschrijving TEXT
+);
+```
+Zonder deze tabellen verdwijnen startbankroll en mutaties bij elke Streamlit-herstart, omdat Streamlit Cloud een ephemeral filesystem heeft. De UI in de Bankroll tab toont een rode banner als er settled bets zijn maar de startbankroll op €0 staat — dat is het signaal dat de tabellen nog niet bestaan.
 
 ### UI / stijl-laag
 | Bestand | Doel |
@@ -211,7 +228,8 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - **Per-screenshot extractie**: `extract_bets()` verwerkt elk geüpload screenshot in een aparte Claude API-call (was: alles in één call, leidde tot JSON-afkap bij >25 props). Resultaten worden gecombineerd en gedupliceert na afloop.
 - **Blessure-check toggle**: `🩺 Blessure-check` checkbox in de Analyse-tab schakelt de NHL roster scan in/uit. Standaard **uitgeschakeld** (snellere analyse). Geïmplementeerd via `injuries_enabled` parameter in `generate_auto_props()` → `_nhl_auto_props()`.
 - **Props transparantie**: na filtering toont de app hoeveel props zijn weggevallen op negatieve EV of klein sample, zodat de gebruiker begrijpt waarom niet alle geüploade props zichtbaar zijn.
-- **Bankroll mutaties**: opnames en stortingen zijn registreerbaar via `💸 Opname of storting registreren` expander in de 📊 Bankroll tab. Opgeslagen in `bankroll_mutations.json`. Saldo-berekening is `start + mutaties + P&L`.
+- **Bankroll mutaties**: opnames en stortingen zijn registreerbaar via `💸 Opname of storting registreren` expander in de 📊 Bankroll tab. Sinds de Streamlit-Cloud fix: opgeslagen in Supabase tabel `bankroll_mutations` (source of truth), met `bankroll_mutations.json` als backup-cache. Saldo-berekening is `start + mutaties + P&L − open inzet`.
+- **Bankroll persistentie-fix (Streamlit Cloud)**: settings + bankroll-mutaties worden nu altijd primair naar Supabase geschreven, zodat ze de ephemeral filesystem-resets van Streamlit Cloud overleven. `get_setting` heeft een process-cache zodat transient Supabase-fouten niet leiden tot een lege waarde. `set_setting` retourneert nu True/False zodat de UI fouten kan tonen. `save_bankroll_mutation` raised RuntimeError als noch Supabase noch lokale JSON werkt. De UI toont een rode banner met SQL-instructies als startbankroll op €0 staat terwijl er gesettlede bets zijn (= signaal dat de Supabase-tabellen `settings` of `bankroll_mutations` nog niet zijn aangemaakt).
 - **Soccer Bet365 whitelist**: `is_soccer_bet365_market()` in `prompts.py`. Alleen markten op Bet365-voetbal worden doorgelaten: 1X2, Double Chance, BTTS, Over/Under, Handicap, Draw No Bet, Corners, Anytime Scorer, Multi Scorer (2+), Assist, Shots, Shots on Target, Keeper Saves. First Goalscorer en schoten (niet op goal) zijn **uitgesloten**.
 - **SOCCER_COMPS uitgebreid**: van 8 naar ~30 competities inclusief Championship, EFL, Eredivisie, UCL, Conference League, etc. Gebruikt in `enrich_bet()` om voetbalbets correct te behandelen.
 - **detect_sports_from_matches — 3-laags detectie** (commit `8b949d8`):

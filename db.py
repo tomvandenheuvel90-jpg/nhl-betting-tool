@@ -37,6 +37,24 @@ Tabellen in Supabase (maak aan via SQL Editor):
         sport TEXT,
         ev_score REAL
     );
+
+    CREATE TABLE settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    );
+
+    CREATE TABLE bankroll_mutations (
+        id           TEXT PRIMARY KEY,
+        datum        TEXT NOT NULL,
+        bedrag       REAL NOT NULL,
+        omschrijving TEXT
+    );
+
+BELANGRIJK — Streamlit Cloud heeft een ephemeral filesystem.
+Alles wat alleen in lokale JSON wordt geschreven (settings.json,
+bankroll_mutations.json) verdwijnt bij elke redeploy/herstart.
+Bankroll-data MOET dus naar Supabase. De lokale JSON blijft als
+read-only fallback voor offline/dev gebruik en als backup-cache.
 """
 
 import json
@@ -637,12 +655,20 @@ def _local_path(filename: str) -> Path:
 
 
 # ── Settings (eenvoudige key-value opslag) ────────────────────────────────────
+#
+# OPMERKING — Streamlit Cloud is ephemeral. settings.json wordt bij elke
+# redeploy gewist. Daarom is Supabase de SOURCE OF TRUTH voor settings, en
+# blijft de lokale JSON enkel een read-only backup-cache.
 
 _SETTINGS_FILE = _BASE_DIR / "settings.json"
 
+# Process-level cache zodat we transient Supabase-fouten kunnen overleven
+# zonder direct terug te vallen op een lege/verouderde lokale JSON.
+_settings_cache: dict = {}
+
 
 def load_settings() -> dict:
-    """Laad app-instellingen (startbankroll etc.)."""
+    """Laad app-instellingen uit lokale JSON (backup/dev-fallback)."""
     if _SETTINGS_FILE.exists():
         try:
             return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -652,7 +678,7 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict) -> None:
-    """Sla app-instellingen op."""
+    """Schrijf app-instellingen naar lokale JSON (alleen als backup-cache)."""
     try:
         _SETTINGS_FILE.write_text(
             json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -663,52 +689,105 @@ def save_settings(settings: dict) -> None:
 
 def get_setting(key: str, default=None):
     """
-    Laad een instelling. Probeert Supabase eerst (tabel 'settings'),
-    daalt terug op lokale settings.json als Supabase niet beschikbaar is
-    of de tabel niet bestaat.
+    Laad een instelling, in volgorde van betrouwbaarheid:
+
+        1. Supabase tabel 'settings'  ← source of truth
+        2. process-cache (laatst-bekende waarde uit deze sessie)
+        3. lokale settings.json (laatste backup)
+        4. default
+
+    Belangrijk: zodra Supabase een waarde teruggeeft, wordt die ook in de
+    process-cache én lokale JSON gezet, zodat een volgende request bij een
+    transient Supabase-fout niet plotseling een lege waarde krijgt.
 
     Supabase tabel aanmaken (éénmalig):
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
     """
     if _using_supabase:
         try:
-            res = _supabase.table("settings").select("value").eq("key", key).limit(1).execute()
+            res = _sb_call(lambda: (
+                _supabase.table("settings").select("value").eq("key", key).limit(1).execute()
+            ))
             if res.data:
-                raw = res.data[0]["value"]
-                # Probeer numerieke waarden te converteren
-                try:
-                    return float(raw)
-                except (TypeError, ValueError):
-                    return raw
+                raw = res.data[0].get("value")
+                # Probeer numerieke conversie waar mogelijk
+                if raw is None or raw == "":
+                    val = default
+                else:
+                    try:
+                        val = float(raw)
+                    except (TypeError, ValueError):
+                        val = raw
+                if val not in (None, default):
+                    _settings_cache[key] = val
+                    # Lokale backup ook bijwerken zodat we offline iets hebben
+                    s = load_settings()
+                    s[key] = val
+                    save_settings(s)
+                return val
+            # Key bestaat niet in Supabase — val door naar cache/lokaal
         except Exception:
-            pass  # Tabel bestaat niet of netwerk-fout → val terug op JSON
-    return load_settings().get(key, default)
+            # Supabase niet bereikbaar — gebruik cache als die er is
+            if key in _settings_cache:
+                return _settings_cache[key]
+    # Process-cache eerst (de actieve sessie heeft mogelijk al iets gezien)
+    if key in _settings_cache:
+        return _settings_cache[key]
+    # Lokale JSON als laatste redmiddel
+    val = load_settings().get(key, None)
+    if val is not None:
+        _settings_cache[key] = val
+        return val
+    return default
 
 
-def set_setting(key: str, value) -> None:
+def set_setting(key: str, value) -> bool:
     """
-    Sla een instelling op in lokale JSON én in Supabase (als verbonden).
-    Overschrijft ALLEEN als de gebruiker expliciet opslaat.
+    Sla een instelling op. Probeert Supabase + lokale JSON + cache.
+
+    Geeft True terug als opslaan minstens ergens lukte. Geeft False terug
+    als noch Supabase noch lokale JSON konden schrijven — dat is een
+    rampscenario dat de UI aan de gebruiker MOET tonen.
+
+    Bij een Supabase-fout (bijv. tabel ontbreekt of value-kolom is verkeerd
+    type) wordt een schema-drift-melding geregistreerd, die bovenaan de app
+    als banner verschijnt.
     """
-    # Altijd lokaal opslaan als backup
-    s = load_settings()
-    s[key] = value
-    save_settings(s)
-    # Ook naar Supabase als die beschikbaar is
+    saved_anywhere = False
+    sb_exc = None
     if _using_supabase:
         try:
-            _supabase.table("settings").upsert({"key": key, "value": str(value)}).execute()
-        except Exception:
-            pass  # Tabel bestaat niet → geen probleem, lokale JSON is backup
+            _sb_call(lambda: (
+                _supabase.table("settings").upsert({"key": key, "value": str(value)}).execute()
+            ))
+            saved_anywhere = True
+        except Exception as exc:
+            sb_exc = exc
+            _note_schema_drift("settings", ("key", "value"), exc)
+    # Altijd lokaal als backup
+    s = load_settings()
+    s[key] = value
+    try:
+        save_settings(s)
+        saved_anywhere = True
+    except Exception:
+        pass
+    # Cache bijwerken zodat huidige sessie meteen klopt
+    _settings_cache[key] = value
+    return saved_anywhere
 
 
 # ── Bankroll mutaties (opnames / stortingen) ──────────────────────────────────
+#
+# OPMERKING — Op Streamlit Cloud is bankroll_mutations.json ephemeral. Daarom
+# is Supabase tabel 'bankroll_mutations' de source of truth. De lokale JSON
+# wordt alleen bijgehouden als backup-cache.
 
 _MUTATIONS_FILE = _BASE_DIR / "bankroll_mutations.json"
+_mutations_migrated: bool = False  # one-time copy lokale JSON → Supabase
 
 
-def load_bankroll_mutations() -> list:
-    """Laad lijst van bankroll-mutaties (opnames en stortingen)."""
+def _read_local_mutations() -> list:
     if _MUTATIONS_FILE.exists():
         try:
             return json.loads(_MUTATIONS_FILE.read_text(encoding="utf-8"))
@@ -717,43 +796,148 @@ def load_bankroll_mutations() -> list:
     return []
 
 
+def _write_local_mutations(mutations: list) -> None:
+    try:
+        _MUTATIONS_FILE.write_text(
+            json.dumps(mutations, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _migrate_local_mutations_if_needed() -> None:
+    """
+    One-time helper: als er lokale mutations zijn die nog NIET in Supabase
+    staan, kopieer ze door. Idempotent — kan veilig elke sessie draaien.
+    """
+    global _mutations_migrated
+    if _mutations_migrated or not _using_supabase:
+        return
+    _mutations_migrated = True
+    local = _read_local_mutations()
+    if not local:
+        return
+    try:
+        existing = _sb_call(lambda: _supabase.table("bankroll_mutations").select("id").execute())
+        existing_ids = {r.get("id") for r in (existing.data or [])}
+    except Exception:
+        # Tabel bestaat waarschijnlijk niet — laat schema-drift dat melden
+        return
+    for m in local:
+        mid = m.get("id")
+        if not mid or mid in existing_ids:
+            continue
+        row = {
+            "id":           mid,
+            "datum":        m.get("datum", ""),
+            "bedrag":       float(m.get("bedrag", 0) or 0),
+            "omschrijving": m.get("omschrijving", "") or "",
+        }
+        try:
+            _sb_call(lambda r=row: _supabase.table("bankroll_mutations").upsert(r).execute())
+        except Exception:
+            pass  # individuele rij gefaald — andere proberen we toch
+
+
+def load_bankroll_mutations() -> list:
+    """
+    Laad bankroll-mutaties. Supabase is leidend; lokale JSON is fallback
+    bij netwerkstoring of als de Supabase-tabel nog niet is aangemaakt.
+
+    Synchroniseert opgehaalde Supabase-data naar de lokale JSON, zodat
+    we bij een transient outage niet plotseling 0 mutaties tonen.
+    """
+    if _using_supabase:
+        _migrate_local_mutations_if_needed()
+        try:
+            res = _sb_call(lambda: _supabase.table("bankroll_mutations").select("*").execute())
+            data = res.data or []
+            # Lokale backup updaten zodat we bij netwerkfout iets hebben
+            _write_local_mutations(data)
+            return data
+        except Exception as exc:
+            _note_schema_drift("bankroll_mutations",
+                               ("id", "datum", "bedrag", "omschrijving"), exc)
+    return _read_local_mutations()
+
+
 def save_bankroll_mutation(bedrag: float, omschrijving: str, datum: str = "") -> str:
     """
-    Voeg een bankroll-mutatie toe.
-    bedrag > 0 = storting, bedrag < 0 = opname.
-    Geeft het gegenereerde id terug.
+    Voeg een bankroll-mutatie toe. bedrag > 0 = storting, < 0 = opname.
+
+    Schrijft naar Supabase EN naar lokale JSON. Geeft het mutation_id terug.
+    Raised RuntimeError als opslaan nergens lukte (zeer zeldzaam — alleen
+    als Supabase niet bereikbaar is EN het lokale filesystem read-only is).
     """
     import uuid as _uuid
-    import datetime as _dt
-    mutations = load_bankroll_mutations()
     mutation_id = str(_uuid.uuid4())[:8]
-    mutations.append({
+    row = {
         "id":           mutation_id,
         "datum":        datum or _now_local().strftime("%Y-%m-%d"),
         "bedrag":       float(bedrag),
-        "omschrijving": omschrijving.strip() or ("Storting" if bedrag > 0 else "Opname"),
-    })
-    _MUTATIONS_FILE.write_text(
-        json.dumps(mutations, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+        "omschrijving": (omschrijving or "").strip() or ("Storting" if bedrag > 0 else "Opname"),
+    }
+    saved_anywhere = False
+    sb_exc = None
+    if _using_supabase:
+        try:
+            _sb_call(lambda: _supabase.table("bankroll_mutations").upsert(row).execute())
+            saved_anywhere = True
+        except Exception as exc:
+            sb_exc = exc
+            _note_schema_drift("bankroll_mutations",
+                               ("id", "datum", "bedrag", "omschrijving"), exc)
+    # Lokale backup bijwerken
+    mutations = _read_local_mutations()
+    if not any(m.get("id") == mutation_id for m in mutations):
+        mutations.append(row)
+        try:
+            _write_local_mutations(mutations)
+            saved_anywhere = True
+        except Exception:
+            pass
+    if not saved_anywhere:
+        raise RuntimeError(
+            f"Mutatie kon nergens worden opgeslagen. Supabase fout: {sb_exc}"
+        )
     return mutation_id
 
 
 def delete_bankroll_mutation(mutation_id: str) -> bool:
-    """Verwijder een bankroll-mutatie op id."""
-    mutations = load_bankroll_mutations()
+    """Verwijder mutatie uit Supabase EN lokale JSON. Returns True als er
+    daadwerkelijk iets verwijderd is."""
+    deleted_anywhere = False
+    if _using_supabase:
+        try:
+            _sb_call(lambda: (
+                _supabase.table("bankroll_mutations").delete().eq("id", mutation_id).execute()
+            ))
+            deleted_anywhere = True
+        except Exception:
+            pass  # val terug op lokaal
+    mutations = _read_local_mutations()
     new_list  = [m for m in mutations if m.get("id") != mutation_id]
-    if len(new_list) == len(mutations):
-        return False
-    _MUTATIONS_FILE.write_text(
-        json.dumps(new_list, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return True
+    if len(new_list) != len(mutations):
+        _write_local_mutations(new_list)
+        deleted_anywhere = True
+    return deleted_anywhere
 
 
 def get_bankroll_mutations_total() -> float:
-    """Geeft de netto som van alle mutaties (stortingen min opnames)."""
-    return sum(float(m.get("bedrag", 0)) for m in load_bankroll_mutations())
+    """Netto som van alle mutaties (stortingen + opnames). Defensief tegen
+    None, NaN, of niet-numerieke waarden die uit een corrupte rij kunnen komen."""
+    import math
+    total = 0.0
+    for m in load_bankroll_mutations():
+        raw = m.get("bedrag", 0)
+        try:
+            v = float(raw if raw not in (None, "") else 0)
+            if math.isnan(v) or math.isinf(v):
+                continue
+            total += v
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 # ── Direct bet (gesloten weddenschap direct naar resultaten) ──────────────────

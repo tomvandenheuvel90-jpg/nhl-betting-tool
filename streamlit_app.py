@@ -1705,15 +1705,32 @@ with tab_bankroll:
             if st.button("✅ Registreren", key="btn_mut_save"):
                 _bedrag_signed = -abs(_mut_bedrag) if "Opname" in _mut_type else abs(_mut_bedrag)
                 _omschr_final  = _mut_omschr.strip() or ("Storting" if _bedrag_signed > 0 else "Opname")
-                db.save_bankroll_mutation(_bedrag_signed, _omschr_final)
-                st.success(f"{'Opname' if _bedrag_signed < 0 else 'Storting'} van €{abs(_bedrag_signed):.2f} geregistreerd!")
-                st.rerun()
+                try:
+                    db.save_bankroll_mutation(_bedrag_signed, _omschr_final)
+                    if db.is_cloud():
+                        st.success(
+                            f"{'Opname' if _bedrag_signed < 0 else 'Storting'} van "
+                            f"€{abs(_bedrag_signed):.2f} opgeslagen in Supabase ✓"
+                        )
+                    else:
+                        st.warning(
+                            f"Mutatie opgeslagen in lokale JSON, maar Supabase is "
+                            f"NIET verbonden — deze waarde verdwijnt bij de volgende "
+                            f"Streamlit-herstart. Controleer je SUPABASE_URL/KEY."
+                        )
+                    st.rerun()
+                except Exception as _exc_mut:
+                    st.error(
+                        f"❌ Mutatie kon niet opgeslagen worden: {_exc_mut}\n\n"
+                        f"Maak in Supabase de tabel `bankroll_mutations` aan "
+                        f"(zie CLAUDE.md voor de SQL) en probeer opnieuw."
+                    )
 
             _mutations = db.load_bankroll_mutations()
             if _mutations:
                 st.markdown("**Mutatiehistorie:**")
                 for _m in sorted(_mutations, key=lambda x: x.get("datum",""), reverse=True):
-                    _m_bedrag = float(_m.get("bedrag", 0))
+                    _m_bedrag = float(_m.get("bedrag", 0) or 0)
                     _m_kleur  = "#4ade80" if _m_bedrag >= 0 else "#f87171"
                     _m_icon   = "💰" if _m_bedrag >= 0 else "💸"
                     _mc1, _mc2, _mc3, _mc4 = st.columns([1.5, 1.2, 3, 0.8])
@@ -1726,6 +1743,29 @@ with tab_bankroll:
 
         # ── Startbankroll instelling ─────────────────────────────────────────────
         _start_bk_saved = float(db.get_setting("start_bankroll") or 0.0)
+
+        # WAARSCHUWING: detecteer dat startbankroll = 0 is terwijl er WEL
+        # gesettlede bets bestaan. Dat betekent vrijwel zeker dat de Supabase
+        # `settings` tabel ontbreekt of niet schrijfbaar is, en dat de waarde
+        # bij elke Streamlit-herstart wegvalt. Toon een duidelijke uitleg
+        # in plaats van stilletjes "—".
+        if _start_bk_saved == 0 and any(
+            r.get("uitkomst") in ("gewonnen", "verloren") for r in _alle_res
+        ):
+            st.error(
+                "⚠️ **Startbankroll staat op €0 maar er zijn al gesettlede bets.** "
+                "Op Streamlit Cloud verdwijnen lokale JSON-bestanden bij elke "
+                "herstart. Als deze waarschuwing terugkomt nadat je een nieuwe "
+                "startbankroll opslaat, ontbreekt de Supabase-tabel `settings`. "
+                "Maak die aan via:\n\n"
+                "```sql\n"
+                "CREATE TABLE IF NOT EXISTS settings (\n"
+                "    key TEXT PRIMARY KEY,\n"
+                "    value TEXT\n"
+                ");\n"
+                "```"
+            )
+
         with st.expander("⚙️ Bankroll instellingen", expanded=(_start_bk_saved == 0)):
             _start_bk_input = st.number_input(
                 "Startbankroll (€)", min_value=0.0, max_value=100000.0,
@@ -1733,9 +1773,23 @@ with tab_bankroll:
                 help="Stel je beginkapitaal in. De app berekent dan je huidig saldo en groei%."
             )
             if st.button("💾 Opslaan", key="btn_start_bk"):
-                db.set_setting("start_bankroll", float(_start_bk_input))
+                _ok = db.set_setting("start_bankroll", float(_start_bk_input))
                 _start_bk_saved = float(_start_bk_input)
-                st.success("Startbankroll opgeslagen!")
+                if not _ok:
+                    st.error(
+                        "❌ Startbankroll kon nergens worden opgeslagen "
+                        "(Supabase + lokale JSON faalden allebei). Open de "
+                        "Supabase-dashboard en controleer of de `settings`-tabel "
+                        "bestaat."
+                    )
+                elif db.is_cloud():
+                    st.success("Startbankroll opgeslagen in Supabase ✓")
+                else:
+                    st.warning(
+                        "Startbankroll opgeslagen in lokale JSON, maar Supabase "
+                        "is NIET verbonden. Deze waarde verdwijnt bij de volgende "
+                        "Streamlit-herstart."
+                    )
                 st.rerun()
     
         st.markdown("---")
