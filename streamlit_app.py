@@ -167,13 +167,20 @@ if not _db_cloud:
         "Voeg `SUPABASE_URL` en `SUPABASE_KEY` toe aan je secrets voor persistente opslag."
     )
 
-# Schema-drift: toon eventuele waarschuwingen over ontbrekende Supabase-kolommen.
-# Deze waarschuwingen verschijnen als db.py een upsert-fallback heeft moeten
-# gebruiken omdat een kolom nog niet in de database is aangemaakt.
+# Schema-drift: toon eventuele waarschuwingen over Supabase-fouten (RLS, missing
+# kolommen, etc.). Deze worden door db.py geregistreerd zodra een upsert faalt.
+# Met de verbergknop kan de gebruiker stale waarschuwingen direct wissen.
 try:
     _drift_notes = db.get_schema_drift_notes()
-    for _note in _drift_notes:
-        st.warning(_note)
+    if _drift_notes:
+        for _idx, _note in enumerate(_drift_notes):
+            _wcol1, _wcol2 = st.columns([10, 1])
+            with _wcol1:
+                st.warning(_note)
+            with _wcol2:
+                if st.button("✖", key=f"hide_drift_{_idx}", help="Verberg waarschuwing"):
+                    db.clear_all_schema_drift_notes()
+                    st.rerun()
 except Exception:
     pass
 
