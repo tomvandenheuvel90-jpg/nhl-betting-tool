@@ -132,10 +132,26 @@ def _note_schema_drift(table: str, dropped_cols: tuple, exc: Exception) -> None:
     code = str(code)
 
     if code == "42501":
+        # Belt + suspenders fix: RLS uitzetten EN een permissive policy
+        # aanmaken. Zo werkt het ook als de gebruiker later via de Supabase
+        # Table Editor RLS per ongeluk weer activeert (wat standaard gebeurt
+        # zodra je via de UI 'New table' kiest of een edit-op-tabel doet).
         msg = (
             f"⚠️ Supabase-tabel '{table}': Row Level Security blokkeert het "
-            f"schrijven. Draai dit in de Supabase SQL editor:\n\n"
-            f"`ALTER TABLE {table} DISABLE ROW LEVEL SECURITY;`\n\n"
+            f"schrijven. Plak dit volledige blok in de Supabase SQL editor "
+            f"(idempotent — veilig om meerdere keren te draaien):\n\n"
+            f"```sql\n"
+            f"-- 1. RLS uitschakelen (primaire fix)\n"
+            f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY;\n\n"
+            f"-- 2. Permissive policy als vangnet — werkt zodra RLS ooit weer\n"
+            f"--    aan wordt gezet (bijv. via Supabase Table Editor UI).\n"
+            f"DROP POLICY IF EXISTS \"anon_full_access\" ON {table};\n"
+            f"CREATE POLICY \"anon_full_access\" ON {table}\n"
+            f"    FOR ALL TO anon, authenticated\n"
+            f"    USING (true) WITH CHECK (true);\n"
+            f"```\n\n"
+            f"Open daarna de 📊 Bankroll-tab en klik op '🔬 Test Supabase "
+            f"verbinding' om te bevestigen dat het probleem opgelost is. "
             f"Originele fout: {exc}"
         )
     elif code == "42P01":
@@ -229,6 +245,123 @@ def init(url: str = "", key: str = "") -> bool:
 def is_cloud() -> bool:
     """True als Supabase verbinding actief is."""
     return _using_supabase
+
+
+# ── Supabase diagnose / probe-write ───────────────────────────────────────────
+#
+# Doel: ondubbelzinnig kunnen vaststellen of een tabel daadwerkelijk
+# schrijfbaar is met de huidige Supabase-key. RLS-problemen kunnen anders
+# pas zichtbaar worden zodra de gebruiker iets probeert op te slaan; deze
+# helper laat het probleem op verzoek pro-actief zien.
+
+def supabase_probe_write(table: str = "settings") -> dict:
+    """
+    Probeer een test-rij in `table` te schrijven en daarna te verwijderen.
+
+    Geeft een dict terug met:
+        - ok            : True als upsert+delete beide slaagden
+        - stage         : "connect" | "upsert" | "delete" | "done"
+        - code          : Postgres SQLSTATE-code ("42501" = RLS, "42P01" = tabel mist, etc.)
+        - message       : leesbare foutmelding
+        - hint          : actionable next step voor de gebruiker
+        - using_supabase: True als Supabase überhaupt is geïnitialiseerd
+
+    Deze helper raakt de schema-drift cache NIET aan — hij is puur diagnose,
+    geen bijwerking. Zo kan de UI hem onbeperkt aanroepen zonder rode banners
+    te triggeren bij elke klik.
+    """
+    out = {
+        "ok":             False,
+        "stage":          "connect",
+        "code":           "",
+        "message":        "",
+        "hint":           "",
+        "using_supabase": _using_supabase,
+    }
+    if not _using_supabase:
+        out["message"] = "Supabase is niet geïnitialiseerd (geen SUPABASE_URL/KEY in secrets)."
+        out["hint"]    = "Voeg SUPABASE_URL en SUPABASE_KEY toe aan .streamlit/secrets.toml."
+        return out
+
+    # Kies een tabelspecifieke probe-row die voldoet aan NOT NULL constraints.
+    probe_id = f"__probe_{uuid.uuid4().hex[:8]}"
+    if table == "settings":
+        row = {"key": probe_id, "value": "probe"}
+        id_col = "key"
+    elif table == "bankroll_mutations":
+        row = {
+            "id":           probe_id,
+            "datum":        datetime.date.today().isoformat(),
+            "bedrag":       0.0,
+            "omschrijving": "probe",
+        }
+        id_col = "id"
+    else:
+        row = {"id": probe_id}
+        id_col = "id"
+
+    # ── 1. UPSERT ────────────────────────────────────────────────────────────
+    out["stage"] = "upsert"
+    try:
+        _supabase.table(table).upsert(row).execute()
+    except Exception as exc:
+        code = ""
+        try:
+            code = getattr(exc, "code", "") or ""
+            if not code and isinstance(getattr(exc, "args", [None])[0], dict):
+                code = exc.args[0].get("code", "") or ""
+        except Exception:
+            pass
+        out["code"]    = str(code)
+        out["message"] = str(exc)
+        if str(code) == "42501":
+            out["hint"] = (
+                f"Row Level Security blokkeert schrijven op '{table}'. "
+                f"Plak de SQL uit de rode banner bovenaan de app in Supabase "
+                f"SQL Editor — die zet RLS uit én voegt een permissive policy "
+                f"toe zodat je dit nooit meer tegenkomt."
+            )
+        elif str(code) == "42P01":
+            out["hint"] = (
+                f"Tabel '{table}' bestaat nog niet in Supabase. Maak hem aan "
+                f"via de CREATE TABLE-SQL uit CLAUDE.md."
+            )
+        elif str(code) == "42703":
+            out["hint"] = (
+                f"Tabel '{table}' heeft kolommen die afwijken van wat de app "
+                f"verwacht. Vergelijk je schema met CLAUDE.md."
+            )
+        else:
+            out["hint"] = (
+                "Onverwachte Supabase-fout. Controleer of SUPABASE_URL/KEY "
+                "correct zijn en het project niet gepauzeerd is."
+            )
+        return out
+
+    # ── 2. DELETE ────────────────────────────────────────────────────────────
+    out["stage"] = "delete"
+    try:
+        _supabase.table(table).delete().eq(id_col, probe_id).execute()
+    except Exception as exc:
+        out["code"]    = str(getattr(exc, "code", "") or "")
+        out["message"] = (
+            f"Upsert is gelukt maar delete faalde — de probe-rij blijft "
+            f"mogelijk achter in de tabel. Fout: {exc}"
+        )
+        out["hint"] = (
+            "Voor settings-functionaliteit is dit niet kritiek, maar het wijst "
+            "op een DELETE-policy die alleen INSERT/UPDATE toelaat. Overweeg "
+            "de permissive policy uit de rode banner toe te voegen."
+        )
+        return out
+
+    out["ok"]      = True
+    out["stage"]   = "done"
+    out["message"] = f"Upsert + delete op '{table}' geslaagd."
+    out["hint"]    = ""
+    # Eventuele oude rode banner over deze tabel kan weg — alles werkt.
+    _clear_schema_drift_notes_for(table)
+    return out
 
 
 # ─── Hulpfuncties ─────────────────────────────────────────────────────────────

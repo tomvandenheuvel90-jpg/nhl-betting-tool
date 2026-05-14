@@ -16,6 +16,23 @@ __pycache__/
 .env
 api_keys.txt
 .stats_cache.json
+gdrive_credentials.json
+*credentials*.json
+*service-account*.json
+
+# Claude Code interne bestanden / worktrees (niet in repo)
+.claude/
+
+# LibreOffice / Office lock files
+.~lock.*#
+~$*.docx
+~$*.xlsx
+
+# Lokale runtime data (per-machine, niet delen)
+analyse_geschiedenis.json
+odds_api_usage.json
+settings.json
+bankroll_mutations.json
 
 # macOS
 .DS_Store

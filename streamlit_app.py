@@ -1780,26 +1780,55 @@ with tab_bankroll:
                 value=_start_bk_saved, step=10.0, format="%.2f", key="start_bk_input",
                 help="Stel je beginkapitaal in. De app berekent dan je huidig saldo en groei%."
             )
-            if st.button("💾 Opslaan", key="btn_start_bk"):
-                _ok = db.set_setting("start_bankroll", float(_start_bk_input))
-                _start_bk_saved = float(_start_bk_input)
-                if not _ok:
-                    st.error(
-                        "❌ Startbankroll kon nergens worden opgeslagen "
-                        "(Supabase + lokale JSON faalden allebei). Open de "
-                        "Supabase-dashboard en controleer of de `settings`-tabel "
-                        "bestaat."
-                    )
-                elif db.is_cloud():
-                    st.success("Startbankroll opgeslagen in Supabase ✓")
-                else:
-                    st.warning(
-                        "Startbankroll opgeslagen in lokale JSON, maar Supabase "
-                        "is NIET verbonden. Deze waarde verdwijnt bij de volgende "
-                        "Streamlit-herstart."
-                    )
-                st.rerun()
-    
+            _bk_save_col, _bk_test_col = st.columns([1, 1])
+            with _bk_save_col:
+                if st.button("💾 Opslaan", key="btn_start_bk"):
+                    _ok = db.set_setting("start_bankroll", float(_start_bk_input))
+                    _start_bk_saved = float(_start_bk_input)
+                    if not _ok:
+                        st.error(
+                            "❌ Startbankroll kon nergens worden opgeslagen "
+                            "(Supabase + lokale JSON faalden allebei). Open de "
+                            "Supabase-dashboard en controleer of de `settings`-tabel "
+                            "bestaat."
+                        )
+                    elif db.is_cloud():
+                        st.success("Startbankroll opgeslagen in Supabase ✓")
+                    else:
+                        st.warning(
+                            "Startbankroll opgeslagen in lokale JSON, maar Supabase "
+                            "is NIET verbonden. Deze waarde verdwijnt bij de volgende "
+                            "Streamlit-herstart."
+                        )
+                    st.rerun()
+            with _bk_test_col:
+                if st.button("🔬 Test Supabase verbinding", key="btn_test_supabase",
+                             help="Doet een echte probe-write op de settings-tabel en "
+                                  "rapporteert exact wat er gebeurt. Gebruik dit om te "
+                                  "controleren of de RLS-fix is doorgekomen."):
+                    _probe = db.supabase_probe_write("settings")
+                    if _probe["ok"]:
+                        st.success(
+                            "✅ Supabase werkt — settings-tabel is schrijfbaar. "
+                            "Je kunt nu een startbankroll opslaan zonder problemen."
+                        )
+                    else:
+                        _stage_nl = {
+                            "connect": "verbinding maken",
+                            "upsert":  "schrijven (upsert)",
+                            "delete":  "opruimen (delete)",
+                        }.get(_probe["stage"], _probe["stage"])
+                        _code_txt = f" (SQLSTATE {_probe['code']})" if _probe["code"] else ""
+                        st.error(
+                            f"❌ Probe-write op `settings` mislukt tijdens "
+                            f"**{_stage_nl}**{_code_txt}.\n\n"
+                            f"**Foutmelding:** {_probe['message']}\n\n"
+                            f"**Volgende stap:** {_probe['hint']}"
+                        )
+                    # Probe registreert nu wel/geen schema-drift; force een
+                    # rerun zodat de banner bovenaan direct synchroon loopt.
+                    st.rerun()
+
         st.markdown("---")
     
         # ── Filters ──────────────────────────────────────────────────────────────

@@ -1,0 +1,246 @@
+[
+  {
+    "datum": "2026-03-28",
+    "tijd": "12:09",
+    "top5": [
+      {
+        "rank": 1,
+        "speler": "I. Hartenstein",
+        "bet": "Over 1.5 Rebounds",
+        "odds": "1.09",
+        "ev_score": "-0.221",
+        "rating": "❌ Vermijd",
+        "sport": "NBA",
+        "composite": 0.715,
+        "player": "I. Hartenstein"
+      },
+      {
+        "rank": 2,
+        "speler": "I. Hartenstein",
+        "bet": "Over 0.5 Turnovers",
+        "odds": "1.09",
+        "ev_score": "-0.240",
+        "rating": "❌ Vermijd",
+        "sport": "NBA",
+        "composite": 0.697,
+        "player": "I. Hartenstein"
+      },
+      {
+        "rank": 3,
+        "speler": "I. Hartenstein",
+        "bet": "Over 1.5 Rebounds Assists",
+        "odds": "2.07",
+        "ev_score": "+0.296",
+        "rating": "✅ Sterk",
+        "sport": "NBA",
+        "composite": 0.626,
+        "player": "I. Hartenstein"
+      },
+      {
+        "rank": 4,
+        "speler": "I. Hartenstein",
+        "bet": "Over 3.5 Assists",
+        "odds": "2.14",
+        "ev_score": "+0.231",
+        "rating": "⚠️ Matig",
+        "sport": "NBA",
+        "composite": 0.575,
+        "player": "I. Hartenstein"
+      }
+    ],
+    "alle_props_json": [],
+    "parlay_suggesties": []
+  },
+  {
+    "datum": "2026-03-27",
+    "tijd": "13:39",
+    "top5": [
+      {
+        "rank": 1,
+        "speler": "M. Trout",
+        "bet": "Over 0.5 RBI",
+        "odds": "2.8",
+        "ev_score": "+0.624",
+        "rating": "⚠️ Matig"
+      },
+      {
+        "rank": 2,
+        "speler": "G. Stanton",
+        "bet": "Over 0.5 RBI",
+        "odds": "2.75",
+        "ev_score": "+0.533",
+        "rating": "⚠️ Matig"
+      },
+      {
+        "rank": 3,
+        "speler": "M. Trout",
+        "bet": "Over 1.5 H+R+RBI",
+        "odds": "1.95",
+        "ev_score": "+0.277",
+        "rating": "✅ Sterk"
+      },
+      {
+        "rank": 4,
+        "speler": "E. Clement",
+        "bet": "Over 0.5 Singles",
+        "odds": "1.85",
+        "ev_score": "+0.230",
+        "rating": "⚠️ Matig"
+      },
+      {
+        "rank": 5,
+        "speler": "V. Guerrero",
+        "bet": "Over 0.5 Runs",
+        "odds": "1.78",
+        "ev_score": "+0.175",
+        "rating": "⚠️ Matig"
+      }
+    ],
+    "alle_props_json": [],
+    "parlay_suggesties": []
+  },
+  {
+    "datum": "2026-03-27",
+    "tijd": "12:54",
+    "top5": [
+      {
+        "rank": 1,
+        "speler": "R. Dahlin",
+        "bet": "Over 0.5 Points",
+        "odds": "1.67",
+        "ev_score": "-0.020",
+        "rating": "❌ Vermijd"
+      },
+      {
+        "rank": 2,
+        "speler": "M. Zibanejad",
+        "bet": "Over 0.5 Points",
+        "odds": "1.44",
+        "ev_score": "-0.051",
+        "rating": "❌ Vermijd"
+      },
+      {
+        "rank": 3,
+        "speler": "J. Miller",
+        "bet": "Over 1.5 Shots on Goal",
+        "odds": "1.5",
+        "ev_score": "-0.079",
+        "rating": "❌ Vermijd"
+      },
+      {
+        "rank": 4,
+        "speler": "T. Thompson",
+        "bet": "Over 0.5 Points",
+        "odds": "1.5",
+        "ev_score": "-0.094",
+        "rating": "❌ Vermijd"
+      },
+      {
+        "rank": 5,
+        "speler": "M. Seider",
+        "bet": "Over 1.5 Blocked Shots",
+        "odds": "1.67",
+        "ev_score": "-0.102",
+        "rating": "❌ Vermijd"
+      }
+    ],
+    "alle_props_json": [],
+    "parlay_suggesties": []
+  },
+  {
+    "datum": "2026-03-27",
+    "tijd": "08:00",
+    "top5": [
+      {
+        "rank": 1,
+        "speler": "K. Dunn",
+        "bet": "Over 1.5 STL+BLK",
+        "odds": "2.0",
+        "ev_score": "+0.290",
+        "rating": "✅ Sterk"
+      },
+      {
+        "rank": 2,
+        "speler": "J. Allen",
+        "bet": "Over 9.5 REB+AST",
+        "odds": "1.98",
+        "ev_score": "+0.261",
+        "rating": "✅ Sterk"
+      },
+      {
+        "rank": 3,
+        "speler": "B. Coulibaly",
+        "bet": "Over 0.5 1Q Rebounds",
+        "odds": "1.42",
+        "ev_score": "+0.108",
+        "rating": "⚠️ Matig"
+      },
+      {
+        "rank": 4,
+        "speler": "B. Coulibaly",
+        "bet": "Over 0.5 3PTM",
+        "odds": "1.5",
+        "ev_score": "+0.051",
+        "rating": "⚠️ Matig"
+      },
+      {
+        "rank": 5,
+        "speler": "P. Siakam",
+        "bet": "Over 0.5 3PTM",
+        "odds": "1.33",
+        "ev_score": "-0.001",
+        "rating": "❌ Vermijd"
+      }
+    ],
+    "alle_props_json": [],
+    "parlay_suggesties": []
+  },
+  {
+    "datum": "2026-03-26",
+    "tijd": "20:18",
+    "top5": [
+      {
+        "rank": 1,
+        "speler": "Brett Baty",
+        "bet": "Over 1.5 Total Bases",
+        "odds": "1.85",
+        "ev_score": "+0.489",
+        "rating": "✅ Sterk"
+      },
+      {
+        "rank": 2,
+        "speler": "Carson Benge",
+        "bet": "Over 1.5 Total Bases",
+        "odds": "1.85",
+        "ev_score": "+0.489",
+        "rating": "✅ Sterk"
+      },
+      {
+        "rank": 3,
+        "speler": "Francisco Alvarez",
+        "bet": "Over 1.5 Total Bases",
+        "odds": "1.85",
+        "ev_score": "+0.489",
+        "rating": "✅ Sterk"
+      },
+      {
+        "rank": 4,
+        "speler": "Brandon Lowe",
+        "bet": "Over 1.5 Total Bases",
+        "odds": "1.85",
+        "ev_score": "+0.489",
+        "rating": "✅ Sterk"
+      },
+      {
+        "rank": 5,
+        "speler": "Henry Davis",
+        "bet": "Over 1.5 Total Bases",
+        "odds": "1.85",
+        "ev_score": "+0.489",
+        "rating": "✅ Sterk"
+      }
+    ],
+    "alle_props_json": [],
+    "parlay_suggesties": []
+  }
+]

@@ -88,8 +88,9 @@ Geschiedenis wordt gesnoeid na 7 dagen, tenzij gekoppeld aan een geplaatste wedd
 - `get_bankroll_mutations_total()` — netto som van alle mutaties (defensief tegen None / niet-numerieke waarden)
 - `_migrate_local_mutations_if_needed()` — kopieert eventuele lokale `bankroll_mutations.json`-rijen die nog niet in Supabase staan, eenmalig per sessie
 
-**Supabase-tabellen die NODIG zijn voor de bankroll** (Streamlit Cloud-fix):
+**Supabase-tabellen die NODIG zijn voor de bankroll** (Streamlit Cloud-fix). Draai dit volledige blok in de Supabase SQL Editor — het is idempotent (veilig om meerdere keren te draaien) en lost zowel het ontbreken van tabellen als RLS-blokkades definitief op:
 ```sql
+-- 1. Tabellen aanmaken (idempotent)
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -101,8 +102,30 @@ CREATE TABLE IF NOT EXISTS bankroll_mutations (
     bedrag       REAL NOT NULL,
     omschrijving TEXT
 );
+
+-- 2. Row Level Security uitzetten (primaire fix tegen 42501-fout)
+ALTER TABLE settings           DISABLE ROW LEVEL SECURITY;
+ALTER TABLE bankroll_mutations DISABLE ROW LEVEL SECURITY;
+
+-- 3. Permissive policy als VANGNET. Wordt alleen actief als RLS later
+--    weer aan wordt gezet (bijv. via de Supabase Table Editor UI, die RLS
+--    standaard inschakelt zodra je een tabel via '+ New table' aanmaakt
+--    of bewerkt). Zorgt dat schrijven altijd mogelijk blijft voor anon.
+DROP POLICY IF EXISTS "anon_full_access" ON settings;
+CREATE POLICY "anon_full_access" ON settings
+    FOR ALL TO anon, authenticated
+    USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "anon_full_access" ON bankroll_mutations;
+CREATE POLICY "anon_full_access" ON bankroll_mutations
+    FOR ALL TO anon, authenticated
+    USING (true) WITH CHECK (true);
 ```
-Zonder deze tabellen verdwijnen startbankroll en mutaties bij elke Streamlit-herstart, omdat Streamlit Cloud een ephemeral filesystem heeft. De UI in de Bankroll tab toont een rode banner als er settled bets zijn maar de startbankroll op €0 staat — dat is het signaal dat de tabellen nog niet bestaan.
+Zonder deze SQL verdwijnen startbankroll en mutaties bij elke Streamlit-herstart, omdat Streamlit Cloud een ephemeral filesystem heeft. De UI in de Bankroll tab toont een rode banner als er settled bets zijn maar de startbankroll op €0 staat — dat is het signaal dat de tabellen ontbreken of RLS blokkeert.
+
+**Verifiëren dat de fix gewerkt heeft**: open de 📊 Bankroll-tab → `⚙️ Bankroll instellingen` expander → klik op `🔬 Test Supabase verbinding`. Deze knop draait `db.supabase_probe_write("settings")` — een echte upsert + delete op de settings-tabel — en rapporteert exact welke stap faalt (verbinding, upsert, delete) plus de Postgres-foutcode. Bij 42501 is RLS nog steeds het probleem; bij 42P01 ontbreekt de tabel; bij `ok=True` is alles in orde.
+
+**Belt + suspenders waarom**: het is bekend dat de Supabase Table Editor UI Row Level Security automatisch inschakelt zodra je een tabel aanmaakt of bewerkt. Alleen `ALTER TABLE ... DISABLE ROW LEVEL SECURITY` draaien is daardoor fragiel: één UI-actie later staat het weer aan en is alle data onbereikbaar. De permissive policy in stap 3 zorgt dat schrijven blijft werken, zelfs als RLS later wordt geactiveerd.
 
 ### UI / stijl-laag
 | Bestand | Doel |
@@ -230,6 +253,7 @@ Gecombineerde aanpassing wordt afgetopt op ±0.12. Toegepast als multiplier:
 - **Props transparantie**: na filtering toont de app hoeveel props zijn weggevallen op negatieve EV of klein sample, zodat de gebruiker begrijpt waarom niet alle geüploade props zichtbaar zijn.
 - **Bankroll mutaties**: opnames en stortingen zijn registreerbaar via `💸 Opname of storting registreren` expander in de 📊 Bankroll tab. Sinds de Streamlit-Cloud fix: opgeslagen in Supabase tabel `bankroll_mutations` (source of truth), met `bankroll_mutations.json` als backup-cache. Saldo-berekening is `start + mutaties + P&L − open inzet`.
 - **Bankroll persistentie-fix (Streamlit Cloud)**: settings + bankroll-mutaties worden nu altijd primair naar Supabase geschreven, zodat ze de ephemeral filesystem-resets van Streamlit Cloud overleven. `get_setting` heeft een process-cache zodat transient Supabase-fouten niet leiden tot een lege waarde. `set_setting` retourneert nu True/False zodat de UI fouten kan tonen. `save_bankroll_mutation` raised RuntimeError als noch Supabase noch lokale JSON werkt. De UI toont een rode banner met SQL-instructies als startbankroll op €0 staat terwijl er gesettlede bets zijn (= signaal dat de Supabase-tabellen `settings` of `bankroll_mutations` nog niet zijn aangemaakt).
+- **Supabase RLS-fix (definitief)**: de schema-drift banner toont nu een complete SQL-fix die zowel `ALTER TABLE ... DISABLE ROW LEVEL SECURITY` doet als een permissive policy aanmaakt (`anon_full_access` voor `anon, authenticated`). Achtergrond: de Supabase Table Editor UI zet RLS standaard AAN als je via '+ New table' een tabel maakt, en houdt dat ook bij bij latere edits. Alleen `DISABLE ROW LEVEL SECURITY` draaien lost het probleem niet permanent op; één UI-tweak later staat RLS weer aan en is alle data onbereikbaar (foutcode 42501: "new row violates row-level security policy"). De permissive policy is een vangnet voor exact dat scenario. Plus: nieuwe diagnose-knop `🔬 Test Supabase verbinding` in de Bankroll-tab (`⚙️ Bankroll instellingen` expander) roept `db.supabase_probe_write("settings")` aan — die doet een echte upsert + delete op de settings-tabel en rapporteert exact welke stap (verbinding/upsert/delete) faalt plus de Postgres SQLSTATE-code, met actionable hint per code.
 - **Soccer Bet365 whitelist**: `is_soccer_bet365_market()` in `prompts.py`. Alleen markten op Bet365-voetbal worden doorgelaten: 1X2, Double Chance, BTTS, Over/Under, Handicap, Draw No Bet, Corners, Anytime Scorer, Multi Scorer (2+), Assist, Shots, Shots on Target, Keeper Saves. First Goalscorer en schoten (niet op goal) zijn **uitgesloten**.
 - **SOCCER_COMPS uitgebreid**: van 8 naar ~30 competities inclusief Championship, EFL, Eredivisie, UCL, Conference League, etc. Gebruikt in `enrich_bet()` om voetbalbets correct te behandelen.
 - **detect_sports_from_matches — 3-laags detectie** (commit `8b949d8`):
