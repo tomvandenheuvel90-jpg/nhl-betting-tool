@@ -65,168 +65,100 @@ Rules:
 - "Meer dan X" = Over X  |  "Minder dan X" = Under X
 - status: use "open" for a freshly placed bet, "gewonnen" if GEWONNEN/WON is visible, "verloren" if VERLOREN/LOST is visible"""
 
-# ── BetCity prompt ────────────────────────────────────────────────────────────
+# ── Unified prompt (auto-detectie BetCity / Bet365) ──────────────────────────
 
-_BETCITY_PROMPT = """This is a BetCity NL screenshot. Extract the bet data.
+_UNIFIED_PROMPT_TEMPLATE = """This screenshot is from a Dutch sports betting app — either BetCity or Bet365 NL.
+Today's date is {today} (year {year}). Use this year for all date interpretation.
 
-BetCity confirmation screen layout:
-- "Sessie XX:XX" top-left, "Vergunninghouder Kansspelautoriteit" top-right
-  → these confirm it is BetCity Netherlands
-- Green banner: "Weddenschap geplaatst" with green checkmark
-- Reference: "Ref. XXXXXX" in green text below the banner (e.g. Ref. YL8270949631W)
-- Bet type in bold caps: "BET BUILDER" (multi-leg) or "ENKEL" (single) or "COMBI" (parlay)
-- Match line: "Team A @ Team B  [total_odds]  €[stake]"  (e.g. "NY Mets @ LA Dodgers  3.25  €37,78")
-  OR for football/soccer: "Team A - Team B  [total_odds]  €[stake]"
-- "Uitbetaling €X" on its own line = potential payout
-- For ENKEL (single): legs[].odds is the same as total_odds
-- Legs in GREEN BOLD text, Dutch market label in gray below each leg:
+STEP 1 — Identify the bookmaker:
+- BetCity:  "Weddenschap geplaatst" banner (green) + "Sessie XX:XX" top-left
+            OR "ENKEL" / "COMBI" / "BET BUILDER" in bold caps
+            → set bookmaker = "betcity"
+- Bet365:   "HOERA!" heading with green checkmark circle + "Je weddenschap is geplaatst."
+            OR "MIJN BETS" header with cyan "DUBBEL" / "TREBLE" labels
+            → set bookmaker = "bet365"
 
-  MLB market labels (gray, below leg):
-    "Slagen +/-"                     → market = "Player Hits O/U"
-    "Werper - Outs +/-"              → market = "Pitcher Outs O/U"
-    "Totaal aantal honken +/-"       → market = "Total Bases O/U"
-    "Homerun"                        → market = "Home Run"
-    "Geslagen honkslag"              → market = "Player Hits"
-    "Runs gescoord"                  → market = "Runs Scored"
-    "Totaal runs +/-"                → market = "Total Runs O/U"
-    "Strikeouts +/-"                 → market = "Pitcher Strikeouts O/U"
+══════════════════════════════════════════════════════════
+BETCITY LAYOUT
+══════════════════════════════════════════════════════════
+- Bet type: "BET BUILDER" (multi-leg) / "ENKEL" (single) / "COMBI" (parlay)
+- Match line: "Team A @ Team B  [total_odds]  €[stake]"
+  (soccer: "Team A - Team B  [total_odds]  €[stake]")
+- "Uitbetaling €X" = potential payout
+- Reference: "Ref. XXXXXX" in green text
+- For ENKEL: legs[0].odds = total_odds
+- For BET BUILDER: individual leg odds NOT shown → legs[].odds = null
+- Legs in GREEN BOLD text; Dutch market label in gray below each leg:
 
-  Soccer / Football market labels:
-    "Wedstrijduitslag"               → market = "Match Result (1X2)"
-    "Beide teams scoren"             → market = "Both Teams to Score"
-    "Totaal doelpunten +/-"          → market = "Total Goals O/U"
-    "Aantal hoekschoppen +/-"        → market = "Total Corners O/U"
-    "Eerste doelpuntenmaker"         → market = "First Goalscorer"
-    "Doelpuntenmaker op enig moment" → market = "Anytime Goalscorer"
-    "Dubbele kans"                   → market = "Double Chance"
-    "Gelijkspel geen weddenschap"    → market = "Draw No Bet"
-    "Handicap"                       → market = "Asian Handicap"
-    "Totaal gele kaarten +/-"        → market = "Total Bookings O/U"
+  MLB:   "Slagen +/-"→"Player Hits O/U"  "Werper - Outs +/-"→"Pitcher Outs O/U"
+         "Totaal aantal honken +/-"→"Total Bases O/U"  "Homerun"→"Home Run"
+         "Totaal runs +/-"→"Total Runs O/U"  "Strikeouts +/-"→"Pitcher Strikeouts O/U"
+  Soccer:"Wedstrijduitslag"→"Match Result (1X2)"  "Beide teams scoren"→"Both Teams to Score"
+         "Totaal doelpunten +/-"→"Total Goals O/U"  "Aantal hoekschoppen +/-"→"Total Corners O/U"
+         "Eerste doelpuntenmaker"→"First Goalscorer"  "Doelpuntenmaker op enig moment"→"Anytime Goalscorer"
+         "Dubbele kans"→"Double Chance"  "Gelijkspel geen weddenschap"→"Draw No Bet"
+         "Handicap"→"Asian Handicap"  "Totaal gele kaarten +/-"→"Total Bookings O/U"
+  NHL:   "Totaal doelpunten +/-"→"Total Goals O/U"  "Puck lijn"→"Puck Line"
+         "Wedstrijduitslag (incl. OT)"→"Match Result (incl. OT)"
+         "Wedstrijduitslag (reguliere tijd)"→"Match Result (Regular Time)"
+         "Schoten op doel +/-"→"Player Shots on Goal O/U"
+  NBA:   "Punten +/-"→"Player Points O/U"  "Rebounds +/-"→"Player Rebounds O/U"
+         "Assists +/-"→"Player Assists O/U"  "Totaal punten +/-"→"Total Points O/U"
+         "Puntenlijn"→"Point Spread"
 
-  Ice Hockey / NHL market labels:
-    "Totaal doelpunten +/-"          → market = "Total Goals O/U"
-    "Puck lijn"                      → market = "Puck Line"
-    "Wedstrijduitslag (incl. OT)"    → market = "Match Result (incl. OT)"
-    "Wedstrijduitslag (reguliere tijd)" → market = "Match Result (Regular Time)"
-    "Eerste doelpuntenmaker"         → market = "First Goalscorer"
-    "Doelpuntenmaker op enig moment" → market = "Anytime Goalscorer"
-    "Schoten op doel +/-"            → market = "Player Shots on Goal O/U"
-
-  Basketball / NBA market labels:
-    "Punten +/-"                     → market = "Player Points O/U"
-    "Rebounds +/-"                   → market = "Player Rebounds O/U"
-    "Assists +/-"                    → market = "Player Assists O/U"
-    "Totaal punten +/-"              → market = "Total Points O/U"
-    "Puntenlijn"                     → market = "Point Spread"
-
-- Bottom: "Inzet €X" (left) and "Uitbetaling €X" (right) = stake and payout
-- Parse player name and line from leg text (green bold):
+- Parse player/line from green bold leg text:
     "Andy Pages - Meer dan 0.5 slagen"       → player="Andy Pages", selection="Over 0.5", line=0.5
     "Justin Wrobleski - Minder dan 15.5 outs" → player="Justin Wrobleski", selection="Under 15.5", line=15.5
-    "Santiago Espinal - Minder dan 1.5 honken" → player="Santiago Espinal", selection="Under 1.5", line=1.5
-    "Ajax"                                    → player=null, team="Ajax", selection="Ajax" (match result)
-- Note: individual leg odds are NOT shown in BET BUILDER — set legs[].odds = null
-- For ENKEL bets: set legs[0].odds = total_odds
-- Comma in amounts is decimal separator in Dutch: "37,78" = 37.78
-- If sport is unclear, infer from team names and market labels
+    "Ajax"                                    → player=null, team="Ajax", selection="Ajax"
+- Comma = decimal separator: "37,78" = 37.78
 
-""" + _JSON_SPEC
-
-# ── Bet365 NL prompt ──────────────────────────────────────────────────────────
-
-_BET365_PROMPT_TEMPLATE = """This is a Bet365 NL screenshot. Extract the bet data.
-Today's date is {today} (year {year}). Use this year for any date interpretation.
-
-Bet365 NL screen layout (three possible screens):
-
-SCREEN TYPE 1 — "HOERA!" confirmation (single bet, ENKELVOUDIG):
-- Big "HOERA!" heading with green checkmark circle
-- "Je weddenschap is geplaatst." subtitle
-- "ENKELVOUDIG" in cyan caps
+══════════════════════════════════════════════════════════
+BET365 LAYOUT
+══════════════════════════════════════════════════════════
+SCREEN TYPE 1 — Single (ENKELVOUDIG):
+- "HOERA!" + "ENKELVOUDIG" in cyan caps
 - Match: two team names (e.g. "HC Pustertal / HK Olimpija Ljubljana")
-- Clock icon + time: "Vandaag 19:45" or "Za 01:15" → use today's date for "Vandaag", ALWAYS year {year}
-- Market description: e.g. "Match Odds - Regular Time"
-- Selection + odds in cyan badge: e.g. "HC Pustertal  2.20" → total_odds = this number
+- Clock + time: "Vandaag 19:45" → use {today}; always year {year}
+- Selection + odds in cyan badge: e.g. "HC Pustertal  2.20" → total_odds
 - Gray summary box: "Odds X.XX  |  Inzet €X  |  Potentiële uitbetaling €X"
-  → total_odds = X.XX, stake = X, potential_payout = X
-- "Datum DD mmm JJJJ, HH:MM" = date bet was placed (NOT game date), "ID XXXXXXXXXX" = reference
-- match = the two team names shown
+- "ID XXXXXXXXXX" at bottom = reference
 - legs: one leg with market, selection, odds = total_odds
 
-SCREEN TYPE 2 — "HOERA!" confirmation (PARLAY: DUBBEL, TREBLE, VIERVOUDIG, etc.):
-- Big "HOERA!" heading with green checkmark circle
-- Bet type in cyan caps: "DUBBEL" (2 legs) / "TREBLE" (3 legs) / "VIERVOUDIG" (4 legs)
-- Each leg displayed sequentially:
-    Match name: "Team A / Team B"  (or player names for tennis/other)
-    Clock + time: "Vandaag 19:45" or "Za 12:00" (use year {year} for all dates)
-    Market: e.g. "Match Odds - Regular Time"
-    Selection + INDIVIDUAL leg odds in cyan badge: "Team A  2.20"
-- ⚠️ CRITICAL — Gray summary box at the BOTTOM after all legs:
-    "Odds X.XX  |  Inzet €X  |  Potentiële uitbetaling €X"
-    → total_odds = X.XX from this gray box = COMBINED/PRODUCT of all legs
-    → stake = the Inzet value from this gray box
-    → potential_payout = the Potentiële uitbetaling from this gray box
-    → Do NOT use individual leg odds as total_odds
-- "Datum DD mmm JJJJ, HH:MM" and "ID XXXXXXXXXX" at bottom
-- match = combine first 2 leg match names, e.g. "Team A vs Team B / Team C vs Team D"
-- game_date = date of the FIRST leg (if "Vandaag" → {today}, always year {year})
-
-SCREEN TYPE 3 — "MIJN BETS" overview page:
-- "MIJN BETS" heading
-- Multiple bet blocks visible
-- "DUBBEL" in bold cyan = parlay section header
-- Each parlay: all legs then summary "Odds X.XX | Inzet €X | Potentiële uitbetaling €X"
-- "Cash-out nu €X" button may appear
-- ID shown at bottom of each bet
-- If multiple bets visible, extract the FIRST/topmost bet only
-- status = "open" (unless "GEWONNEN" or "VERLOREN" badge visible)
-
-SCREEN TYPE 4 — Settled bet (won/lost):
-- "GEWONNEN" green banner → status = "gewonnen"
-- "VERLOREN" red banner → status = "verloren"
-- All other fields extracted the same way
-
-Dutch → English mappings for bet_type:
-- "ENKELVOUDIG" → "single"
-- "DUBBEL"      → "parlay"  (2 legs)
-- "TREBLE"      → "parlay"  (3 legs)
-- "VIERVOUDIG"  → "parlay"  (4 legs)
-
-Dutch → English mappings for selections:
-- "Meer dan X"   → "Over X"
-- "Minder dan X" → "Under X"
-- "Thuis"        → "Home"
-- "Uit"          → "Away"
-- "Gelijkspel"   → "Draw"
-
-Dutch → English mappings for market names:
-- "Match Odds - Regular Time" / "Reguliere Speeltijd"   → "Match Result (Regular Time)"
-- "Match Odds - Incl. Overtime" / "Incl. Verlenging"    → "Match Result (incl. OT)"
-- "Wedstrijduitslag"                                     → "Match Result (1X2)"
-- "Beide Teams Scoren"                                   → "Both Teams to Score"
-- "Totaal Doelpunten" / "Over/Under Doelpunten"          → "Total Goals O/U"
-- "Asian Handicap" / "Handicap"                          → "Asian Handicap"
-- "Dubbele Kans"                                         → "Double Chance"
-- "Gelijkspel Geen Weddenschap"                          → "Draw No Bet"
-- "Hoekschoppen Over/Under"                              → "Total Corners O/U"
-- "Strikeouts Geworden door Speler - Inclusief Extra Innings" → "Pitcher Strikeouts O/U"
-- "Slagen" / "Slagen Over/Under"                         → "Player Hits O/U"
-- "Totaal Honken"                                        → "Total Bases O/U"
-- "Werper Outs"                                          → "Pitcher Outs O/U"
-- "Punten" / "Punten Over/Under"                         → "Player Points O/U"
-- "Rebounds Over/Under"                                  → "Player Rebounds O/U"
-- "Assists Over/Under"                                   → "Player Assists O/U"
-- "Totaal Punten"                                        → "Total Points O/U"
-- "Schoten Op Doel"                                      → "Player Shots on Goal O/U"
-- "Eerste Doelpuntenmaker"                               → "First Goalscorer"
-- "Doelpuntenmaker Op Enig Moment"                       → "Anytime Goalscorer"
-
-Other rules:
-- "Inzet" = stake, "Potentiële uitbetaling" = potential_payout
-- Comma is decimal separator: "39,98" = 39.98
-- Reference: use the "ID" number as reference string
-- ALWAYS use year {year} for all dates. Never use a year earlier than {year}.
+SCREEN TYPE 2 — Parlay (DUBBEL / TREBLE / VIERVOUDIG):
+- "HOERA!" + bet type in cyan caps
+- Each leg: match name, clock+time, market, selection + individual leg odds in cyan badge
+- ⚠️ CRITICAL: use the COMBINED odds from the gray summary box at the bottom as total_odds
+  (NOT the individual leg odds)
+- game_date = date of FIRST leg ("Vandaag" → {today}, always year {year})
+- match = first two leg match names combined
 - For parlay legs: each leg has its own odds in cyan badge → set in legs[].odds
+
+SCREEN TYPE 3 — "MIJN BETS" overview:
+- Extract the FIRST/topmost bet only
+- status = "open" (unless "GEWONNEN" / "VERLOREN" badge visible)
+
+SCREEN TYPE 4 — Settled:
+- "GEWONNEN" → status = "gewonnen"
+- "VERLOREN" → status = "verloren"
+
+Bet365 Dutch → English mappings:
+- bet_type: "ENKELVOUDIG"→"single"  "DUBBEL"→"parlay"  "TREBLE"→"parlay"  "VIERVOUDIG"→"parlay"
+- selections: "Meer dan X"→"Over X"  "Minder dan X"→"Under X"  "Thuis"→"Home"  "Uit"→"Away"
+- markets: "Match Odds - Regular Time"→"Match Result (Regular Time)"
+  "Match Odds - Incl. Overtime"→"Match Result (incl. OT)"
+  "Wedstrijduitslag"→"Match Result (1X2)"  "Beide Teams Scoren"→"Both Teams to Score"
+  "Totaal Doelpunten"→"Total Goals O/U"  "Asian Handicap"→"Asian Handicap"
+  "Dubbele Kans"→"Double Chance"  "Gelijkspel Geen Weddenschap"→"Draw No Bet"
+  "Hoekschoppen Over/Under"→"Total Corners O/U"
+  "Strikeouts Geworden door Speler - Inclusief Extra Innings"→"Pitcher Strikeouts O/U"
+  "Slagen"→"Player Hits O/U"  "Totaal Honken"→"Total Bases O/U"
+  "Werper Outs"→"Pitcher Outs O/U"  "Punten"→"Player Points O/U"
+  "Rebounds Over/Under"→"Player Rebounds O/U"  "Assists Over/Under"→"Player Assists O/U"
+  "Totaal Punten"→"Total Points O/U"  "Schoten Op Doel"→"Player Shots on Goal O/U"
+  "Eerste Doelpuntenmaker"→"First Goalscorer"  "Doelpuntenmaker Op Enig Moment"→"Anytime Goalscorer"
+- "Inzet" = stake, "Potentiële uitbetaling" = potential_payout
+- Comma = decimal separator: "39,98" = 39.98
+- ALWAYS use year {year} for all dates.
 
 """
 
@@ -240,20 +172,17 @@ def _detect_mime(data: bytes) -> str:
     return "image/jpeg"
 
 
-def extract_bet_from_screenshot(client, image_bytes: bytes, bookmaker: str = "betcity") -> dict:
+def extract_bet_from_screenshot(client, image_bytes: bytes, bookmaker: str = "auto") -> dict:
     """
     Stuur screenshot naar Vision API en retourneer parsed JSON dict.
-    bookmaker : "betcity" of "bet365"
+    bookmaker : "auto" (default, laat model detecteren) | "betcity" | "bet365"
     """
     mime  = _detect_mime(image_bytes)
     b64   = base64.standard_b64encode(image_bytes).decode()
 
-    # Injecteer huidige datum in Bet365-prompt zodat jaar altijd correct is
     today = datetime.date.today()
-    if bookmaker == "bet365":
-        prompt = _BET365_PROMPT_TEMPLATE.format(today=today.isoformat(), year=today.year) + _JSON_SPEC
-    else:
-        prompt = _BETCITY_PROMPT
+    # Unified prompt — model detecteert bookmaker zelf uit de screenshot
+    prompt = _UNIFIED_PROMPT_TEMPLATE.format(today=today.isoformat(), year=today.year) + _JSON_SPEC
 
     resp = client.messages.create(
         model=IMPORT_MODEL,
@@ -294,7 +223,7 @@ def _sk(context: str, suffix: str) -> str:
 
 
 def _init_state(context: str) -> None:
-    defaults = [("state", "idle"), ("data", None), ("bookmaker", "betcity")]
+    defaults = [("state", "idle"), ("data", None), ("saving", False)]
     for k, v in defaults:
         if _sk(context, k) not in st.session_state:
             st.session_state[_sk(context, k)] = v
@@ -324,45 +253,12 @@ def render_screenshot_import(context: str, client=None) -> None:
 
 def _render_upload(context: str, client) -> None:
     with st.expander("📸 Importeer via screenshot", expanded=False):
-        if context in ("shortlist", "parlay"):
-            st.caption(
-                "Upload een bevestigingsscherm van Bet365 of BetCity. "
-                "De weddenschap wordt direct geregistreerd als geplaatste weddenschap — "
-                "je kunt de gegevens nog aanpassen voor je opslaat."
-            )
-        else:
-            st.caption(
-                "Upload een bevestigingsscherm van Bet365 of BetCity. "
-                "De gegevens worden automatisch ingevuld — je kunt ze daarna nog aanpassen."
-            )
+        st.caption(
+            "Upload een bevestigingsscherm van Bet365 of BetCity. "
+            "De bookmaker wordt automatisch herkend. "
+            "Je kunt de gegevens nog aanpassen voor je opslaat."
+        )
 
-        # Bookmaker knoppen
-        st.markdown("**Welke bookmaker?**")
-        bm_col1, bm_col2 = st.columns(2)
-        current_bm = st.session_state[_sk(context, "bookmaker")]
-
-        if bm_col1.button(
-            "🔵 BetCity ✓" if current_bm == "betcity" else "🔵 BetCity",
-            key=_sk(context, "btn_betcity"), use_container_width=True,
-            type="primary" if current_bm == "betcity" else "secondary",
-        ):
-            st.session_state[_sk(context, "bookmaker")] = "betcity"
-            st.rerun()
-
-        if bm_col2.button(
-            "🟢 Bet365 ✓" if current_bm == "bet365" else "🟢 Bet365",
-            key=_sk(context, "btn_bet365"), use_container_width=True,
-            type="primary" if current_bm == "bet365" else "secondary",
-        ):
-            st.session_state[_sk(context, "bookmaker")] = "bet365"
-            st.rerun()
-
-        selected_bm  = st.session_state[_sk(context, "bookmaker")]
-        bm_display   = "🔵 BetCity" if selected_bm == "betcity" else "🟢 Bet365"
-        st.caption(f"Geselecteerd: **{bm_display}**")
-        st.markdown("---")
-
-        # File uploader
         uploaded = st.file_uploader(
             "Kies een PNG of JPG (max 10 MB)",
             type=["png", "jpg", "jpeg"],
@@ -379,7 +275,7 @@ def _render_upload(context: str, client) -> None:
             st.warning(f"⚠️ Groot bestand ({mb:.1f} MB). Verwerking duurt iets langer.")
 
         if st.button(
-            f"📸 Analyseer {bm_display} screenshot",
+            "📸 Analyseer screenshot",
             type="primary", key=_sk(context, "analyze_btn"),
         ):
             if client is None:
@@ -391,8 +287,7 @@ def _render_upload(context: str, client) -> None:
                 last_exc = None
                 for attempt in range(2):
                     try:
-                        data = extract_bet_from_screenshot(client, img_bytes, bookmaker=selected_bm)
-                        data["bookmaker"] = selected_bm   # expliciet zetten op basis van keuze
+                        data = extract_bet_from_screenshot(client, img_bytes)
                         st.session_state[_sk(context, "data")]  = data
                         st.session_state[_sk(context, "state")] = "confirm"
                         st.rerun()
@@ -536,14 +431,22 @@ def _render_confirmation(context: str, db) -> None:
 
     st.markdown("---")
 
+    # Blokkeer dubbele opslag: zodra saving=True de knop niet meer tonen
+    if st.session_state.get(_sk(context, "saving")):
+        with st.spinner("Opslaan… even geduld."):
+            st.stop()
+
     btn1, btn2, btn3 = st.columns([3, 2, 1])
     confirm = btn1.button("✅ Opslaan", type="primary", key=_sk(context, "confirm"))
     _       = btn2.button("✏️ Annuleren",              key=_sk(context, "cancel"))
     cancel  = _ or btn3.button("✖",                   key=_sk(context, "cancel2"))
 
     if confirm:
-        _do_save(context, db, data, edited_legs,
-                 _odds, _stake, _status, _sport, _game_date, _match, _ref)
+        st.session_state[_sk(context, "saving")] = True
+        with st.spinner("Opslaan… even geduld."):
+            _do_save(context, db, data, edited_legs,
+                     _odds, _stake, _status, _sport, _game_date, _match, _ref)
+        st.session_state[_sk(context, "saving")] = False
 
     if cancel:
         st.session_state[_sk(context, "state")] = "idle"
@@ -571,18 +474,10 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         desc   = match or "Screenshot import"
         player = match or "—"
 
-    # Team voor bet_obj:
-    #  - single bet  → team van de enige leg (Claude Vision extraheert dit als
-    #                  het screenshot het toont). Als het leeg is én we hebben
-    #                  speler+sport, proberen we een API-lookup (NHL/NBA/MLB/Soccer).
-    #  - parlay/multi → leeg (legs hebben elk hun eigen team, zie props_json)
-    #  - géén legs   → leeg (geen betrouwbare teambron; match-string is géén team)
+    # Team voor bet_obj: gebruik wat Claude Vision uit de screenshot haalt.
+    # Geen live API-lookup — die is traag en niet kritiek voor opslaan.
     if edited_legs and len(edited_legs) == 1:
         _bet_team = (edited_legs[0].get("team") or "").strip()
-        if not _bet_team:
-            _lp = (edited_legs[0].get("player") or "").strip()
-            if _lp and sport:
-                _bet_team = lookup_player_team(_lp, sport) or ""
     else:
         _bet_team = ""
 
@@ -657,20 +552,11 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
                     game_date, match, bm, bet_obj):
     parlay_id = uuid.uuid4().hex[:8]
 
-    # Bookmakers zoals Bet365 tonen geen team per leg — dan via API opzoeken.
-    # Cache binnen één save zodat dezelfde speler niet twee keer opgevraagd wordt.
-    _team_cache: dict = {}
-
     props_json = []
     legs_json  = {}
     for i, leg in enumerate(edited_legs):
         _player   = (leg.get("player") or "").strip()
         _team     = (leg.get("team") or "").strip()
-        if not _team and _player and sport:
-            _ck = f"{sport}::{_player}".lower()
-            if _ck not in _team_cache:
-                _team_cache[_ck] = lookup_player_team(_player, sport)
-            _team = _team_cache[_ck] or ""
         _market   = leg.get("market") or "Player Prop"
         _sel      = leg.get("selection") or ""
         # Voorkom dubbele teamnaam bij match-niveau bets: als de selection
@@ -732,6 +618,7 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
 
 
 def _reset(context: str) -> None:
-    st.session_state[_sk(context, "state")] = "idle"
-    st.session_state[_sk(context, "data")]  = None
+    st.session_state[_sk(context, "state")]  = "idle"
+    st.session_state[_sk(context, "data")]   = None
+    st.session_state[_sk(context, "saving")] = False
     st.rerun()
