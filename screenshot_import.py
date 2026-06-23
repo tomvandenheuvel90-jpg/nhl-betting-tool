@@ -429,6 +429,26 @@ def _render_confirmation(context: str, db) -> None:
     else:
         st.info("Geen legs herkend — wordt als single bet opgeslagen.")
 
+    # ── Odds Boost ────────────────────────────────────────────────────────────
+    st.markdown("---")
+    boost_col1, boost_col2 = st.columns([1, 3])
+    _boost = boost_col1.number_input(
+        "🚀 Odds Boost (%)",
+        min_value=0, max_value=200, value=0, step=5,
+        key=_sk(context, "boost"),
+        help="Vul in als Bet365 een odds boost heeft toegepast (bijv. 30 = +30%). Laat 0 als er geen boost is.",
+    )
+    if _boost > 0:
+        _boosted_odds = round(_odds * (1 + _boost / 100), 2)
+        boost_col2.markdown(
+            f"<div style='padding-top:28px'>Originele odds: <b>{_odds:.2f}</b> → "
+            f"Na boost (+{_boost}%): <b style='color:#22c55e'>{_boosted_odds:.2f}</b> "
+            f"· Uitbetaling: <b>€{_boosted_odds * _stake:.2f}</b></div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        _boosted_odds = _odds
+
     st.markdown("---")
 
     # Blokkeer dubbele opslag: zodra saving=True de knop niet meer tonen
@@ -445,7 +465,8 @@ def _render_confirmation(context: str, db) -> None:
         st.session_state[_sk(context, "saving")] = True
         with st.spinner("Opslaan… even geduld."):
             _do_save(context, db, data, edited_legs,
-                     _odds, _stake, _status, _sport, _game_date, _match, _ref)
+                     _boosted_odds, _stake, _status, _sport, _game_date, _match, _ref,
+                     odds_boost_pct=_boost)
         st.session_state[_sk(context, "saving")] = False
 
     if cancel:
@@ -457,7 +478,7 @@ def _render_confirmation(context: str, db) -> None:
 # ─── Opslaan ─────────────────────────────────────────────────────────────────
 
 def _do_save(context, db, data, edited_legs, odds, stake, status,
-             sport, game_date, match, ref):
+             sport, game_date, match, ref, odds_boost_pct: int = 0):
     bm      = data.get("bookmaker", "unknown")
     bt_raw  = data.get("bet_type", "single")
     is_multi = bt_raw in ("parlay", "bet_builder") or len(edited_legs) > 1
@@ -483,22 +504,23 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
 
     # Gedeeld bet-object (voor add_favoriet / upsert_resultaat)
     bet_obj = {
-        "player":        player,
-        "bet_type":      desc,
-        "sport":         sport,
-        "odds":          round(odds, 2),
-        "ev":            0.0,
-        "team":          _bet_team,
-        "bet365":        {},
-        "import_method": "screenshot",
-        "bookmaker":     bm,
-        "speler":        player,
-        "bet":           desc,
-        "datum":         game_date.isoformat(),
-        "game_date":     game_date.isoformat(),
-        "ev_score":      0.0,
-        "rating":        "",
-        "composite":     0.0,
+        "player":          player,
+        "bet_type":        desc,
+        "sport":           sport,
+        "odds":            round(odds, 2),
+        "ev":              0.0,
+        "team":            _bet_team,
+        "bet365":          {},
+        "import_method":   "screenshot",
+        "bookmaker":       bm,
+        "speler":          player,
+        "bet":             desc,
+        "datum":           game_date.isoformat(),
+        "game_date":       game_date.isoformat(),
+        "ev_score":        0.0,
+        "rating":          "",
+        "composite":       0.0,
+        "odds_boost_pct":  odds_boost_pct,
     }
 
     # ── Geplaatste Bets: direct opslaan in resultaten ────────────────────────
