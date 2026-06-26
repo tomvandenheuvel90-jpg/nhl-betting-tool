@@ -439,7 +439,9 @@ def _render_confirmation(context: str, db) -> None:
         help="Vul in als Bet365 een odds boost heeft toegepast (bijv. 30 = +30%). Laat 0 als er geen boost is.",
     )
     if _boost > 0:
-        _boosted_odds = round(_odds * (1 + _boost / 100), 2)
+        # Bet365 past de boost toe op de WINST, niet op de totale odds:
+        # boosted_odds = 1 + (odds - 1) * (1 + boost%)
+        _boosted_odds = round(1 + (_odds - 1) * (1 + _boost / 100), 2)
         boost_col2.markdown(
             f"<div style='padding-top:28px'>Originele odds: <b>{_odds:.2f}</b> → "
             f"Na boost (+{_boost}%): <b style='color:#22c55e'>{_boosted_odds:.2f}</b> "
