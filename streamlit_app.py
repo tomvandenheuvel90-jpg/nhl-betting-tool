@@ -298,7 +298,9 @@ with tab_dashboard:
         r.get("id", "") for r in _dsh_resultaten
         if str(r.get("id", "")).startswith("parlay_")
     }
-    for _dp in db.load_parlays():
+    _dsh_all_parlays_raw = db.load_parlays()
+    _dsh_parlay_map      = {p["id"]: p for p in _dsh_all_parlays_raw}
+    for _dp in _dsh_all_parlays_raw:
         # Alle parlays (open én gesettled) samenvoegen zodat open parlays
         # zichtbaar zijn als open bets en gesettlede parlays niet ontbreken.
         _dp_res_id = f"parlay_{_dp['id']}"
@@ -511,6 +513,10 @@ with tab_dashboard:
         st.markdown(f"#### {_open_header}")
         st.caption("Markeer de uitkomst zodra de wedstrijd gespeeld is.")
 
+        # Sport-emoji helper (inline dict, geen functiedefinitie nodig)
+        _DSH_SPORT_ICONS = {"NHL": "🏒", "NBA": "🏀", "MLB": "⚾",
+                            "SOCCER": "⚽", "FOOTBALL": "⚽", "VOETBAL": "⚽"}
+
         for _dop in _dsh_open_sorted:
             _dop_id  = _dop.get("id","")
             _dop_dag = ""
@@ -518,46 +524,112 @@ with tab_dashboard:
                 _dop_dag = f"{(datetime.date.today() - datetime.date.fromisoformat(_dop.get('datum','')[:10])).days}d geleden"
             except Exception:
                 _dop_dag = _dop.get("datum","")[:10]
-            _dopa, _dopb, _dopc, _dopd, _dope = st.columns([3, 1, 1, 1, 1])
-            _dopa.write(f"**{_dop.get('speler','')}** — {_dop.get('bet','')}")
             _dop_inzet_tw = _dop.get("inzet")
             _dop_odds_tw  = _dop.get("odds")
-            if _dop_inzet_tw is not None and _dop_odds_tw is not None:
-                _dop_te_winnen_s = f"€{round(float(_dop_inzet_tw) * (float(_dop_odds_tw) - 1), 2):.2f}"
-            else:
-                _dop_te_winnen_s = "—"
-            _dopa.caption(f"{_dop.get('sport','')}{_team_caption_suffix(_dop)} · @ {_dop.get('odds','—')} · inzet €{_dop.get('inzet',0):.0f} · te winnen {_dop_te_winnen_s} · {_dop_dag}")
-            if _dopb.button("✅ Win",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
-                _dop_inzet_val = float(_dop.get("inzet", 10))
-                _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val)
-                if str(_dop_id).startswith("parlay_"):
+            _dop_te_winnen_f = (round(float(_dop_inzet_tw) * (float(_dop_odds_tw) - 1), 2)
+                                if _dop_inzet_tw is not None and _dop_odds_tw is not None else None)
+            _dop_te_winnen_s = f"€{_dop_te_winnen_f:.2f}" if _dop_te_winnen_f is not None else "—"
+
+            _dop_is_parlay = str(_dop_id).startswith("parlay_") or bool(_dop.get("is_parlay"))
+
+            if _dop_is_parlay:
+                # ── Parlay kaart met uitgebreide leg-weergave ─────────────────
+                _raw_pid  = str(_dop_id)[len("parlay_"):] if str(_dop_id).startswith("parlay_") else _dop_id
+                _raw_prl  = _dsh_parlay_map.get(_raw_pid, {})
+                _prl_legs = _raw_prl.get("props_json") or []
+
+                _legs_html = ""
+                for _li, _leg in enumerate(_prl_legs, 1):
+                    _leg_player = _leg.get("player") or _leg.get("speler") or "—"
+                    _leg_bet    = _leg.get("bet_type") or _leg.get("bet") or "—"
+                    _leg_sport  = (_leg.get("sport") or "").upper()
+                    _leg_icon   = _DSH_SPORT_ICONS.get(_leg_sport, "🎯")
+                    _leg_odds   = _leg.get("odds")
+                    _leg_odds_s = f"@ {float(_leg_odds):.2f}" if _leg_odds is not None else ""
+                    _legs_html += (
+                        f"<div style='display:flex;justify-content:space-between;"
+                        f"padding:5px 0;border-bottom:1px solid #161630;font-size:0.88rem;'>"
+                        f"<span><span style='color:#555;font-size:0.8rem;'>{_li}.</span> "
+                        f"{_leg_icon} <b style='color:#e2e8f0;'>{_leg_player}</b>"
+                        f"<span style='color:#a78bfa;'> — {_leg_bet}</span></span>"
+                        f"<span style='color:#64748b;font-size:0.82rem;'>{_leg_odds_s}</span>"
+                        f"</div>"
+                    )
+                if not _legs_html:
+                    _legs_html = "<div style='color:#555;font-size:0.82rem;padding:4px 0;'>Geen leg-details beschikbaar</div>"
+
+                _n_legs_disp = len(_prl_legs) if _prl_legs else "?"
+                st.markdown(
+                    f"<div style='background:#0d0d26;border:1px solid #4c1d95;border-radius:10px;"
+                    f"padding:12px 16px;margin-bottom:6px;'>"
+                    # — header regel —
+                    f"<div style='display:flex;justify-content:space-between;align-items:baseline;"
+                    f"margin-bottom:8px;'>"
+                    f"<span style='color:#c4b5fd;font-weight:700;font-size:1rem;'>"
+                    f"🎰 PARLAY <span style='font-size:0.82rem;color:#7c3aed;font-weight:400;'>"
+                    f"{_n_legs_disp} legs</span></span>"
+                    f"<span style='color:#64748b;font-size:0.82rem;'>{_dop_dag}"
+                    f" &nbsp;·&nbsp; inzet <b style='color:#cbd5e1;'>€{float(_dop_inzet_tw or 0):.0f}</b>"
+                    f" &nbsp;·&nbsp; @ <b style='color:#c4b5fd;'>{float(_dop_odds_tw or 1):.2f}</b>"
+                    f" &nbsp;·&nbsp; 💰 <b style='color:#4ade80;'>{_dop_te_winnen_s}</b></span>"
+                    f"</div>"
+                    # — legs —
+                    f"<div style='border-top:1px solid #1e1e3a;padding-top:4px;'>"
+                    f"{_legs_html}"
+                    f"</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                _dopb2, _dopc2, _dopd2, _dope2 = st.columns(4)
+                if _dopb2.button("✅ Win",   key=f"dsh_won_{_dop_id}",  use_container_width=True):
+                    _dop_inzet_val = float(_dop.get("inzet", 10))
+                    _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                    db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val)
                     _dop_odds_val = float(_dop.get("odds", 1.0))
-                    db.update_parlay(str(_dop_id)[len("parlay_"):], {
+                    db.update_parlay(_raw_pid, {
                         "uitkomst": "gewonnen",
                         "winst_verlies": round(_dop_inzet_val * (_dop_odds_val - 1), 2),
                     })
-                st.rerun()
-            if _dopc.button("❌ Loss", key=f"dsh_lost_{_dop_id}", use_container_width=True):
-                _dop_inzet_val = float(_dop.get("inzet", 10))
-                _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                db.upsert_resultaat(_dop_id, _dop_fav, "verloren", _dop_inzet_val)
-                if str(_dop_id).startswith("parlay_"):
-                    db.update_parlay(str(_dop_id)[len("parlay_"):], {
+                    st.rerun()
+                if _dopc2.button("❌ Loss",  key=f"dsh_lost_{_dop_id}", use_container_width=True):
+                    _dop_inzet_val = float(_dop.get("inzet", 10))
+                    _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                    db.upsert_resultaat(_dop_id, _dop_fav, "verloren", _dop_inzet_val)
+                    db.update_parlay(_raw_pid, {
                         "uitkomst": "verloren",
                         "winst_verlies": round(-_dop_inzet_val, 2),
                     })
-                st.rerun()
-            if _dopd.button("⚪ Void", key=f"dsh_void_{_dop_id}", use_container_width=True):
-                _dop_inzet_val = float(_dop.get("inzet", 10))
-                _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val)
-                if str(_dop_id).startswith("parlay_"):
-                    db.update_parlay(str(_dop_id)[len("parlay_"):], {
+                    st.rerun()
+                if _dopd2.button("⚪ Void",  key=f"dsh_void_{_dop_id}", use_container_width=True):
+                    _dop_inzet_val = float(_dop.get("inzet", 10))
+                    _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                    db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val)
+                    db.update_parlay(_raw_pid, {
                         "uitkomst": "void",
                         "winst_verlies": 0.0,
                     })
-                st.rerun()
+                    st.rerun()
+
+            else:
+                # ── Single bet (bestaande compacte weergave) ──────────────────
+                _dopa, _dopb, _dopc, _dopd, _dope = st.columns([3, 1, 1, 1, 1])
+                _dopa.write(f"**{_dop.get('speler','')}** — {_dop.get('bet','')}")
+                _dopa.caption(f"{_dop.get('sport','')}{_team_caption_suffix(_dop)} · @ {_dop.get('odds','—')} · inzet €{_dop.get('inzet',0):.0f} · te winnen {_dop_te_winnen_s} · {_dop_dag}")
+                if _dopb.button("✅ Win",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
+                    _dop_inzet_val = float(_dop.get("inzet", 10))
+                    _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                    db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val)
+                    st.rerun()
+                if _dopc.button("❌ Loss", key=f"dsh_lost_{_dop_id}", use_container_width=True):
+                    _dop_inzet_val = float(_dop.get("inzet", 10))
+                    _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                    db.upsert_resultaat(_dop_id, _dop_fav, "verloren", _dop_inzet_val)
+                    st.rerun()
+                if _dopd.button("⚪ Void", key=f"dsh_void_{_dop_id}", use_container_width=True):
+                    _dop_inzet_val = float(_dop.get("inzet", 10))
+                    _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
+                    db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val)
+                    st.rerun()
     else:
         st.success("✅ Geen open weddenschappen — alles is up-to-date.")
 
@@ -573,19 +645,45 @@ with tab_dashboard:
             st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen afgeronde weddenschappen.</small>', unsafe_allow_html=True)
         else:
             for _dr in _dsh_recent:
-                _dr_icon = "✅" if _dr.get("uitkomst") == "gewonnen" else ("⚪" if _dr.get("uitkomst") == "void" else "❌")
-                _dr_wl   = _dr.get("winst_verlies", 0)
-                _dr_wl_s = f"+€{abs(_dr_wl):.0f}" if _dr_wl >= 0 else f"-€{abs(_dr_wl):.0f}"
+                _dr_icon  = "✅" if _dr.get("uitkomst") == "gewonnen" else ("⚪" if _dr.get("uitkomst") == "void" else "❌")
+                _dr_wl    = _dr.get("winst_verlies", 0)
+                _dr_wl_s  = f"+€{abs(_dr_wl):.0f}" if _dr_wl >= 0 else f"-€{abs(_dr_wl):.0f}"
                 _dr_kleur = "#4ade80" if _dr_wl >= 0 else "#f87171"
-                st.markdown(
-                    f"<div style='display:flex;justify-content:space-between;align-items:center;"
-                    f"padding:6px 0;border-bottom:1px solid #1e1e3a;'>"
-                    f"<span>{_dr_icon} <b>{_dr.get('speler','')}</b> — {_dr.get('bet','')}"
-                    f"<br><small style='color:#888;'>{_dr.get('sport','')} · {_dr.get('datum','')[:10]}</small></span>"
-                    f"<span style='color:{_dr_kleur};font-weight:700;font-size:1.1rem;'>{_dr_wl_s}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+                _dr_is_parlay = str(_dr.get("id","")).startswith("parlay_") or bool(_dr.get("is_parlay"))
+                if _dr_is_parlay:
+                    # Toon parlay met legs compact onder de titelbalk
+                    _dr_raw_pid  = str(_dr.get("id",""))[len("parlay_"):]
+                    _dr_raw_prl  = _dsh_parlay_map.get(_dr_raw_pid, {})
+                    _dr_legs     = _dr_raw_prl.get("props_json") or []
+                    _dr_legs_txt = "  ·  ".join(
+                        f"{_DSH_SPORT_ICONS.get((_lg.get('sport') or '').upper(), '🎯')} "
+                        f"{_lg.get('player') or _lg.get('speler') or '?'} "
+                        f"{_lg.get('bet_type') or _lg.get('bet') or ''}"
+                        for _lg in _dr_legs
+                    ) or _dr.get("bet", "Parlay")
+                    _dr_n = len(_dr_legs) if _dr_legs else "?"
+                    st.markdown(
+                        f"<div style='padding:6px 0;border-bottom:1px solid #1e1e3a;'>"
+                        f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
+                        f"<span>{_dr_icon} <b style='color:#c4b5fd;'>🎰 Parlay ({_dr_n} legs)</b></span>"
+                        f"<span style='color:{_dr_kleur};font-weight:700;font-size:1.05rem;'>{_dr_wl_s}</span>"
+                        f"</div>"
+                        f"<div style='color:#64748b;font-size:0.8rem;padding-top:2px;white-space:nowrap;"
+                        f"overflow:hidden;text-overflow:ellipsis;'>{_dr_legs_txt}</div>"
+                        f"<div style='color:#555;font-size:0.75rem;'>{_dr.get('datum','')[:10]}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f"<div style='display:flex;justify-content:space-between;align-items:center;"
+                        f"padding:6px 0;border-bottom:1px solid #1e1e3a;'>"
+                        f"<span>{_dr_icon} <b>{_dr.get('speler','')}</b> — {_dr.get('bet','')}"
+                        f"<br><small style='color:#888;'>{_dr.get('sport','')} · {_dr.get('datum','')[:10]}</small></span>"
+                        f"<span style='color:{_dr_kleur};font-weight:700;font-size:1.1rem;'>{_dr_wl_s}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
 
     with _dcol_r:
         # Shortlist preview
