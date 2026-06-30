@@ -1411,6 +1411,12 @@ with tab_bankroll:
     )
     _bk_balance       = _start_bk_saved + _mutations_total + _bk_total_wl - _bk_open_inzet if _start_bk_saved > 0 else None
 
+    # ── Bankrekening (apart van de betting bankroll) ──────────────────────────
+    _bank_start        = float(db.get_setting("start_bank") or 3250.0)
+    _bank_mut_total    = db.get_bank_mutations_total()
+    _bank_balance      = _bank_start + _bank_mut_total
+    _total_kapitaal    = (_bk_balance + _bank_balance) if _bk_balance is not None else None
+
     # ── HEADER ───────────────────────────────────────────────────────────────
     _7d_cutoff = (_bk_today - datetime.timedelta(days=6)).isoformat()
     _7d_wl     = sum(r.get("winst_verlies",0) for r in _bk_all_settled
@@ -1418,22 +1424,33 @@ with tab_bankroll:
     _7d_color  = "#4ade80" if _7d_wl >= 0 else "#f87171"
     _7d_pill   = f"{'+ ' if _7d_wl >= 0 else ''}€{_7d_wl:+.2f}  laatste 7 dagen"
 
-    if _bk_balance is not None:
+    if _total_kapitaal is not None:
+        _bal_display = f"€{_total_kapitaal:,.2f}"
+    elif _bk_balance is not None:
         _bal_display = f"€{_bk_balance:,.2f}"
     elif _bk_all_settled:
         _bal_display = f"€{_bk_total_wl:+.2f} P&L"
     else:
         _bal_display = "—"
 
+    _bk_breakdown  = f"€{_bk_balance:,.2f}" if _bk_balance is not None else "—"
+    _bnk_breakdown = f"€{_bank_balance:,.2f}"
+
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#12103a 0%,#1e1860 100%);
       border:1px solid #3a2a70;border-radius:14px;padding:1.3rem 1.6rem;
       margin-bottom:1.1rem;box-shadow:0 4px 24px rgba(124,58,237,0.20);">
       <div style="font-size:0.75rem;color:#8888b8;text-transform:uppercase;
-        letter-spacing:1.2px;margin-bottom:4px;">Total Balance</div>
+        letter-spacing:1.2px;margin-bottom:4px;">Totaal Kapitaal</div>
       <div style="font-size:2.4rem;font-weight:800;color:#c4b5fd;letter-spacing:-1px;
         line-height:1.1;">{_bal_display}</div>
-      <div style="margin-top:10px;">
+      <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+        <span style="background:rgba(124,58,237,0.15);border:1px solid #7c3aed;
+          color:#c4b5fd;padding:4px 14px;border-radius:20px;font-size:0.82rem;font-weight:600;">
+          💰 Bankroll: {_bk_breakdown}</span>
+        <span style="background:rgba(56,189,248,0.12);border:1px solid #38bdf8;
+          color:#7dd3fc;padding:4px 14px;border-radius:20px;font-size:0.82rem;font-weight:600;">
+          🏦 Bankrekening: {_bnk_breakdown}</span>
         <span style="background:{'rgba(74,222,128,0.13)' if _7d_wl >= 0 else 'rgba(248,113,113,0.13)'};
           border:1px solid {_7d_color};color:{_7d_color};
           padding:4px 14px;border-radius:20px;font-size:0.82rem;font-weight:600;
@@ -1846,6 +1863,38 @@ with tab_bankroll:
                         db.delete_bankroll_mutation(_m["id"])
                         st.rerun()
 
+        # ── Geld overboeken tussen bankroll en bankrekening ──────────────────────
+        with st.expander("🔄 Geld overboeken", expanded=False):
+            st.caption("Boek geld over tussen je betting bankroll en je bankrekening. Beide saldo's worden automatisch bijgewerkt.")
+            _ob_c1, _ob_c2 = st.columns([2, 1])
+            _ob_richting = _ob_c1.selectbox(
+                "Richting",
+                ["Bankrekening → Bankroll 💰", "Bankroll → Bankrekening 🏦"],
+                key="ob_richting",
+            )
+            _ob_bedrag = _ob_c2.number_input(
+                "Bedrag (€)", min_value=0.01, max_value=100000.0,
+                value=100.0, step=10.0, format="%.2f", key="ob_bedrag",
+            )
+            _ob_omschr = st.text_input("Omschrijving (optioneel)", key="ob_omschr",
+                                       placeholder="bijv. winst overmaken naar bank")
+            if st.button("✅ Overboeken", key="btn_ob_save", use_container_width=True, type="primary"):
+                _ob_label = _ob_omschr.strip() or "Overboeking"
+                try:
+                    if "Bankrekening → Bankroll" in _ob_richting:
+                        # Bank daalt, bankroll stijgt
+                        db.save_bank_mutation(-abs(_ob_bedrag), f"{_ob_label} → Bankroll")
+                        db.save_bankroll_mutation(abs(_ob_bedrag), f"{_ob_label} ← Bankrekening")
+                        st.success(f"€{_ob_bedrag:.2f} overgeboekt van bankrekening naar bankroll ✓")
+                    else:
+                        # Bankroll daalt, bank stijgt
+                        db.save_bankroll_mutation(-abs(_ob_bedrag), f"{_ob_label} → Bankrekening")
+                        db.save_bank_mutation(abs(_ob_bedrag), f"{_ob_label} ← Bankroll")
+                        st.success(f"€{_ob_bedrag:.2f} overgeboekt van bankroll naar bankrekening ✓")
+                    st.rerun()
+                except Exception as _ob_exc:
+                    st.error(f"❌ Overboeking mislukt: {_ob_exc}")
+
         # ── Startbankroll instelling ─────────────────────────────────────────────
         _start_bk_saved = float(db.get_setting("start_bankroll") or 0.0)
 
@@ -1926,6 +1975,23 @@ with tab_bankroll:
                     # Probe registreert nu wel/geen schema-drift; force een
                     # rerun zodat de banner bovenaan direct synchroon loopt.
                     st.rerun()
+
+            st.markdown("---")
+            st.markdown("**🏦 Bankrekening instellingen**")
+            _bank_start_saved = float(db.get_setting("start_bank") or 3250.0)
+            _bank_start_input = st.number_input(
+                "Startsaldo bankrekening (€)", min_value=0.0, max_value=1000000.0,
+                value=_bank_start_saved, step=50.0, format="%.2f", key="bank_start_input",
+                help="Het saldo van je bankrekening op het moment dat je dit begon bij te houden. "
+                     "Gebruik 'Geld overboeken' voor wijzigingen daarna.",
+            )
+            if st.button("💾 Startsaldo opslaan", key="btn_bank_start"):
+                _ok2 = db.set_setting("start_bank", float(_bank_start_input))
+                if _ok2:
+                    st.success("Startsaldo bankrekening opgeslagen ✓")
+                else:
+                    st.error("❌ Kon niet opslaan (Supabase + lokale JSON faalden).")
+                st.rerun()
 
         st.markdown("---")
     
@@ -2074,10 +2140,10 @@ with tab_bankroll:
                 _huidig_saldo = _bk_balance  # identiek aan header: start + mutaties + wl_all - open_inzet_all
                 _groei_pct    = (_bk_total_wl / _start_bk_saved * 100) if _start_bk_saved > 0 else 0.0
                 _bmc1, _bmc2, _bmc3, _bmc4 = st.columns(4)
-                _bmc1.markdown(kpi_card("🏦", "Startbankroll", f"€{_start_bk_saved:.2f}"), unsafe_allow_html=True)
-                _bmc2.markdown(kpi_card("💰", "Huidig saldo",  f"€{_huidig_saldo:.2f}", f"P&L {_bk_total_wl:+.2f}", positive=(_bk_total_wl > 0) if _bk_total_wl != 0 else None), unsafe_allow_html=True)
-                _bmc3.markdown(kpi_card("📈", "Groei",         f"{_groei_pct:+.1f}%", positive=(_groei_pct > 0) if _groei_pct != 0 else None), unsafe_allow_html=True)
-                _bmc4.markdown(kpi_card("🎯", "Win %",         f"{_bwin_pct:.1f}%",   positive=(_bwin_pct >= 55) if _gedaan else None), unsafe_allow_html=True)
+                _bmc1.markdown(kpi_card("💰", "Bankroll",      f"€{_huidig_saldo:.2f}", f"P&L {_bk_total_wl:+.2f}", positive=(_bk_total_wl > 0) if _bk_total_wl != 0 else None), unsafe_allow_html=True)
+                _bmc2.markdown(kpi_card("🏦", "Bankrekening",  f"€{_bank_balance:.2f}", f"start €{_bank_start:.0f}"), unsafe_allow_html=True)
+                _bmc3.markdown(kpi_card("💎", "Totaal kapitaal", f"€{(_huidig_saldo + _bank_balance):.2f}"), unsafe_allow_html=True)
+                _bmc4.markdown(kpi_card("📈", "Groei bankroll", f"{_groei_pct:+.1f}%", positive=(_groei_pct > 0) if _groei_pct != 0 else None), unsafe_allow_html=True)
                 st.markdown("")
     
             _bc1, _bc2, _bc3, _bc4 = st.columns(4)

@@ -1137,6 +1137,130 @@ def get_bankroll_mutations_total() -> float:
     return total
 
 
+# ── Bank account mutaties (apart van de betting bankroll) ─────────────────────
+#
+# Hetzelfde patroon als bankroll_mutations: Supabase-tabel 'bank_mutations'
+# is source of truth, lokale JSON is backup-cache.
+#
+# Supabase tabel aanmaken (éénmalig — idempotent):
+#
+#   CREATE TABLE IF NOT EXISTS bank_mutations (
+#       id           TEXT PRIMARY KEY,
+#       datum        TEXT NOT NULL,
+#       bedrag       REAL NOT NULL,
+#       omschrijving TEXT
+#   );
+#   ALTER TABLE bank_mutations DISABLE ROW LEVEL SECURITY;
+#   DROP POLICY IF EXISTS "anon_full_access" ON bank_mutations;
+#   CREATE POLICY "anon_full_access" ON bank_mutations
+#       FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+
+_BANK_FILE = _BASE_DIR / "bank_mutations.json"
+
+
+def _read_local_bank_mutations() -> list:
+    if _BANK_FILE.exists():
+        try:
+            return json.loads(_BANK_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def _write_local_bank_mutations(mutations: list) -> None:
+    try:
+        _BANK_FILE.write_text(
+            json.dumps(mutations, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def load_bank_mutations() -> list:
+    """Laad bankrekening-mutaties. Supabase leidend, lokale JSON als fallback."""
+    if _using_supabase:
+        try:
+            res = _sb_call(lambda: _supabase.table("bank_mutations").select("*").execute())
+            data = res.data or []
+            _write_local_bank_mutations(data)
+            _clear_schema_drift_notes_for("bank_mutations")
+            return data
+        except Exception as exc:
+            _note_schema_drift("bank_mutations",
+                               ("id", "datum", "bedrag", "omschrijving"), exc)
+    return _read_local_bank_mutations()
+
+
+def save_bank_mutation(bedrag: float, omschrijving: str, datum: str = "") -> str:
+    """
+    Voeg een bankrekening-mutatie toe. bedrag > 0 = bijschrijving, < 0 = afschrijving.
+    Geeft het mutation_id terug.
+    """
+    import uuid as _uuid
+    mutation_id = str(_uuid.uuid4())[:8]
+    row = {
+        "id":           mutation_id,
+        "datum":        datum or _now_local().strftime("%Y-%m-%d"),
+        "bedrag":       float(bedrag),
+        "omschrijving": (omschrijving or "").strip() or ("Bijschrijving" if bedrag > 0 else "Afschrijving"),
+    }
+    saved_anywhere = False
+    if _using_supabase:
+        try:
+            _sb_call(lambda: _supabase.table("bank_mutations").upsert(row).execute())
+            saved_anywhere = True
+            _clear_schema_drift_notes_for("bank_mutations")
+        except Exception as exc:
+            _note_schema_drift("bank_mutations",
+                               ("id", "datum", "bedrag", "omschrijving"), exc)
+    mutations = _read_local_bank_mutations()
+    if not any(m.get("id") == mutation_id for m in mutations):
+        mutations.append(row)
+        try:
+            _write_local_bank_mutations(mutations)
+            saved_anywhere = True
+        except Exception:
+            pass
+    if not saved_anywhere:
+        raise RuntimeError("Bank-mutatie kon nergens worden opgeslagen.")
+    return mutation_id
+
+
+def delete_bank_mutation(mutation_id: str) -> bool:
+    """Verwijder een bankrekening-mutatie. Returns True als iets verwijderd is."""
+    deleted_anywhere = False
+    if _using_supabase:
+        try:
+            _sb_call(lambda: (
+                _supabase.table("bank_mutations").delete().eq("id", mutation_id).execute()
+            ))
+            deleted_anywhere = True
+        except Exception:
+            pass
+    mutations = _read_local_bank_mutations()
+    new_list = [m for m in mutations if m.get("id") != mutation_id]
+    if len(new_list) != len(mutations):
+        _write_local_bank_mutations(new_list)
+        deleted_anywhere = True
+    return deleted_anywhere
+
+
+def get_bank_mutations_total() -> float:
+    """Netto som van alle bankrekening-mutaties. Defensief tegen None/NaN."""
+    import math
+    total = 0.0
+    for m in load_bank_mutations():
+        raw = m.get("bedrag", 0)
+        try:
+            v = float(raw if raw not in (None, "") else 0)
+            if math.isnan(v) or math.isinf(v):
+                continue
+            total += v
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 # ── Direct bet (gesloten weddenschap direct naar resultaten) ──────────────────
 
 def add_direct_bet(speler: str, sport: str, bet_type: str, odds: float,
