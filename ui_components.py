@@ -373,8 +373,8 @@ def render_mlb_match_cards(match_analyses: list):
                     return f"**{name}**  —  {stats}"
 
                 pc1, pc2 = st.columns(2)
-                pc1.markdown(f"🏠 {_pitcher_label(hp)}")
-                pc2.markdown(f"✈️ {_pitcher_label(ap)}")
+                pc1.markdown(f"🏠 **{home}** &nbsp;·&nbsp; {_pitcher_label(hp)}")
+                pc2.markdown(f"✈️ **{away}** &nbsp;·&nbsp; {_pitcher_label(ap)}")
 
             # ── Team statistieken ──────────────────────────────────────────────
             if hf or af:
@@ -585,6 +585,21 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
         st.markdown(card_html, unsafe_allow_html=True)
 
         # ── Interactieve Streamlit-elementen ──────────────────────────────────
+        # Team-invoerveld als het team-veld ontbreekt (zodat het meegeslagen wordt bij Shortlist)
+        _team_key = "team_input_" + db.make_fav_id(bet["player"], bet["bet_type"])
+        _team_missing = not str(bet.get("team") or "").strip()
+        if _team_missing and not is_fav:
+            st.warning(
+                f"⚠️ Team ontbreekt voor **{bet['player']}** — vul hieronder in zodat dit correct wordt opgeslagen.",
+                icon=None,
+            )
+            st.text_input(
+                "Team van de speler",
+                key=_team_key,
+                placeholder="bijv. Utah Hockey Club, EDM, Liverpool FC",
+                label_visibility="collapsed",
+            )
+
         _adj_key     = "adj_" + db.make_fav_id(bet["player"], bet["bet_type"])
         _stored_odds = st.session_state.get(_adj_key)
         _display     = _stored_odds if _stored_odds is not None else float(bet["odds"])
@@ -619,11 +634,16 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
             if is_fav:
                 db.remove_favoriet(fid)
             else:
+                # Voeg handmatig ingevuld team toe als het ontbrak
+                _typed_team = str(st.session_state.get(_team_key) or "").strip()
+                _bet_to_save = {**bet}
+                if _typed_team and not str(_bet_to_save.get("team") or "").strip():
+                    _bet_to_save["team"] = _typed_team
                 _fav_adj = st.session_state.get(_adj_key)
                 if _fav_adj is not None and abs(_fav_adj - float(bet["odds"])) > 0.001:
                     _composite = bet.get("composite", 0.5)
                     _adj_ev    = _composite * (_fav_adj - 1) - (1 - _composite)
-                    db.add_favoriet(fid, {**bet, "odds": _fav_adj, "ev": _adj_ev}, source_session_id=session_id, game_date=game_date)
+                    db.add_favoriet(fid, {**_bet_to_save, "odds": _fav_adj, "ev": _adj_ev}, source_session_id=session_id, game_date=game_date)
                 else:
-                    db.add_favoriet(fid, bet, source_session_id=session_id, game_date=game_date)
+                    db.add_favoriet(fid, _bet_to_save, source_session_id=session_id, game_date=game_date)
             st.rerun()
