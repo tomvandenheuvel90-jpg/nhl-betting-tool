@@ -1945,7 +1945,7 @@ with tab_bankroll:
         def _bk_filter(r: dict) -> bool:
             if _bk_sport != "Alles" and _bk_sport.lower() not in (r.get("sport","") or "").lower():
                 return False
-            if _bk_btype != "Alles" and _bk_btype.lower() not in (r.get("bet_type","") or "").lower():
+            if _bk_btype != "Alles" and _bk_btype.lower() not in (r.get("bet","") or "").lower():
                 return False
             if _bk_period != "Alles":
                 try:
@@ -2068,13 +2068,14 @@ with tab_bankroll:
             _bwin_pct = (_bn_won / len(_gedaan) * 100) if _gedaan else 0.0
     
             # Huidig saldo (alleen als startbankroll ingesteld)
+            # Gebruik altijd de ONGEFILTERDE totalen (_bk_balance / _bk_total_wl) zodat
+            # het saldo consistent is met de header, ongeacht actieve filters.
             if _start_bk_saved > 0:
-                _bk_flt_open_inzet = sum(float(r.get("inzet",0)) for r in _alle_res if r.get("uitkomst") == "open")
-                _huidig_saldo = _start_bk_saved + _mutations_total + _bt_wl - _bk_flt_open_inzet
-                _groei_pct    = (_bt_wl / _start_bk_saved * 100) if _start_bk_saved > 0 else 0.0
+                _huidig_saldo = _bk_balance  # identiek aan header: start + mutaties + wl_all - open_inzet_all
+                _groei_pct    = (_bk_total_wl / _start_bk_saved * 100) if _start_bk_saved > 0 else 0.0
                 _bmc1, _bmc2, _bmc3, _bmc4 = st.columns(4)
                 _bmc1.markdown(kpi_card("🏦", "Startbankroll", f"€{_start_bk_saved:.2f}"), unsafe_allow_html=True)
-                _bmc2.markdown(kpi_card("💰", "Huidig saldo",  f"€{_huidig_saldo:.2f}", f"P&L {_bt_wl:+.2f}", positive=(_bt_wl > 0) if _bt_wl != 0 else None), unsafe_allow_html=True)
+                _bmc2.markdown(kpi_card("💰", "Huidig saldo",  f"€{_huidig_saldo:.2f}", f"P&L {_bk_total_wl:+.2f}", positive=(_bk_total_wl > 0) if _bk_total_wl != 0 else None), unsafe_allow_html=True)
                 _bmc3.markdown(kpi_card("📈", "Groei",         f"{_groei_pct:+.1f}%", positive=(_groei_pct > 0) if _groei_pct != 0 else None), unsafe_allow_html=True)
                 _bmc4.markdown(kpi_card("🎯", "Win %",         f"{_bwin_pct:.1f}%",   positive=(_bwin_pct >= 55) if _gedaan else None), unsafe_allow_html=True)
                 st.markdown("")
@@ -2104,7 +2105,7 @@ with tab_bankroll:
                     _cum_wl += _r.get("winst_verlies", 0)
                     _row = {"Datum": _r.get("datum",""), "Cumulatief P&L (€)": round(_cum_wl, 2)}
                     if _start_bk_saved > 0:
-                        _row["Bankroll (€)"] = round(_start_bk_saved + _cum_wl, 2)
+                        _row["Bankroll (€)"] = round(_start_bk_saved + _mutations_total + _cum_wl, 2)
                     _rows.append(_row)
                 _chart_df = pd.DataFrame(_rows).set_index("Datum")
                 st.line_chart(_chart_df)
@@ -2499,7 +2500,8 @@ with tab_bankroll:
         _kr1.metric("Full Kelly %",    f"{_k_full*100:.1f}%")
         _kr2.metric("Geadviseerde %",  f"{_k_advised*100:.1f}%")
         if _start_bk_saved > 0:
-            _k_current_bk = _start_bk_saved + sum(r.get("winst_verlies",0) for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen","verloren","void"))
+            # Gebruik dezelfde formule als de header: start + mutaties + wl_settled - open_inzet
+            _k_current_bk = _bk_balance if _bk_balance is not None else _start_bk_saved
             _k_euro = max(0.0, _k_current_bk * _k_advised)
             _kr3.metric("Inzet bij huidig saldo", f"€{_k_euro:.2f}")
         if _k_full <= 0:
