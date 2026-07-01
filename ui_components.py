@@ -464,10 +464,18 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
     # in de spelernaam zit (voorkomt "McDavid · EDM · vs TOR" bij namen als
     # "Edmonton Oilers vs Toronto Maple Leafs").
     _team_val = str(bet.get("team") or "").strip()
+    _opp_val  = str(bet.get("opponent") or "").strip()
     if _team_val and _team_val.lower() not in str(bet.get("player") or "").lower():
         caption_parts.append(_team_val)
-    if bet.get("opponent"):
-        caption_parts.append(f"vs {bet['opponent']}")
+    if _opp_val:
+        caption_parts.append(f"vs {_opp_val}")
+    # Fallback: als team én opponent allebei onbekend zijn maar de wedstrijd wél
+    # zichtbaar was op de screenshot (bijv. Bet365 bet builder), toon beide teams.
+    if not _team_val and not _opp_val:
+        _mh = str(bet.get("match_home") or "").strip()
+        _ma = str(bet.get("match_away") or "").strip()
+        if _mh and _ma:
+            caption_parts.append(f"{_mh} vs {_ma}")
     if b365_label:
         caption_parts.append(b365_label)
     _gaa = bet.get("gaa")
@@ -589,8 +597,13 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
         _team_key = "team_input_" + db.make_fav_id(bet["player"], bet["bet_type"])
         _team_missing = not str(bet.get("team") or "").strip()
         if _team_missing and not is_fav:
+            _warn_match_ctx = ""
+            _mh = str(bet.get("match_home") or "").strip()
+            _ma = str(bet.get("match_away") or "").strip()
+            if _mh and _ma:
+                _warn_match_ctx = f" (wedstrijd: {_mh} vs {_ma})"
             st.warning(
-                f"⚠️ Team ontbreekt voor **{bet['player']}** — vul hieronder in zodat dit correct wordt opgeslagen.",
+                f"⚠️ Team van **{bet['player']}** onbekend{_warn_match_ctx} — vul hieronder in zodat dit correct wordt opgeslagen.",
                 icon=None,
             )
             st.text_input(

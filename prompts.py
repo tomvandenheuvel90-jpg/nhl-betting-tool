@@ -131,8 +131,10 @@ Extraheer ELKE zichtbare spelersprop. Elk object heeft:
                      "Championship", "La Liga", "Bundesliga", "Serie A", "Ligue 1",
                      "Champions League", "Europa League", "Eredivisie", "MLS").
                      Gebruik NOOIT "NBA" of "NHL" voor voetbalspelers.
-  - "team"         : teamafkorting indien zichtbaar (bijv. "DET"), anders null
-  - "opponent"     : tegenstander indien zichtbaar (bijv. "MIN" uit "vs MIN"), anders null
+  - "team"         : teamafkorting of naam van de speler zelf indien zichtbaar (bijv. "DET"), anders null
+  - "opponent"     : tegenstander van de speler indien zichtbaar (bijv. "MIN" uit "vs MIN"), anders null
+  - "match_home"   : volledige naam of afkorting van de thuisploeg indien zichtbaar bij deze prop (bijv. "DET Tigers"), anders null
+  - "match_away"   : volledige naam of afkorting van de uitploeg indien zichtbaar bij deze prop (bijv. "NY Yankees"), anders null
   - "bet_type"     : bijv. "Over 13.5 REB+AST" of "Over 0.5 Points"
   - "linemate_odds": odds als decimaal getal (number), bijv. 1.95
   - "hit_rate"     : PRIMAIRE hit rate als decimaal (0–1). Zie keuzeregel hieronder.

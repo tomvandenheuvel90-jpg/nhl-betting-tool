@@ -1108,6 +1108,10 @@ def enrich_bet(bet: dict, cache: dict,
         "no_linemate_hr": not _hr_ok,
         # Extra context uit de Linemate Trends-weergave (meerdere statistiekregels per prop)
         "trend_stats":    bet.get("trend_stats", []),
+        # Wedstrijd-context: beide teams zichtbaar op de screenshot (bijv. Bet365 bet builder)
+        # Gebruikt als fallback in de caption als team/opponent niet bepaald kon worden.
+        "match_home":     bet.get("match_home") or "",
+        "match_away":     bet.get("match_away") or "",
     }
 
 
