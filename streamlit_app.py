@@ -2748,6 +2748,22 @@ with tab_parlay:
         )
 
         _pb1, _pb2 = st.columns(2)
+        # Duplicaatcheck: waarschuw als er al een parlay bestaat met dezelfde odds + inzet van vandaag
+        _existing_parlays_check = db.load_parlays()
+        _today_str = datetime.date.today().isoformat()
+        _dupe_candidates = [
+            p for p in _existing_parlays_check
+            if abs(float(p.get("gecombineerde_odds") or 0) - round(_comb_odds, 4)) < 0.01
+            and abs(float(p.get("inzet") or 0) - float(_inzet)) < 0.01
+            and (p.get("datum") or "")[:10] == _today_str
+        ]
+        if _dupe_candidates:
+            st.warning(
+                f"⚠️ Let op: er bestaat al een parlay van vandaag met dezelfde odds ({round(_comb_odds, 2)}) "
+                f"en inzet (€{float(_inzet):.2f}). Controleer of je deze niet dubbel opslaat.",
+                icon=None,
+            )
+
         if _pb1.button("⭐ Sla parlay op", use_container_width=True, type="primary"):
             _new_prl_id = str(uuid.uuid4())[:8]
             db.save_parlay({
