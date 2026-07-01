@@ -3196,7 +3196,7 @@ with tab_geplaatst:
                                 _b_te_winnen_s = f"€{round(float(_b_inzet_val) * (float(_b_odds_val) - 1), 2):.2f}"
                             else:
                                 _b_te_winnen_s = "—"
-                            _bc1, _bc2, _bc2b, _bc3, _bc4, _bc5, _bc6, _bc7 = st.columns([3, 0.85, 0.85, 0.85, 0.85, 0.85, 0.4, 0.4])
+                            _bc1, _bc2, _bc2b, _bc3, _bc4, _bc5, _bc6, _bc7, _bc8 = st.columns([3, 0.85, 0.85, 0.85, 0.85, 0.85, 0.4, 0.4, 0.4])
                             # Hoofdtitel: speler + (voor niet-parlays) bet-omschrijving.
                             # Voor parlays laten we de legs in de expander eronder zien.
                             _b_is_parlay = str(_b_id).startswith("parlay_")
@@ -3216,16 +3216,24 @@ with tab_geplaatst:
                             if _bc6.button("✏️", key=f"gpedit_{_b_id}", help="Bewerk weddenschap"):
                                 st.session_state.gp_editing = _b_id
                                 st.rerun()
-                            if _bc7.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder weddenschap"):
-                                if _b_is_parlay:
-                                    _orig_prl_id = str(_b_id)[len("parlay_"):]
-                                    if _b.get("uitkomst") == "open":
-                                        # Open parlay staat niet in resultaten → verwijder uit parlays tabel
-                                        db.delete_parlay(_orig_prl_id)
-                                    else:
-                                        # Gesettled parlay staat in resultaten én parlays tabel
+                            # ↩️ Herstel naar open — alleen zichtbaar bij gesettlede bets,
+                            # zodat een verkeerd gemarkeerde uitkomst ongedaan gemaakt kan worden.
+                            _b_is_settled = _b.get("uitkomst") in ("gewonnen", "verloren", "void")
+                            if _b_is_settled:
+                                if _bc7.button("↩️", key=f"gpundo_{_b_id}", help="Zet terug naar open (foutieve uitkomst)"):
+                                    if _b_is_parlay:
+                                        _orig_prl_id = str(_b_id)[len("parlay_"):]
                                         db.remove_resultaat(_b_id)
                                         db.update_parlay(_orig_prl_id, {"uitkomst": "open", "winst_verlies": 0.0})
+                                    else:
+                                        db.remove_resultaat(_b_id)
+                                    st.rerun()
+                            # 🗑️ Volledig verwijderen — verwijdert altijd alles, inzet komt terug in saldo.
+                            if _bc8.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder volledig (inzet terug naar saldo)"):
+                                if _b_is_parlay:
+                                    _orig_prl_id = str(_b_id)[len("parlay_"):]
+                                    db.delete_parlay(_orig_prl_id)      # verwijder uit parlays tabel
+                                    db.remove_resultaat(_b_id)          # verwijder eventuele resultaten-entry
                                 else:
                                     db.remove_resultaat(_b_id)
                                 st.rerun()
