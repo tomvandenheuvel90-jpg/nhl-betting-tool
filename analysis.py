@@ -946,6 +946,18 @@ def enrich_bet(bet: dict, cache: dict,
     team_hint   = bet.get("team") or ""
     bet_type    = bet.get("bet_type", "")
 
+    # Defensief: een extractiefout kan de spelersnaam in het "team"-veld zetten
+    # (verwart Vision-model bij drukke screenshots). Zo'n team_hint mag nooit
+    # gebruikt worden — het vervuilt sport-API lookups en de prop-kaart caption.
+    # Alleen korte afkortingen (<=4 tekens) worden zonder check vertrouwd; bij
+    # langere waarden wordt gecontroleerd of het niet gewoon de spelersnaam is.
+    if team_hint and player_name and len(team_hint.strip()) > 4:
+        _th_l = team_hint.strip().lower()
+        _pn_l = player_name.strip().lower()
+        if _th_l == _pn_l or _th_l in _pn_l or _pn_l in _th_l:
+            _log.warning(f"[enrich_bet] team-veld '{team_hint}' lijkt op spelersnaam '{player_name}' — genegeerd")
+            team_hint = ""
+
     # FIX Bug 3: default 0 (onbekend) niet 5 (artificiele data)
     sample_n = bet.get("sample_n") or 0
 

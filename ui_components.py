@@ -465,17 +465,17 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
     # "Edmonton Oilers vs Toronto Maple Leafs").
     _team_val = str(bet.get("team") or "").strip()
     _opp_val  = str(bet.get("opponent") or "").strip()
+    _mh       = str(bet.get("match_home") or "").strip()
+    _ma       = str(bet.get("match_away") or "").strip()
     if _team_val and _team_val.lower() not in str(bet.get("player") or "").lower():
         caption_parts.append(_team_val)
     if _opp_val:
         caption_parts.append(f"vs {_opp_val}")
-    # Fallback: als team én opponent allebei onbekend zijn maar de wedstrijd wél
-    # zichtbaar was op de screenshot (bijv. Bet365 bet builder), toon beide teams.
-    if not _team_val and not _opp_val:
-        _mh = str(bet.get("match_home") or "").strip()
-        _ma = str(bet.get("match_away") or "").strip()
-        if _mh and _ma:
-            caption_parts.append(f"{_mh} vs {_ma}")
+    # Wedstrijd-context (bijv. "DET Tigers vs NY Yankees") tonen zodra bekend en nog
+    # niet al gedekt door team/opponent hierboven — dit is de betrouwbaarste bron
+    # ("de wedstrijd van de speler staat erbij vermeld") en vereist geen team-lookup.
+    if _mh and _ma and not (_team_val and _opp_val):
+        caption_parts.append(f"{_mh} vs {_ma}")
     if b365_label:
         caption_parts.append(b365_label)
     _gaa = bet.get("gaa")
@@ -593,26 +593,6 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
         st.markdown(card_html, unsafe_allow_html=True)
 
         # ── Interactieve Streamlit-elementen ──────────────────────────────────
-        # Team-invoerveld als het team-veld ontbreekt (zodat het meegeslagen wordt bij Shortlist)
-        _team_key = "team_input_" + db.make_fav_id(bet["player"], bet["bet_type"])
-        _team_missing = not str(bet.get("team") or "").strip()
-        if _team_missing and not is_fav:
-            _warn_match_ctx = ""
-            _mh = str(bet.get("match_home") or "").strip()
-            _ma = str(bet.get("match_away") or "").strip()
-            if _mh and _ma:
-                _warn_match_ctx = f" (wedstrijd: {_mh} vs {_ma})"
-            st.warning(
-                f"⚠️ Team van **{bet['player']}** onbekend{_warn_match_ctx} — vul hieronder in zodat dit correct wordt opgeslagen.",
-                icon=None,
-            )
-            st.text_input(
-                "Team van de speler",
-                key=_team_key,
-                placeholder="bijv. Utah Hockey Club, EDM, Liverpool FC",
-                label_visibility="collapsed",
-            )
-
         _adj_key     = "adj_" + db.make_fav_id(bet["player"], bet["bet_type"])
         _stored_odds = st.session_state.get(_adj_key)
         _display     = _stored_odds if _stored_odds is not None else float(bet["odds"])
@@ -647,16 +627,11 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
             if is_fav:
                 db.remove_favoriet(fid)
             else:
-                # Voeg handmatig ingevuld team toe als het ontbrak
-                _typed_team = str(st.session_state.get(_team_key) or "").strip()
-                _bet_to_save = {**bet}
-                if _typed_team and not str(_bet_to_save.get("team") or "").strip():
-                    _bet_to_save["team"] = _typed_team
                 _fav_adj = st.session_state.get(_adj_key)
                 if _fav_adj is not None and abs(_fav_adj - float(bet["odds"])) > 0.001:
                     _composite = bet.get("composite", 0.5)
                     _adj_ev    = _composite * (_fav_adj - 1) - (1 - _composite)
-                    db.add_favoriet(fid, {**_bet_to_save, "odds": _fav_adj, "ev": _adj_ev}, source_session_id=session_id, game_date=game_date)
+                    db.add_favoriet(fid, {**bet, "odds": _fav_adj, "ev": _adj_ev}, source_session_id=session_id, game_date=game_date)
                 else:
-                    db.add_favoriet(fid, _bet_to_save, source_session_id=session_id, game_date=game_date)
+                    db.add_favoriet(fid, bet, source_session_id=session_id, game_date=game_date)
             st.rerun()

@@ -126,15 +126,22 @@ Geef een JSON object terug met twee arrays: "bets" en "matches".
 ARRAY 1 — "bets"  (uit screenshot-type A of B)
 ══════════════════════════════════════════════════════
 Extraheer ELKE zichtbare spelersprop. Elk object heeft:
-  - "player"       : naam (bijv. "J. Duren" of "Connor McDavid")
+  - "player"       : ALTIJD de naam van de speler zelf, nooit een teamnaam (bijv. "J. Duren" of
+                     "Connor McDavid"). Dit veld bepaalt wat prominent getoond wordt in de app,
+                     dus wees hier extra zorgvuldig.
   - "sport"        : "NHL", "NBA", "MLB", of de exacte voetbalcompetitie (bijv. "EPL",
                      "Championship", "La Liga", "Bundesliga", "Serie A", "Ligue 1",
                      "Champions League", "Europa League", "Eredivisie", "MLS").
                      Gebruik NOOIT "NBA" of "NHL" voor voetbalspelers.
-  - "team"         : teamafkorting of naam van de speler zelf indien zichtbaar (bijv. "DET"), anders null
+  - "team"         : ALLEEN een teamafkorting of teamnaam (bijv. "DET"), en NOOIT de naam van
+                     de speler zelf. Twijfel je of iets een team of de spelersnaam is? Gebruik null.
   - "opponent"     : tegenstander van de speler indien zichtbaar (bijv. "MIN" uit "vs MIN"), anders null
-  - "match_home"   : volledige naam of afkorting van de thuisploeg indien zichtbaar bij deze prop (bijv. "DET Tigers"), anders null
-  - "match_away"   : volledige naam of afkorting van de uitploeg indien zichtbaar bij deze prop (bijv. "NY Yankees"), anders null
+  - "match_home"   : volledige naam of afkorting van de thuisploeg van DEZE wedstrijd indien
+                     zichtbaar (bijv. "DET Tigers"), anders null. Dit is de belangrijkste en
+                     meest betrouwbare bron van wedstrijd-context — vaak zichtbaar boven de
+                     spelerslijst — dus vul dit in wanneer mogelijk, ook als "team"/"opponent" null zijn.
+  - "match_away"   : volledige naam of afkorting van de uitploeg van DEZE wedstrijd indien
+                     zichtbaar (bijv. "NY Yankees"), anders null
   - "bet_type"     : bijv. "Over 13.5 REB+AST" of "Over 0.5 Points"
   - "linemate_odds": odds als decimaal getal (number), bijv. 1.95
   - "hit_rate"     : PRIMAIRE hit rate als decimaal (0–1). Zie keuzeregel hieronder.
