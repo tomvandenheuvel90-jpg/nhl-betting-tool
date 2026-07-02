@@ -40,6 +40,21 @@ def _nhl_season() -> str:
     return f"{y - 1}{y}"
 
 
+def _prev_season(season_str: str) -> str:
+    """Geeft het seizoen vóór season_str, zelfde '20252026'-formaat.
+
+    Nodig omdat SEASON hieronder één keer bij het opstarten wordt berekend op
+    basis van 'vandaag' (_mp_year(): maand >= 7 → volgend jaar). Zodra het
+    kalenderjaar over 1 juli heen is (tussenseizoen/zomer) wijst SEASON dus al
+    naar het net-nog-niet-begonnen volgende seizoen, terwijl we voor het
+    beoordelen van al gespeelde wedstrijden (grade_parlay_legs.py) juist data
+    uit het net afgelopen seizoen nodig hebben. Roster-opbouw en de
+    game-log-fallback vallen daarom terug op _prev_season(SEASON) als de
+    'huidige' seizoenscode niets oplevert."""
+    start = int(season_str[:4])
+    return f"{start - 1}{start}"
+
+
 MP_GAMELOG_URL = (
     "https://moneypuck.com/moneypuck/playerData/careers/gameByGame"
     f"/{_mp_year()}/regular/skaters.csv"
@@ -95,23 +110,17 @@ def _mp_download_csv(url: str, cache_key: str, ttl_hours: int = 6) -> list:
 
 # ─── Speler opzoeken via NHL API ──────────────────────────────────────────────
 
-@lru_cache(maxsize=1)
-def _all_rosters() -> dict:
-    """Bouw name→(player_id, team) index van alle NHL-teams.
-    Vult tegelijk _TEAM_PLAYERS_CACHE (skaters per team, geen goalies)."""
+def _build_roster_index(teams: list, season: str) -> dict:
+    """Bouwt de name→(player_id, team) index + _TEAM_PLAYERS_CACHE voor één
+    seizoenscode. Losgetrokken van _all_rosters() zodat die met een fallback-
+    seizoen kan herproberen als het huidige seizoen niets oplevert."""
     global _TEAM_PLAYERS_CACHE
-    standings = _nhl_get(f"{NHL_BASE}/standings/now").get("standings", [])
-    teams = [
-        t.get("teamAbbrev", {}).get("default")
-        for t in standings
-        if t.get("teamAbbrev")
-    ]
     index: dict = {}
     _TEAM_PLAYERS_CACHE = {}
     for team in teams:
         if not team:
             continue
-        roster = _nhl_get(f"{NHL_BASE}/roster/{team}/{SEASON}")
+        roster = _nhl_get(f"{NHL_BASE}/roster/{team}/{season}")
         _TEAM_PLAYERS_CACHE.setdefault(team, [])
         for pos in ("forwards", "defensemen", "goalies"):
             for p in roster.get(pos, []):
@@ -134,6 +143,29 @@ def _all_rosters() -> dict:
                         "team":     team,
                         "position": "forward" if pos == "forwards" else "defenseman",
                     })
+    return index
+
+
+@lru_cache(maxsize=1)
+def _all_rosters() -> dict:
+    """Bouw name→(player_id, team) index van alle NHL-teams.
+    Vult tegelijk _TEAM_PLAYERS_CACHE (skaters per team, geen goalies).
+
+    Probeert eerst SEASON (huidig berekend seizoen). In het tussenseizoen
+    (vanaf 1 juli, zie _mp_year()) wijst dat naar het net-nog-niet-begonnen
+    volgende seizoen, waarvoor de NHL nog geen (volledige) rosters publiceert
+    — dan valt dit terug op het net afgelopen seizoen, zodat spelers uit
+    recent gespeelde wedstrijden nog gevonden worden (nodig voor
+    grade_parlay_legs.py)."""
+    standings = _nhl_get(f"{NHL_BASE}/standings/now").get("standings", [])
+    teams = [
+        t.get("teamAbbrev", {}).get("default")
+        for t in standings
+        if t.get("teamAbbrev")
+    ]
+    index = _build_roster_index(teams, SEASON)
+    if not index:
+        index = _build_roster_index(teams, _prev_season(SEASON))
     return index
 
 
@@ -361,10 +393,19 @@ def _build_stats_from_mp(recent: list, player_id: int) -> dict:
 
 
 def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
-    """Fallback: gebruik NHL API game-log. Geeft shots/goals/assists/points (geen hits/blocks)."""
+    """Fallback: gebruik NHL API game-log. Geeft shots/goals/assists/points (geen hits/blocks).
+
+    Probeert eerst SEASON; in het tussenseizoen (zie _mp_year()/_all_rosters())
+    heeft het net-nog-niet-begonnen volgende seizoen nog geen game-log, wat
+    zonder fallback als een lege lijst (of stille 404, zie _nhl_get) terugkwam
+    — val dan terug op het net afgelopen seizoen."""
     game_log = _nhl_get(
         f"{NHL_BASE}/player/{player_id}/game-log/{SEASON}/2"
     ).get("gameLog", [])
+    if not game_log:
+        game_log = _nhl_get(
+            f"{NHL_BASE}/player/{player_id}/game-log/{_prev_season(SEASON)}/2"
+        ).get("gameLog", [])
 
     shots   = []
     goals   = []
@@ -691,10 +732,8 @@ def get_h2h_results(home_abbrev: str, away_abbrev: str, n: int = 5) -> dict:
 
     games = _fetch_season(SEASON)
     if len(games) < n:
-        prev_year   = int(SEASON[:4]) - 1
-        prev_season = f"{prev_year}{prev_year + 1}"
         try:
-            games += _fetch_season(prev_season)
+            games += _fetch_season(_prev_season(SEASON))
         except Exception:
             pass
 

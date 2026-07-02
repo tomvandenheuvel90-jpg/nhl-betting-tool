@@ -147,6 +147,31 @@ def _team_caption_suffix(bet: dict) -> str:
     return f"  ·  {_team}"
 
 
+def _parlay_leg_status(leg: dict, leg_status: dict, idx: int = None) -> str:
+    """
+    Zoekt de status van één parlay-leg op in het legs_json-dict. Ondersteunt
+    beide sleutel-conventies die in de app voorkomen ("i_player_bettype" en
+    "player_bettype"), zodat oudere en nieuwere parlays hetzelfde werken.
+    Retourneert "open" als er nog geen status bekend is (nog niet beoordeeld).
+    """
+    _player = str(leg.get("player") or "")
+    _bt     = str(leg.get("bet_type") or "")
+    if idx is not None:
+        _k_idx = f"{idx}_{_player}_{_bt}"
+        if _k_idx in leg_status:
+            return leg_status[_k_idx]
+    _k = f"{_player}_{_bt}"
+    return leg_status.get(_k, "open")
+
+
+def _parlay_open_leg_count(legs: list, leg_status: dict) -> int:
+    """Aantal legs dat nog niet beoordeeld is (status 'open')."""
+    return sum(
+        1 for _i, _leg in enumerate(legs or [])
+        if _parlay_leg_status(_leg, leg_status, _i) == "open"
+    )
+
+
 def _get_secret(key: str, default: str = "") -> str:
     try:
         return st.secrets.get(key, default) or default
@@ -2718,29 +2743,45 @@ with tab_parlay:
             _prl_ev_raw = _prl.get("ev_score")
             _prl_ev_s = (f"+{_prl_ev_raw:.3f}" if _prl_ev_raw >= 0 else f"{_prl_ev_raw:.3f}") \
                         if _prl_ev_raw is not None else "—"
+            # Aantal legs dat nog niet beoordeeld is — zichtbaar zonder de expander
+            # te hoeven openen, zodat in één oogopslag duidelijk is welke parlays
+            # nog aandacht nodig hebben.
+            _prl_open_n = _parlay_open_leg_count(_prl_legs, _prl_lj)
+            _prl_open_badge = f" · ⏳ {_prl_open_n} nog te beoordelen" if _prl_open_n else " · ✅ alle legs beoordeeld"
             with st.expander(
                 f"🎯 {len(_prl_legs)} legs · Odds {_prl.get('gecombineerde_odds',0):.2f}"
                 f" · EV {_prl_ev_s} · {(_prl.get('uitkomst') or 'open').upper()}"
+                f"{_prl_open_badge}"
             ):
+                _leg_opts = ["open", "geraakt", "gemist", "void"]
+                # Alle leg-statussen worden in één formulier verzameld — pas bij
+                # klikken op "✅ Verwerken" wordt er iets opgeslagen/herladen.
+                # Zo kun je meerdere legs aanpassen zonder dat de pagina na elke
+                # wijziging opnieuw moet laden.
+                with st.form(key=f"legform_{_prl.get('id','')}"):
+                    _new_statuses = {}
+                    for _leg_idx, _pleg in enumerate(_prl_legs):
+                        _lk  = str(_pleg.get("player","")) + "_" + str(_pleg.get("bet_type",""))
+                        _lst = _prl_lj.get(_lk, "open")
+                        _auto_badge = " 🤖" if _lk in _prl_laj else ""
+                        _plc1, _plc2 = st.columns([3, 2])
+                        _plc1.write(f"**{_pleg.get('player','')}** — {_pleg.get('bet_type','')} @ {_pleg.get('odds','—')}{_auto_badge}")
+                        _new_statuses[_lk] = _plc2.selectbox(
+                            "Status", options=_leg_opts,
+                            index=_leg_opts.index(_lst) if _lst in _leg_opts else 0,
+                            key=f"legst_{_prl.get('id','')}_{_leg_idx}_{_lk}", label_visibility="collapsed",
+                        )
+                    _legs_submitted = st.form_submit_button("✅ Verwerken", type="primary", use_container_width=True)
+
                 _upd_legs = dict(_prl_lj)
                 _upd_laj  = dict(_prl_laj)
                 _changed  = False
-                _leg_opts = ["open", "geraakt", "gemist", "void"]
-                for _leg_idx, _pleg in enumerate(_prl_legs):
-                    _lk  = str(_pleg.get("player","")) + "_" + str(_pleg.get("bet_type",""))
-                    _lst = _upd_legs.get(_lk, "open")
-                    _auto_badge = " 🤖" if _lk in _upd_laj else ""
-                    _plc1, _plc2 = st.columns([3, 2])
-                    _plc1.write(f"**{_pleg.get('player','')}** — {_pleg.get('bet_type','')} @ {_pleg.get('odds','—')}{_auto_badge}")
-                    _nst = _plc2.selectbox(
-                        "Status", options=_leg_opts,
-                        index=_leg_opts.index(_lst) if _lst in _leg_opts else 0,
-                        key=f"legst_{_prl.get('id','')}_{_leg_idx}_{_lk}", label_visibility="collapsed",
-                    )
-                    if _nst != _lst:
-                        _upd_legs[_lk] = _nst
-                        _upd_laj.pop(_lk, None)  # handmatige override → niet meer 'auto'
-                        _changed = True
+                if _legs_submitted:
+                    for _lk, _nst in _new_statuses.items():
+                        if _upd_legs.get(_lk, "open") != _nst:
+                            _upd_legs[_lk] = _nst
+                            _upd_laj.pop(_lk, None)  # handmatige override → niet meer 'auto'
+                            _changed = True
                 if _changed:
                     # Herbereken gecombineerde odds: void legs tellen niet mee
                     _eff_odds = 1.0
@@ -3122,7 +3163,15 @@ with tab_geplaatst:
                             # Team-suffix via de centrale helper (parlay altijd leeg)
                             _team_suffix = "" if _b_is_parlay else _team_caption_suffix(_b)
                             if _b_is_parlay:
-                                _bc1.write(f"{_b_icon} **{_speler_disp}**{_team_suffix}")
+                                # Legs alvast opzoeken zodat we — zonder de expander te
+                                # hoeven openen — kunnen laten zien of er nog legs open
+                                # staan, ook als de parlay als geheel al is afgehandeld.
+                                _parlay_obj  = _gp_parlays_by_rid.get(_b_id)
+                                _parlay_legs = (_parlay_obj or {}).get("props_json") or []
+                                _leg_status  = (_parlay_obj or {}).get("legs_json") or {}
+                                _row_open_n  = _parlay_open_leg_count(_parlay_legs, _leg_status)
+                                _row_open_badge = f"  ·  ⏳ {_row_open_n} nog te beoordelen" if _row_open_n else ""
+                                _bc1.write(f"{_b_icon} **{_speler_disp}**{_team_suffix}{_row_open_badge}")
                             else:
                                 _bc1.write(f"{_b_icon} **{_speler_disp}** — {_bet_disp}{_team_suffix}")
                             _bc2.write(f"@ {_b.get('odds','—')}")
@@ -3156,10 +3205,9 @@ with tab_geplaatst:
                                 st.rerun()
 
                             # ── Parlay legs: uitklapbaar per parlay-rij ────
+                            # (_parlay_obj/_parlay_legs/_leg_status zijn hierboven al
+                            # opgezocht voor de ⏳-badge naast de speler/team-titel)
                             if _b_is_parlay:
-                                _parlay_obj  = _gp_parlays_by_rid.get(_b_id)
-                                _parlay_legs = (_parlay_obj or {}).get("props_json") or []
-                                _leg_status  = (_parlay_obj or {}).get("legs_json") or {}
                                 if _parlay_legs:
                                     _exp_label = (
                                         f"🎰 {len(_parlay_legs)} legs"
@@ -3173,13 +3221,7 @@ with tab_geplaatst:
                                             _lg_odds   = _lg.get("odds")
                                             _lg_odds_s = (f"@ {float(_lg_odds):.2f}"
                                                           if _lg_odds is not None else "@ —")
-                                            # Status per leg: sleutel-conventies in de app
-                                            # wisselen ("player_bettype" en "i_player_bettype").
-                                            _lg_st = (
-                                                _leg_status.get(f"{_li}_{_lg_player}_{_lg_bt}")
-                                                or _leg_status.get(f"{_lg_player}_{_lg_bt}")
-                                                or "open"
-                                            )
+                                            _lg_st = _parlay_leg_status(_lg, _leg_status, _li)
                                             _lg_ico = ("✅" if _lg_st == "geraakt"
                                                        else "❌" if _lg_st == "gemist"
                                                        else "⚪" if _lg_st == "void"

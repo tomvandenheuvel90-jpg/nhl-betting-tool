@@ -22,6 +22,7 @@ import traceback
 import itertools
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 _log = logging.getLogger(__name__)
 
@@ -244,48 +245,54 @@ def extract_bets(client, image_paths: list) -> tuple:
     raw = ""
 
     try:
-        steps.append(f"Stap 1: {len(image_paths)} afbeelding(en) verwerken — per screenshot")
+        steps.append(f"Stap 1: {len(image_paths)} afbeelding(en) verwerken — parallel per screenshot")
 
-        # Bug 2 fix: verwerk elke screenshot afzonderlijk zodat de output per API-call
-        # binnen de 8 000-token limiet van claude-haiku-4-5 past. Eerder werden alle
-        # afbeeldingen in één call gecombineerd waardoor de JSON werd afgekapt bij ~25
-        # props en de rest van de screenshots volledig werd overgeslagen.
-        _all_bets: list = []
-        _all_matches: list = []
-
-        for _i, _path in enumerate(image_paths):
-            steps.append(f"  → Screenshot {_i + 1}/{len(image_paths)}: {Path(_path).name}")
+        # Bug 2 fix (behouden): elke screenshot wordt nog steeds in een eigen
+        # API-call verwerkt zodat de output per call binnen de 8 000-token
+        # limiet van claude-haiku-4-5 past. Eerder werden alle afbeeldingen in
+        # één call gecombineerd waardoor de JSON werd afgekapt bij ~25 props.
+        # Snelheidsfix: de screenshots worden nu gelijktijdig (parallel) naar
+        # Claude gestuurd i.p.v. na elkaar — bij bijv. 4 screenshots duurde
+        # het voorheen 4x zo lang. De per-screenshot logica zelf (splitsen,
+        # parsen, repareren, fallback op helften) is ongewijzigd; alleen de
+        # volgorde waarin de API-calls verstuurd worden is anders. Bij een
+        # fout in één screenshot gedraagt dit zich hetzelfde als voorheen:
+        # de hele batch valt terug op de except-afhandeling onderaan.
+        def _process_screenshot(_i: int, _path: str) -> dict:
+            _local_steps = [f"  → Screenshot {_i + 1}/{len(image_paths)}: {Path(_path).name}"]
+            _bets: list = []
+            _matches: list = []
 
             # Splits hoge afbeeldingen in twee overlappende helften (ongewijzigd)
             _expanded = _split_tall_image(_path)
-            steps.append(f"    → {len(_expanded)} blok(ken) na splitsing")
+            _local_steps.append(f"    → {len(_expanded)} blok(ken) na splitsing")
 
             _content = [_image_content_block(_ep) for _ep in _expanded]
             _content.append({"type": "text", "text": EXTRACT_PROMPT})
 
-            steps.append(f"    → Claude {EXTRACT_MODEL} aanroepen (max_tokens=8000)")
+            _local_steps.append(f"    → Claude {EXTRACT_MODEL} aanroepen (max_tokens=8000)")
             _resp = client.messages.create(
                 model=EXTRACT_MODEL,
                 max_tokens=8000,
                 temperature=0,
                 messages=[{"role": "user", "content": _content}],
             )
-            raw = _resp.content[0].text.strip()   # bewaar laatste raw voor debug
-            steps.append(f"    → Response: {len(raw)} tekens")
-            _log.info(f"[extract_bets] Screenshot {_i + 1}: {len(raw)} tekens")
+            _raw = _resp.content[0].text.strip()
+            _local_steps.append(f"    → Response: {len(_raw)} tekens")
+            _log.info(f"[extract_bets] Screenshot {_i + 1}: {len(_raw)} tekens")
 
-            _data = _parse_json_from_text(raw)
+            _data = _parse_json_from_text(_raw)
             if _data is None:
-                steps.append("    → Directe parse mislukt, probeer repair_truncated_json")
-                _data = _parse_json_from_text(_repair_truncated_json(raw))
+                _local_steps.append("    → Directe parse mislukt, probeer repair_truncated_json")
+                _data = _parse_json_from_text(_repair_truncated_json(_raw))
                 if _data is not None:
-                    steps.append("    → repair_truncated_json geslaagd")
+                    _local_steps.append("    → repair_truncated_json geslaagd")
 
             if _data is None:
                 # Fallback: splits in helften (voor extreem lange screenshots)
-                steps.append("    → Repair mislukt, splits in helften")
+                _local_steps.append("    → Repair mislukt, splits in helften")
                 for _half in _split_image_halves(_path):
-                    steps.append(f"      → Analyseer helft: {Path(_half).name}")
+                    _local_steps.append(f"      → Analyseer helft: {Path(_half).name}")
                     _hc = [_image_content_block(_half), {"type": "text", "text": EXTRACT_PROMPT}]
                     _hr = client.messages.create(
                         model=EXTRACT_MODEL, max_tokens=8000, temperature=0,
@@ -295,16 +302,38 @@ def extract_bets(client, image_paths: list) -> tuple:
                     _hdata = _parse_json_from_text(_hraw) or _parse_json_from_text(_repair_truncated_json(_hraw))
                     if _hdata:
                         if isinstance(_hdata, list):
-                            _all_bets.extend(_hdata)
+                            _bets.extend(_hdata)
                         else:
-                            _all_bets.extend(_hdata.get("bets", []) or [])
-                            _all_matches.extend(_hdata.get("matches", []) or [])
+                            _bets.extend(_hdata.get("bets", []) or [])
+                            _matches.extend(_hdata.get("matches", []) or [])
             else:
                 if isinstance(_data, list):
-                    _all_bets.extend(_data)
+                    _bets.extend(_data)
                 else:
-                    _all_bets.extend(_data.get("bets", []) or [])
-                    _all_matches.extend(_data.get("matches", []) or [])
+                    _bets.extend(_data.get("bets", []) or [])
+                    _matches.extend(_data.get("matches", []) or [])
+
+            return {"i": _i, "bets": _bets, "matches": _matches, "raw": _raw, "steps": _local_steps}
+
+        _results: list = [None] * len(image_paths)
+        _max_workers = max(1, min(len(image_paths), 5))  # cap gelijktijdige API-calls
+        with ThreadPoolExecutor(max_workers=_max_workers) as _executor:
+            _futures = {
+                _executor.submit(_process_screenshot, _i, _p): _i
+                for _i, _p in enumerate(image_paths)
+            }
+            for _future in as_completed(_futures):
+                _idx = _futures[_future]
+                _results[_idx] = _future.result()  # laat exceptions doorbubbelen, zoals voorheen
+
+        _all_bets: list = []
+        _all_matches: list = []
+        for _r in _results:
+            steps.extend(_r["steps"])
+            _all_bets.extend(_r["bets"])
+            _all_matches.extend(_r["matches"])
+            if _r["raw"]:
+                raw = _r["raw"]  # bewaar raw van laatste screenshot voor debug, zoals voorheen
 
         bets    = _deduplicate_bets(_all_bets)
         matches = _deduplicate_matches(_all_matches)

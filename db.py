@@ -92,6 +92,37 @@ FAV_FILE     = _BASE_DIR / "favorieten.json"
 RESULTS_FILE = _BASE_DIR / "resultaten.json"
 HISTORY_DAYS = 7
 
+# ─── Lichte TTL-cache voor veelgevraagde tabellen ─────────────────────────────
+# Streamlit voert bij elke klik/interactie het volledige script opnieuw uit,
+# inclusief de body van élke tab (ook tabs die niet zichtbaar zijn) — en
+# load_favorieten()/load_resultaten()/load_parlays() werden tot nu toe 2-6x
+# per rerun aangeroepen, elke keer met een live Supabase round-trip. Dat
+# verklaart een groot deel van de algehele traagheid. Deze cache onthoudt de
+# data kort (60s) in het geheugen van het proces en wordt bij élke eigen
+# schrijfactie (toevoegen/wijzigen/verwijderen) direct geleegd, zodat eigen
+# wijzigingen altijd meteen zichtbaar zijn — alleen de overbodige herhaal-reads
+# binnen dezelfde 60 seconden worden overgeslagen.
+_TTL_CACHE: dict = {}
+_TTL_SECONDS = 60
+
+
+def _ttl_get(key: str):
+    entry = _TTL_CACHE.get(key)
+    if entry is None:
+        return None
+    ts, data = entry
+    if time.time() - ts > _TTL_SECONDS:
+        return None
+    return data
+
+
+def _ttl_set(key: str, data) -> None:
+    _TTL_CACHE[key] = (time.time(), data)
+
+
+def _ttl_clear(key: str) -> None:
+    _TTL_CACHE.pop(key, None)
+
 # ─── Supabase state ───────────────────────────────────────────────────────────
 
 _supabase     = None
@@ -544,6 +575,10 @@ def save_to_history(
 # ─── Favorieten ───────────────────────────────────────────────────────────────
 
 def load_favorieten() -> list:
+    _cached = _ttl_get("favorieten")
+    if _cached is not None:
+        return _cached
+
     if _using_supabase:
         try:
             resp = _sb_call(lambda: (
@@ -552,14 +587,18 @@ def load_favorieten() -> list:
                 .order("datum", desc=True)
                 .execute()
             ))
-            return resp.data or []
+            result = resp.data or []
+            _ttl_set("favorieten", result)
+            return result
         except Exception:
             pass
 
     if not FAV_FILE.exists():
         return []
     try:
-        return json.loads(FAV_FILE.read_text(encoding="utf-8"))
+        result = json.loads(FAV_FILE.read_text(encoding="utf-8"))
+        _ttl_set("favorieten", result)
+        return result
     except Exception:
         return []
 
@@ -598,6 +637,7 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
     if _using_supabase:
         try:
             _supabase.table("favorieten").upsert(row).execute()
+            _ttl_clear("favorieten")
             return
         except Exception as _exc_full:
             # Nieuwe kolommen bestaan mogelijk nog niet — probeer zonder optionele kolommen
@@ -607,6 +647,7 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
                 row_basic = {k: v for k, v in row.items() if k not in _optional_cols}
                 _supabase.table("favorieten").upsert(row_basic).execute()
                 _note_schema_drift("favorieten", _optional_cols, _exc_full)
+                _ttl_clear("favorieten")
                 return
             except Exception:
                 pass  # Supabase volledig onbeschikbaar → lokale fallback
@@ -617,33 +658,44 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
         return
     favs.insert(0, row)
     save_favorieten(favs)
+    _ttl_clear("favorieten")
 
 
 def remove_favoriet(fav_id: str) -> None:
     if _using_supabase:
         try:
             _supabase.table("favorieten").delete().eq("id", fav_id).execute()
+            _ttl_clear("favorieten")
             return
         except Exception:
             pass
 
     save_favorieten([f for f in load_favorieten() if f.get("id") != fav_id])
+    _ttl_clear("favorieten")
 
 
 # ─── Resultaten ───────────────────────────────────────────────────────────────
 
 def load_resultaten() -> list:
+    _cached = _ttl_get("resultaten")
+    if _cached is not None:
+        return _cached
+
     if _using_supabase:
         try:
             resp = _sb_call(lambda: _supabase.table("resultaten").select("*").execute())
-            return resp.data or []
+            result = resp.data or []
+            _ttl_set("resultaten", result)
+            return result
         except Exception:
             pass
 
     if not RESULTS_FILE.exists():
         return []
     try:
-        return json.loads(RESULTS_FILE.read_text(encoding="utf-8"))
+        result = json.loads(RESULTS_FILE.read_text(encoding="utf-8"))
+        _ttl_set("resultaten", result)
+        return result
     except Exception:
         return []
 
@@ -712,6 +764,7 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
     if _using_supabase:
         try:
             _supabase.table("resultaten").upsert(row).execute()
+            _ttl_clear("resultaten")
             return
         except Exception as _exc_full:
             # Kolom bestaat mogelijk nog niet — probeer zonder optionele kolommen
@@ -721,6 +774,7 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
                 row_basic = {k: v for k, v in row.items() if k not in _optional_cols}
                 _supabase.table("resultaten").upsert(row_basic).execute()
                 _note_schema_drift("resultaten", _optional_cols, _exc_full)
+                _ttl_clear("resultaten")
                 return
             except Exception:
                 pass  # Supabase volledig onbeschikbaar → lokale fallback
@@ -728,23 +782,30 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
     results = [r for r in load_resultaten() if r.get("id") != fav_id]
     results.insert(0, row)
     save_resultaten(results)
+    _ttl_clear("resultaten")
 
 
 def remove_resultaat(fav_id: str) -> None:
     if _using_supabase:
         try:
             _supabase.table("resultaten").delete().eq("id", fav_id).execute()
+            _ttl_clear("resultaten")
             return
         except Exception:
             pass
 
     save_resultaten([r for r in load_resultaten() if r.get("id") != fav_id])
+    _ttl_clear("resultaten")
 
 
 # ── Parlays ───────────────────────────────────────────────────────────────────
 
 def load_parlays() -> list:
     """Laad alle opgeslagen parlays."""
+    _cached = _ttl_get("parlays")
+    if _cached is not None:
+        return _cached
+
     if _using_supabase:
         try:
             res = _sb_call(lambda: _supabase.table("parlays").select("*").order("datum", desc=True).execute())
@@ -756,13 +817,16 @@ def load_parlays() -> list:
                             r[field] = json.loads(r[field])
                         except Exception:
                             pass
+            _ttl_set("parlays", rows)
             return rows
         except Exception as e:
             import logging; logging.warning(f"Supabase load_parlays: {e}")
     path = _local_path("parlays.json")
     if path.exists():
         try:
-            return json.loads(path.read_text())
+            result = json.loads(path.read_text())
+            _ttl_set("parlays", result)
+            return result
         except Exception:
             pass
     return []
@@ -782,6 +846,7 @@ def save_parlay(parlay: dict) -> None:
                 if isinstance(row.get(field), (list, dict)):
                     row[field] = json.dumps(row[field], ensure_ascii=False)
             _supabase.table("parlays").upsert(row).execute()
+            _ttl_clear("parlays")
             return
         except Exception as e:
             import logging; logging.warning(f"Supabase save_parlay (full): {e}")
@@ -789,6 +854,7 @@ def save_parlay(parlay: dict) -> None:
             try:
                 row_no_legs = {k: v for k, v in row.items() if k not in ("legs_json", "legs_auto_json")}
                 _supabase.table("parlays").upsert(row_no_legs).execute()
+                _ttl_clear("parlays")
                 return
             except Exception as e2:
                 import logging; logging.warning(f"Supabase save_parlay (fallback): {e2}")
@@ -799,6 +865,7 @@ def save_parlay(parlay: dict) -> None:
         _local_path("parlays.json").write_text(json.dumps(existing, indent=2, ensure_ascii=False))
     except Exception:
         pass
+    _ttl_clear("parlays")
 
 
 def update_parlay(parlay_id: str, updates: dict) -> None:
@@ -810,6 +877,7 @@ def update_parlay(parlay_id: str, updates: dict) -> None:
                 if isinstance(row.get(field), (list, dict)):
                     row[field] = json.dumps(row[field], ensure_ascii=False)
             _supabase.table("parlays").update(row).eq("id", parlay_id).execute()
+            _ttl_clear("parlays")
             return
         except Exception as e:
             import logging; logging.warning(f"Supabase update_parlay (full): {e}")
@@ -818,6 +886,7 @@ def update_parlay(parlay_id: str, updates: dict) -> None:
                 row_no_legs = {k: v for k, v in row.items() if k not in ("legs_json", "legs_auto_json")}
                 if row_no_legs:
                     _supabase.table("parlays").update(row_no_legs).eq("id", parlay_id).execute()
+                _ttl_clear("parlays")
                 return
             except Exception as e2:
                 import logging; logging.warning(f"Supabase update_parlay (fallback): {e2}")
@@ -829,6 +898,7 @@ def update_parlay(parlay_id: str, updates: dict) -> None:
         _local_path("parlays.json").write_text(json.dumps(existing, indent=2, ensure_ascii=False))
     except Exception:
         pass
+    _ttl_clear("parlays")
 
 
 def delete_parlay(parlay_id: str) -> None:
@@ -836,11 +906,13 @@ def delete_parlay(parlay_id: str) -> None:
     if _using_supabase:
         try:
             _supabase.table("parlays").delete().eq("id", parlay_id).execute()
+            _ttl_clear("parlays")
             return
         except Exception as e:
             import logging; logging.warning(f"Supabase delete_parlay: {e}")
     existing = [p for p in load_parlays() if p.get("id") != parlay_id]
     _local_path("parlays.json").write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+    _ttl_clear("parlays")
 
 
 def _local_path(filename: str) -> Path:

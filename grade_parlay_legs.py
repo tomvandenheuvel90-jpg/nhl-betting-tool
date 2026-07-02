@@ -92,6 +92,7 @@ os.environ.setdefault("FOOTBALL_DATA_API_KEY", _secrets.get("FOOTBALL_DATA_TOKEN
 
 import db
 import scorer
+from prompts import SOCCER_COMPS
 from sports import nba, mlb, nhl, soccer
 
 # Belt-and-suspenders: ook direct instellen mocht de env-var al eerder gezet zijn
@@ -140,9 +141,20 @@ def _resolve_player_stats(sport: str, player_name: str, team_hint: str = ""):
             pos_type = "pitching" if pos_code == "1" else "hitting"
             return mlb.get_player_stats(player.get("id"), position_type=pos_type), None
 
-        # Alles overig behandelen we als voetbal (EPL, Championship, La Liga, ...)
-        # — zelfde aanpak als analysis.py enrich_bet().
-        comp = sk if sk not in ("VOETBAL", "") else "EPL"
+        # Alleen sportwaarden die we kennen als voetbal (SOCCER_COMPS uit
+        # prompts.py — zelfde whitelist als de rest van de app gebruikt, bijv.
+        # "EPL", "CHAMPIONSHIP", "VOETBAL", "SOCCER", of "" als het sportveld
+        # leeg is) naar football-data.org sturen. Alles daarbuiten (bijv.
+        # "TENNIS", "OVERIG") is een sport waar we geen module voor hebben —
+        # die moet expliciet als niet-ondersteund overgeslagen worden i.p.v.
+        # als een (niet-bestaande) football-data.org competitiecode ernaartoe
+        # te sturen. Voorheen gebeurde dat wel: /competitions/TENNIS/teams
+        # gaf een HTTP 400 en de misleidende reden "speler niet gevonden
+        # (voetbal — TENNIS)" voor wat eigenlijk een tennis-leg was.
+        if sk not in SOCCER_COMPS and sk != "":
+            return None, f"sport niet ondersteund ({sk}) — geen sport-module beschikbaar"
+
+        comp = sk if sk not in ("VOETBAL", "SOCCER", "FOOTBALL", "") else "EPL"
         player = soccer.find_player(player_name, team_hint=team_hint, competition=comp)
         if not player:
             return None, f"speler niet gevonden (voetbal — {comp})"
