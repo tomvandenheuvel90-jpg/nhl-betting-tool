@@ -96,6 +96,7 @@ HISTORY_DAYS = 7
 
 _supabase     = None
 _using_supabase = False
+_last_init_error = ""  # laatste reden waarom init() False gaf — alleen voor diagnose (bijv. grade_parlay_legs.py), verandert geen gedrag
 
 _SB_RETRIES = 3
 _SB_DELAY   = 1.0  # seconden tussen pogingen
@@ -224,9 +225,10 @@ def init(url: str = "", key: str = "") -> bool:
     Initialiseer Supabase verbinding.
     Geeft True terug als verbinding geslaagd, anders False (JSON fallback).
     """
-    global _supabase, _using_supabase
+    global _supabase, _using_supabase, _last_init_error
     if not url or not key:
         _using_supabase = False
+        _last_init_error = "geen url of key opgegeven"
         return False
     try:
         from supabase import create_client
@@ -235,10 +237,12 @@ def init(url: str = "", key: str = "") -> bool:
         client.table("favorieten").select("id").limit(1).execute()
         _supabase = client
         _using_supabase = True
+        _last_init_error = ""
         return True
-    except Exception:
+    except Exception as e:
         _supabase = None
         _using_supabase = False
+        _last_init_error = f"{type(e).__name__}: {e}"
         return False
 
 

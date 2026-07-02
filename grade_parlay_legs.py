@@ -198,6 +198,9 @@ def main(dry_run: bool = False):
     # slikt alle exceptions en valt dan terug op lokale JSON, die op een
     # verse GitHub Actions-runner niet bestaat — dus ook 0 parlays oplevert).
     print(f"Supabase verbonden: {db.is_cloud()}")
+    if not db.is_cloud():
+        print(f"  Reden: {getattr(db, '_last_init_error', '(onbekend)')}")
+        print(f"  SUPABASE_URL aanwezig: {bool(_secrets.get('SUPABASE_URL'))}  |  SUPABASE_KEY aanwezig: {bool(_secrets.get('SUPABASE_KEY'))}")
 
     parlays = db.load_parlays()
     print(f"Parlays geladen: {len(parlays)}")
