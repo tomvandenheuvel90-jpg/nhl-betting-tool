@@ -147,6 +147,35 @@ def _team_caption_suffix(bet: dict) -> str:
     return f"  ·  {_team}"
 
 
+def _parlay_leg_key(leg: dict, leg_status: dict, idx: int = None) -> str:
+    """
+    Bepaalt welke sleutel voor déze leg daadwerkelijk in het legs_json-dict
+    gebruikt wordt/moet worden. Er zijn twee historische conventies:
+      - "player_bettype"      — huidige/nieuwe parlays (Parlay Builder, grade_parlay_legs.py)
+      - "idx_player_bettype"  — oudere parlays aangemaakt via screenshot_import.py
+
+    Geeft de sleutel terug die al in leg_status voorkomt (idx-vorm heeft
+    voorrang, want die is uniek per leg-positie). Bestaat geen van beide nog,
+    dan wordt de vlakke vorm gebruikt (nieuwe parlays slaan altijd zo op).
+
+    Dit is bewust de ENIGE plek die de sleutel bepaalt — zowel lezen als
+    schrijven moet via deze functie lopen. Eerder schreven verschillende
+    plekken (backfill-knop, "✅ Gewonnen"-knoppen, de dagelijkse
+    grade_parlay_legs.py-job) altijd naar de vlakke sleutel, terwijl de
+    weergave (⏳-badge, leg-iconen) bij oudere parlays de idx-sleutel las.
+    Daardoor leek een update "gelukt" (er werd wel iets weggeschreven) maar
+    veranderde er zichtbaar niets: de echte, gelezen sleutel bleef op "open"
+    staan.
+    """
+    _player = str(leg.get("player") or "")
+    _bt     = str(leg.get("bet_type") or "")
+    if idx is not None:
+        _k_idx = f"{idx}_{_player}_{_bt}"
+        if _k_idx in (leg_status or {}):
+            return _k_idx
+    return f"{_player}_{_bt}"
+
+
 def _parlay_leg_status(leg: dict, leg_status: dict, idx: int = None) -> str:
     """
     Zoekt de status van één parlay-leg op in het legs_json-dict. Ondersteunt
@@ -154,14 +183,8 @@ def _parlay_leg_status(leg: dict, leg_status: dict, idx: int = None) -> str:
     "player_bettype"), zodat oudere en nieuwere parlays hetzelfde werken.
     Retourneert "open" als er nog geen status bekend is (nog niet beoordeeld).
     """
-    _player = str(leg.get("player") or "")
-    _bt     = str(leg.get("bet_type") or "")
-    if idx is not None:
-        _k_idx = f"{idx}_{_player}_{_bt}"
-        if _k_idx in leg_status:
-            return leg_status[_k_idx]
-    _k = f"{_player}_{_bt}"
-    return leg_status.get(_k, "open")
+    _k = _parlay_leg_key(leg, leg_status, idx)
+    return (leg_status or {}).get(_k, "open")
 
 
 def _parlay_open_leg_count(legs: list, leg_status: dict) -> int:
@@ -178,10 +201,14 @@ def _mark_all_legs_geraakt(legs: list, leg_status: dict) -> dict:
     'void' staan (die blijven void). Gebruikt zodra een parlay in zijn geheel
     als 'Gewonnen' wordt goedgekeurd — dan zijn per definitie alle niet-void
     legs geraakt, dus hoeft dat niet nog los per leg beoordeeld te worden.
+
+    Schrijft naar de sleutel die _parlay_leg_key() teruggeeft (dus de idx-vorm
+    als die al bestaat voor deze leg) zodat de update ook daadwerkelijk
+    zichtbaar wordt in de UI, die dezelfde sleutel-resolutie gebruikt.
     """
     _upd = dict(leg_status or {})
-    for _leg in legs or []:
-        _lk = str(_leg.get("player", "")) + "_" + str(_leg.get("bet_type", ""))
+    for _idx, _leg in enumerate(legs or []):
+        _lk = _parlay_leg_key(_leg, _upd, _idx)
         if _upd.get(_lk) != "void":
             _upd[_lk] = "geraakt"
     return _upd
@@ -2396,13 +2423,18 @@ with tab_bankroll:
                 )
 
                 def _find_leg_status(legs_dict, player, bet_type, idx):
-                    """Zoek leg-status op via exacte key, index-prefix of positie."""
-                    _exact = f"{player}_{bet_type}"
-                    if _exact in legs_dict:
-                        return legs_dict[_exact]
+                    """
+                    Zoek leg-status op via index-prefix, exacte key of positie.
+                    Zelfde prioriteitsvolgorde als _parlay_leg_key()/_parlay_leg_status()
+                    elders in dit bestand — moet consistent blijven, anders kan deze
+                    statistiek een andere status tonen dan de rest van de UI.
+                    """
                     _indexed = f"{idx}_{player}_{bet_type}"
                     if _indexed in legs_dict:
                         return legs_dict[_indexed]
+                    _exact = f"{player}_{bet_type}"
+                    if _exact in legs_dict:
+                        return legs_dict[_exact]
                     _vals = list(legs_dict.values())
                     return _vals[idx] if idx < len(_vals) else "open"
 
@@ -2814,7 +2846,12 @@ with tab_parlay:
                 with st.form(key=f"legform_{_prl.get('id','')}"):
                     _new_statuses = {}
                     for _leg_idx, _pleg in enumerate(_prl_legs):
-                        _lk  = str(_pleg.get("player","")) + "_" + str(_pleg.get("bet_type",""))
+                        # Sleutel-resolutie via _parlay_leg_key(): gebruikt de idx-vorm
+                        # als die al bestaat voor deze leg (oudere, via
+                        # screenshot_import.py aangemaakte parlays), anders de vlakke
+                        # vorm. Zo lees én schrijf je altijd naar dezelfde sleutel als
+                        # de ⏳-badge en leg-iconen elders in de app.
+                        _lk  = _parlay_leg_key(_pleg, _prl_lj, _leg_idx)
                         _lst = _prl_lj.get(_lk, "open")
                         _auto_badge = " 🤖" if _lk in _prl_laj else ""
                         _plc1, _plc2 = st.columns([3, 2])
@@ -2844,8 +2881,8 @@ with tab_parlay:
                 if _changed:
                     # Herbereken gecombineerde odds: void legs tellen niet mee
                     _eff_odds = 1.0
-                    for _leg_item in _prl_legs:
-                        _lk_item = str(_leg_item.get("player","")) + "_" + str(_leg_item.get("bet_type",""))
+                    for _ei, _leg_item in enumerate(_prl_legs):
+                        _lk_item = _parlay_leg_key(_leg_item, _upd_legs, _ei)
                         if _upd_legs.get(_lk_item, "open") != "void":
                             try:
                                 _eff_odds *= float(_leg_item.get("odds") or 1.0)
@@ -2871,7 +2908,7 @@ with tab_parlay:
                             "props_json": _prl_legs,
                         }
                         # Alle leg-statussen ophalen (ook voor legs die nog niet gewijzigd zijn)
-                        _all_keys     = [str(l.get("player","")) + "_" + str(l.get("bet_type","")) for l in _prl_legs]
+                        _all_keys     = [_parlay_leg_key(l, _upd_legs, _ki) for _ki, l in enumerate(_prl_legs)]
                         _all_statuses = [_upd_legs.get(k, "open") for k in _all_keys]
                         if any(s == "gemist" for s in _all_statuses):
                             # Eén leg gemist → parlay verloren

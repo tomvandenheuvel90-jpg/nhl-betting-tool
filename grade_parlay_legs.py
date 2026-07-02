@@ -37,6 +37,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 
+def _leg_key(leg: dict, legs_json: dict, idx: int) -> str:
+    """
+    Bepaalt welke sleutel voor deze leg daadwerkelijk in legs_json gebruikt
+    wordt/moet worden. Twee historische conventies komen voor:
+      - "player_bettype"      — huidige/nieuwe parlays (Parlay Builder in de app)
+      - "idx_player_bettype"  — oudere parlays aangemaakt via screenshot_import.py
+
+    Geeft de sleutel terug die al in legs_json voorkomt (idx-vorm heeft
+    voorrang); bestaat geen van beide, dan de vlakke vorm. Moet exact gelijk
+    blijven aan _parlay_leg_key() in streamlit_app.py — anders schrijft dit
+    script naar een sleutel die de UI niet leest (en lijkt het net als eerder
+    alsof een leg "beoordeeld" is terwijl de badge in de app "open" blijft
+    tonen).
+    """
+    _player = str(leg.get("player", ""))
+    _bt     = str(leg.get("bet_type", ""))
+    _indexed = f"{idx}_{_player}_{_bt}"
+    if _indexed in (legs_json or {}):
+        return _indexed
+    return f"{_player}_{_bt}"
+
+
 def _load_secrets() -> dict:
     """
     Config-bron voor dit standalone script — twee mogelijke bronnen:
@@ -237,9 +259,9 @@ def main(dry_run: bool = False):
             except Exception:
                 _legs = []
         _lj = _load_json_field(_p, "legs_json")
-        for _leg in _legs:
+        for _li, _leg in enumerate(_legs):
             n_legs_total += 1
-            _key = str(_leg.get("player", "")) + "_" + str(_leg.get("bet_type", ""))
+            _key = _leg_key(_leg, _lj, _li)
             if _lj.get(_key, "open") == "open":
                 n_legs_open += 1
     print(f"Legs totaal: {n_legs_total}  |  Legs met status 'open': {n_legs_open}")
@@ -269,8 +291,8 @@ def main(dry_run: bool = False):
         parlay_id = parlay.get("id", "")
         changed = False
 
-        for leg in legs:
-            key = str(leg.get("player", "")) + "_" + str(leg.get("bet_type", ""))
+        for _leg_idx, leg in enumerate(legs):
+            key = _leg_key(leg, legs_json, _leg_idx)
             current_status = legs_json.get(key, "open")
             if current_status != "open":
                 continue  # al beoordeeld (handmatig of eerder automatisch) — nooit overschrijven
