@@ -166,6 +166,7 @@ def get_player_stats(player_id: int, team_id: int, competition: str = "PL", n_ga
     matches = sorted(matches, key=lambda m: m.get("utcDate", ""), reverse=True)[:n_games]
 
     goals_per_game = []
+    dates          = []
 
     for match in matches:
         match_id = match.get("id")
@@ -182,6 +183,9 @@ def get_player_stats(player_id: int, team_id: int, competition: str = "PL", n_ga
             if g.get("scorer", {}).get("id") == player_id
         )
         goals_per_game.append(float(scored))
+        # utcDate is ISO 8601 met tijd (bijv. "2026-05-01T14:00:00Z") — pak alleen de datum
+        _ud = match.get("utcDate") or ""
+        dates.append(_ud[:10] if _ud else None)
 
     def avg(lst):
         return round(sum(lst) / len(lst), 2) if lst else 0.0
@@ -191,6 +195,7 @@ def get_player_stats(player_id: int, team_id: int, competition: str = "PL", n_ga
         "games_sampled": n,
         "source": f"football-data.org — {competition} {season}",
 
+        "dates":       dates,
         "raw_goals":   goals_per_game,
 
         "avg_goals":   avg(goals_per_game),

@@ -208,6 +208,10 @@ def get_player_stats(player_id: int, position_type: str = "hitting", n_games: in
 
     n = len(splits)
 
+    # Datums per game (ISO "YYYY-MM-DD"), index-aligned met de raw_* lijsten.
+    # De MLB gameLog-split heeft een top-level "date" veld (al ISO-formaat).
+    dates = [str(g.get("date") or "") or None for g in splits]
+
     if group == "hitting":
         hits   = [_f(s(g, "hits"))      for g in splits]
         runs   = [_f(s(g, "runs"))      for g in splits]
@@ -229,6 +233,9 @@ def get_player_stats(player_id: int, position_type: str = "hitting", n_games: in
             "games_sampled": n,
             "source": f"MLB API (batting) — {season}",
             "position_type": "hitting",
+
+            # Datums (ISO), index-aligned met de raw_* lijsten hieronder
+            "dates": dates,
 
             # Raw per-game waarden
             "raw_mlb_hits":    hits,
@@ -260,6 +267,9 @@ def get_player_stats(player_id: int, position_type: str = "hitting", n_games: in
             "games_sampled": n,
             "source": f"MLB API (pitching) — {season}",
             "position_type": "pitching",
+
+            # Datums (ISO), index-aligned met de raw_* lijsten hieronder
+            "dates": dates,
 
             "raw_strikeouts":    k,
             "raw_earned_runs":   er,

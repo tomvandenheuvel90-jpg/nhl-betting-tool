@@ -1324,6 +1324,7 @@ with tab_favorieten:
                             "bet_type": _fav.get("bet", ""),
                             "odds":     float(_fav.get("odds") or 1.5),
                             "hit_rate": None,
+                            "game_date": _fav_game_date(_fav),
                         })
                         st.success(f"✅ Toegevoegd aan Parlay Builder — ga naar 🎯 tab")
 
@@ -2500,6 +2501,8 @@ with tab_parlay:
     _p_bet_det = st.text_input("Details", key=f"p_bet_det_{_fv}",
                                 placeholder="bijv. Anytime Goal Scorer, Over 2.5 goals, Colorado Avalanche to win")
     _p_bet     = f"{_p_bet_cat} — {_p_bet_det.strip()}" if _p_bet_det.strip() else _p_bet_cat
+    _p_game_date = st.date_input("Wedstrijddatum", value=datetime.date.today(), key=f"p_game_date_{_fv}",
+                                  help="Wordt gebruikt om deze leg later automatisch te beoordelen.")
 
     # Hit rate: echt optioneel — vink aan om in te vullen
     _p_use_hr = st.checkbox("Hit rate opgeven", key=f"p_use_hr_{_fv}", value=False,
@@ -2520,6 +2523,7 @@ with tab_parlay:
             "bet_type": _p_bet,
             "odds":     float(_p_odds),
             "hit_rate": float(_p_hr_val) / 100 if _p_hr_val is not None else None,
+            "game_date": _p_game_date.isoformat(),
         })
         st.session_state.parlay_form_ver += 1
         st.rerun()
@@ -2565,6 +2569,7 @@ with tab_parlay:
                                 "bet_type": b.get("bet_type",""),
                                 "odds":     float(b.get("odds") or 1.5),
                                 "hit_rate": float(b.get("composite") or b.get("linemate_hr") or 0.5),
+                                "game_date": b.get("game_date") or datetime.date.today().isoformat(),
                             })
                             st.rerun()
                     else:
@@ -2706,6 +2711,10 @@ with tab_parlay:
             if isinstance(_prl_lj, str):
                 try: _prl_lj = json.loads(_prl_lj)
                 except Exception: _prl_lj = {}
+            _prl_laj  = _prl.get("legs_auto_json") or {}
+            if isinstance(_prl_laj, str):
+                try: _prl_laj = json.loads(_prl_laj)
+                except Exception: _prl_laj = {}
             _prl_ev_raw = _prl.get("ev_score")
             _prl_ev_s = (f"+{_prl_ev_raw:.3f}" if _prl_ev_raw >= 0 else f"{_prl_ev_raw:.3f}") \
                         if _prl_ev_raw is not None else "—"
@@ -2714,13 +2723,15 @@ with tab_parlay:
                 f" · EV {_prl_ev_s} · {(_prl.get('uitkomst') or 'open').upper()}"
             ):
                 _upd_legs = dict(_prl_lj)
+                _upd_laj  = dict(_prl_laj)
                 _changed  = False
                 _leg_opts = ["open", "geraakt", "gemist", "void"]
                 for _leg_idx, _pleg in enumerate(_prl_legs):
                     _lk  = str(_pleg.get("player","")) + "_" + str(_pleg.get("bet_type",""))
                     _lst = _upd_legs.get(_lk, "open")
+                    _auto_badge = " 🤖" if _lk in _upd_laj else ""
                     _plc1, _plc2 = st.columns([3, 2])
-                    _plc1.write(f"**{_pleg.get('player','')}** — {_pleg.get('bet_type','')} @ {_pleg.get('odds','—')}")
+                    _plc1.write(f"**{_pleg.get('player','')}** — {_pleg.get('bet_type','')} @ {_pleg.get('odds','—')}{_auto_badge}")
                     _nst = _plc2.selectbox(
                         "Status", options=_leg_opts,
                         index=_leg_opts.index(_lst) if _lst in _leg_opts else 0,
@@ -2728,6 +2739,7 @@ with tab_parlay:
                     )
                     if _nst != _lst:
                         _upd_legs[_lk] = _nst
+                        _upd_laj.pop(_lk, None)  # handmatige override → niet meer 'auto'
                         _changed = True
                 if _changed:
                     # Herbereken gecombineerde odds: void legs tellen niet mee
@@ -2741,7 +2753,7 @@ with tab_parlay:
                                 pass
                     _eff_odds = round(max(_eff_odds, 1.0), 4)
                     _stored_odds = float(_prl.get("gecombineerde_odds", 1.0) or 1.0)
-                    _upd_parlay_fields = {"legs_json": _upd_legs}
+                    _upd_parlay_fields = {"legs_json": _upd_legs, "legs_auto_json": _upd_laj}
                     if abs(_eff_odds - _stored_odds) > 0.001:
                         _upd_parlay_fields["gecombineerde_odds"] = _eff_odds
                     db.update_parlay(_prl.get("id",""), _upd_parlay_fields)
@@ -3396,6 +3408,7 @@ with tab_history:
                             "bet_type": _bet_type,
                             "odds":     float(_hp.get("odds") or 1.5),
                             "hit_rate": float(_hp.get("composite") or 0.5),
+                            "game_date": _hp.get("game_date") or (datum[:10] if datum else datetime.date.today().isoformat()),
                         })
                         st.rerun()
 

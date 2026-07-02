@@ -280,10 +280,28 @@ def _build_stats_from_mp(recent: list, player_id: int) -> dict:
     def avg(lst):
         return round(sum(lst) / len(lst), 2) if lst else 0.0
 
+    def _iso_date(g):
+        # MoneyPuck CSV gebruikt doorgaans "gameDate" in YYYYMMDD-formaat; wees
+        # defensief voor alternatieve kolomnamen/formats. Geen gok bij onbekend format.
+        raw = g.get("gameDate") or g.get("game_date") or g.get("date")
+        if not raw:
+            return None
+        raw = str(raw).strip()
+        if len(raw) == 8 and raw.isdigit():
+            return f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+        if len(raw) == 10 and raw[4] == "-":
+            return raw
+        return None
+
+    dates = [_iso_date(g) for g in recent]
+
     n = len(recent)
     result = {
         "games_sampled": n,
         "source": "MoneyPuck",
+
+        # Datums (ISO), index-aligned met de raw_* lijsten hieronder
+        "dates": dates,
 
         # Raw per-game waarden (voor dynamische hit rate berekening in scorer)
         "raw_shots":    shots,
@@ -352,6 +370,7 @@ def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
     goals   = []
     assists = []
     points  = []
+    dates   = []
 
     for g in game_log[:n_games]:
         shots.append(_f(g.get("shots", 0) or g.get("sog", 0)))
@@ -360,6 +379,9 @@ def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
         goals.append(g_)
         assists.append(a)
         points.append(g_ + a)
+        # NHL API game-log geeft "gameDate" al in ISO-formaat ("YYYY-MM-DD")
+        _gd = g.get("gameDate")
+        dates.append(str(_gd) if _gd else None)
 
     def avg(lst):
         return round(sum(lst) / len(lst), 2) if lst else 0.0
@@ -367,6 +389,7 @@ def _stats_from_nhl_api(player_id: int, n_games: int = 20) -> dict:
     result = {
         "games_sampled": len(shots),
         "source": "NHL API (fallback — geen hits/blocks/xGoals)",
+        "dates": dates,
         "raw_shots":   shots,
         "raw_blocks":  [],
         "raw_goals":   goals,

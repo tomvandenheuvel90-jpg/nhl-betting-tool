@@ -205,6 +205,21 @@ def get_player_stats(player_id: int, n_games: int = 20) -> dict:
     stl   = col("STL")
     tov   = col("TOV")
 
+    # Datums per gespeelde game (ISO "YYYY-MM-DD"), index-aligned met raw_* lijsten.
+    # Gebruikt door de automatische parlay-leg-beoordeling om de juiste game te vinden.
+    def _iso_dates():
+        if "GAME_DATE" not in recent.columns:
+            return []
+        out = []
+        for v in recent["GAME_DATE"].tolist():
+            try:
+                out.append(datetime.datetime.strptime(str(v).strip(), "%b %d, %Y").date().isoformat())
+            except (ValueError, TypeError):
+                out.append(None)
+        return out
+
+    dates = _iso_dates()
+
     def avg(lst):
         return round(sum(lst) / len(lst), 2) if lst else 0.0
 
@@ -221,6 +236,9 @@ def get_player_stats(player_id: int, n_games: int = 20) -> dict:
         "raw_blk":    blk,
         "raw_stl":    stl,
         "raw_tov":    tov,
+
+        # Datums (ISO), index-aligned met de raw_* lijsten hierboven
+        "dates": dates,
 
         # Gemiddelden
         "avg_points":   avg(pts),

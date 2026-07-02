@@ -746,7 +746,7 @@ def load_parlays() -> list:
             res = _sb_call(lambda: _supabase.table("parlays").select("*").order("datum", desc=True).execute())
             rows = res.data or []
             for r in rows:
-                for field in ("props_json", "legs_json"):
+                for field in ("props_json", "legs_json", "legs_auto_json"):
                     if r.get(field) and isinstance(r[field], str):
                         try:
                             r[field] = json.loads(r[field])
@@ -774,16 +774,16 @@ def save_parlay(parlay: dict) -> None:
     if _using_supabase:
         try:
             row = dict(parlay)
-            for field in ("props_json", "legs_json"):
+            for field in ("props_json", "legs_json", "legs_auto_json"):
                 if isinstance(row.get(field), (list, dict)):
                     row[field] = json.dumps(row[field], ensure_ascii=False)
             _supabase.table("parlays").upsert(row).execute()
             return
         except Exception as e:
             import logging; logging.warning(f"Supabase save_parlay (full): {e}")
-            # Retry without legs_json — kolom bestaat mogelijk nog niet in Supabase
+            # Retry zonder legs_json/legs_auto_json — kolommen bestaan mogelijk nog niet in Supabase
             try:
-                row_no_legs = {k: v for k, v in row.items() if k != "legs_json"}
+                row_no_legs = {k: v for k, v in row.items() if k not in ("legs_json", "legs_auto_json")}
                 _supabase.table("parlays").upsert(row_no_legs).execute()
                 return
             except Exception as e2:
@@ -802,16 +802,16 @@ def update_parlay(parlay_id: str, updates: dict) -> None:
     if _using_supabase:
         try:
             row = dict(updates)
-            for field in ("props_json", "legs_json"):
+            for field in ("props_json", "legs_json", "legs_auto_json"):
                 if isinstance(row.get(field), (list, dict)):
                     row[field] = json.dumps(row[field], ensure_ascii=False)
             _supabase.table("parlays").update(row).eq("id", parlay_id).execute()
             return
         except Exception as e:
             import logging; logging.warning(f"Supabase update_parlay (full): {e}")
-            # Retry without legs_json — kolom bestaat mogelijk nog niet in Supabase
+            # Retry zonder legs_json/legs_auto_json — kolommen bestaan mogelijk nog niet in Supabase
             try:
-                row_no_legs = {k: v for k, v in row.items() if k != "legs_json"}
+                row_no_legs = {k: v for k, v in row.items() if k not in ("legs_json", "legs_auto_json")}
                 if row_no_legs:
                     _supabase.table("parlays").update(row_no_legs).eq("id", parlay_id).execute()
                 return
