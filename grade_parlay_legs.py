@@ -193,7 +193,32 @@ def _load_json_field(parlay: dict, field: str) -> dict:
 
 
 def main(dry_run: bool = False):
+    # Diagnose vooraf: zonder dit is een resultaat van "0 beoordeeld" niet te
+    # onderscheiden van een stille verbindingsfout met Supabase (db.init()
+    # slikt alle exceptions en valt dan terug op lokale JSON, die op een
+    # verse GitHub Actions-runner niet bestaat — dus ook 0 parlays oplevert).
+    print(f"Supabase verbonden: {db.is_cloud()}")
+
     parlays = db.load_parlays()
+    print(f"Parlays geladen: {len(parlays)}")
+
+    n_legs_total = 0
+    n_legs_open = 0
+    for _p in parlays:
+        _legs = _p.get("props_json") or []
+        if isinstance(_legs, str):
+            try:
+                _legs = json.loads(_legs)
+            except Exception:
+                _legs = []
+        _lj = _load_json_field(_p, "legs_json")
+        for _leg in _legs:
+            n_legs_total += 1
+            _key = str(_leg.get("player", "")) + "_" + str(_leg.get("bet_type", ""))
+            if _lj.get(_key, "open") == "open":
+                n_legs_open += 1
+    print(f"Legs totaal: {n_legs_total}  |  Legs met status 'open': {n_legs_open}")
+
     n_graded = 0
     n_left_open = 0
     n_parlays_touched = 0
