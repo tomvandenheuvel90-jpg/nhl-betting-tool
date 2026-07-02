@@ -53,12 +53,22 @@ def _load_secrets() -> dict:
     Env vars winnen als beide aanwezig zijn — zo kan de GitHub Actions runner
     nooit per ongeluk van een lokaal secrets.toml-bestand afhangen (dat bestand
     staat sowieso niet in git, dus in Actions bestaat het simpelweg niet).
+
+    Alle waarden worden opgeschoond tot printbare ASCII: bij het kopiëren/
+    plakken van lange strings (met name de Supabase JWT) in de GitHub-
+    secrets-UI kan een onzichtbaar teken meekomen (bijv. U+2028 "line
+    separator"), wat verderop een UnicodeEncodeError geeft zodra het als
+    HTTP-header (Authorization: Bearer ...) gebruikt wordt. URL's en JWT's
+    bevatten legitiem nooit iets buiten printbare ASCII, dus dit is veilig.
     """
+    def _sanitize(val: str) -> str:
+        return re.sub(r"[^\x20-\x7e]", "", val).strip()
+
     secrets = {}
     for key in ("SUPABASE_URL", "SUPABASE_KEY", "FOOTBALL_DATA_TOKEN"):
         val = os.environ.get(key, "")
         if val:
-            secrets[key] = val
+            secrets[key] = _sanitize(val)
 
     path = Path(__file__).parent / ".streamlit" / "secrets.toml"
     if path.exists():
@@ -70,7 +80,7 @@ def _load_secrets() -> dict:
                 break
             m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"(.*)"\s*$', line)
             if m and m.group(1) not in secrets:
-                secrets[m.group(1)] = m.group(2)
+                secrets[m.group(1)] = _sanitize(m.group(2))
     return secrets
 
 
