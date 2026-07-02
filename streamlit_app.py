@@ -2840,52 +2840,6 @@ with tab_parlay:
         st.markdown("---")
         st.markdown("#### 📋 Opgeslagen Parlays")
 
-        # Eenmalige opschoning: parlays die al langer geleden als "Gewonnen"
-        # zijn gemarkeerd, maar waarvan de losse legs (van vóór deze fix) nog
-        # niet op "geraakt" stonden. Vandaag geplaatste parlays worden hierbij
-        # overgeslagen — die zijn nog vers en hoeven niet met terugwerkende
-        # kracht aangepast te worden.
-        with st.expander("🔧 Eenmalig: oude gewonnen parlays bijwerken naar 'geraakt'"):
-            st.caption("Zet bij alle al eerder gewonnen parlays (behalve die van vandaag) de nog openstaande legs op 'geraakt'.")
-            if st.button("Bijwerken", key="backfill_geraakt_legs"):
-                _today_s = datetime.date.today().isoformat()
-                _bf_touched = 0
-                _bf_failed = []
-                for _bf_prl in _saved_parlays:
-                    if (_bf_prl.get("uitkomst") or "") != "gewonnen":
-                        continue
-                    if str(_bf_prl.get("datum", ""))[:10] == _today_s:
-                        continue
-                    _bf_legs = _bf_prl.get("props_json") or []
-                    _bf_lj   = _bf_prl.get("legs_json") or {}
-                    if isinstance(_bf_lj, str):
-                        try: _bf_lj = json.loads(_bf_lj)
-                        except Exception: _bf_lj = {}
-                    if not _bf_legs:
-                        continue
-                    _bf_new = _mark_all_legs_geraakt(_bf_legs, _bf_lj)
-                    if _bf_new != _bf_lj:
-                        # db.update_parlay geeft nu {"ok": bool, "error": str|None}
-                        # terug — voorheen kon een mislukte Supabase-write hier
-                        # stilzwijgend niets opslaan terwijl de knop toch
-                        # "bijgewerkt" meldde. Nu tellen we alleen écht
-                        # geslaagde writes mee en tonen we mislukkingen apart.
-                        _bf_res = db.update_parlay(_bf_prl.get("id", ""), {"legs_json": _bf_new})
-                        if _bf_res.get("ok"):
-                            _bf_touched += 1
-                        else:
-                            _bf_failed.append((_bf_prl.get("id", "?"), _bf_res.get("error", "onbekende fout")))
-                if _bf_touched:
-                    st.success(f"✅ {_bf_touched} parlay(s) daadwerkelijk bijgewerkt in de database.")
-                if _bf_failed:
-                    st.error(
-                        f"⚠️ {len(_bf_failed)} parlay(s) NIET opgeslagen (Supabase-fout). "
-                        f"Eerste fout (parlay {_bf_failed[0][0]}): {_bf_failed[0][1]}"
-                    )
-                if not _bf_touched and not _bf_failed:
-                    st.info("Niets om bij te werken — alle legs stonden al op 'geraakt'.")
-                st.rerun()
-
         for _prl in _saved_parlays:
             _prl_legs = _prl.get("props_json") or []
             _prl_lj   = _prl.get("legs_json") or {}
