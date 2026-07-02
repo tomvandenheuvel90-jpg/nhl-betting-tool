@@ -39,25 +39,38 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 def _load_secrets() -> dict:
     """
-    Leest .streamlit/secrets.toml handmatig — er is geen streamlit-context
-    beschikbaar in een standalone script, dus st.secrets werkt hier niet.
-    Alleen top-level KEY = "value"-regels vóór de eerste [sectie] worden
-    gelezen; dat is voldoende voor SUPABASE_URL/KEY en FOOTBALL_DATA_TOKEN,
-    die in secrets.toml altijd boven de [gcp_service_account]-sectie staan.
+    Config-bron voor dit standalone script — twee mogelijke bronnen:
+
+      1. Environment variables (SUPABASE_URL, SUPABASE_KEY, FOOTBALL_DATA_TOKEN).
+         Gebruikt door de GitHub Actions workflow (.github/workflows/grade-parlay-legs.yml),
+         die deze drie waarden als repo-secrets aanlevert. Heeft voorrang.
+      2. .streamlit/secrets.toml — zelfde bestand als de Streamlit-app gebruikt,
+         handig als dit script lokaal/handmatig gedraaid wordt. Alleen top-level
+         KEY = "value"-regels vóór de eerste [sectie] worden gelezen; dat is
+         voldoende voor SUPABASE_URL/KEY en FOOTBALL_DATA_TOKEN, die in
+         secrets.toml altijd boven de [gcp_service_account]-sectie staan.
+
+    Env vars winnen als beide aanwezig zijn — zo kan de GitHub Actions runner
+    nooit per ongeluk van een lokaal secrets.toml-bestand afhangen (dat bestand
+    staat sowieso niet in git, dus in Actions bestaat het simpelweg niet).
     """
     secrets = {}
+    for key in ("SUPABASE_URL", "SUPABASE_KEY", "FOOTBALL_DATA_TOKEN"):
+        val = os.environ.get(key, "")
+        if val:
+            secrets[key] = val
+
     path = Path(__file__).parent / ".streamlit" / "secrets.toml"
-    if not path.exists():
-        return secrets
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("["):
-            break
-        m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"(.*)"\s*$', line)
-        if m:
-            secrets[m.group(1)] = m.group(2)
+    if path.exists():
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("["):
+                break
+            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"(.*)"\s*$', line)
+            if m and m.group(1) not in secrets:
+                secrets[m.group(1)] = m.group(2)
     return secrets
 
 

@@ -1,0 +1,44 @@
+name: Grade parlay legs
+
+# Draait dagelijks en vult automatisch de uitkomst ("geraakt"/"gemist") in van
+# individuele parlay-legs waarvan de wedstrijd al gespeeld is. Settelt nooit
+# de hele parlay — dat blijft een handmatige actie op het dashboard.
+#
+# Waarom GitHub Actions en niet de Cowork scheduled task: de Cowork-sandbox
+# heeft geen algemene internettoegang (Supabase + de sport-API's zijn daar
+# onbereikbaar). GitHub Actions-runners hebben wel gewoon internettoegang.
+#
+# Vereiste repo-secrets (Settings → Secrets and variables → Actions):
+#   SUPABASE_URL, SUPABASE_KEY, FOOTBALL_DATA_TOKEN
+#
+# Let op DST: cron hieronder staat vast op 06:09 UTC = 08:09 CEST (zomertijd).
+# In de winter (CET, UTC+1) draait hij dan om 07:09 lokale tijd — een uur
+# vroeger. Dat is bewust zo gelaten voor eenvoud; geen enkele leg-data gaat
+# hierdoor verloren, het script draait gewoon een uur eerder/later op de dag.
+
+on:
+  schedule:
+    - cron: "9 6 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  grade:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install nba_api pandas requests supabase
+
+      - name: Run grading script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          FOOTBALL_DATA_TOKEN: ${{ secrets.FOOTBALL_DATA_TOKEN }}
+        run: python grade_parlay_legs.py
