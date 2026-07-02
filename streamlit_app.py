@@ -172,6 +172,21 @@ def _parlay_open_leg_count(legs: list, leg_status: dict) -> int:
     )
 
 
+def _mark_all_legs_geraakt(legs: list, leg_status: dict) -> dict:
+    """
+    Zet alle legs van een parlay op 'geraakt', op legs na die al expliciet op
+    'void' staan (die blijven void). Gebruikt zodra een parlay in zijn geheel
+    als 'Gewonnen' wordt goedgekeurd — dan zijn per definitie alle niet-void
+    legs geraakt, dus hoeft dat niet nog los per leg beoordeeld te worden.
+    """
+    _upd = dict(leg_status or {})
+    for _leg in legs or []:
+        _lk = str(_leg.get("player", "")) + "_" + str(_leg.get("bet_type", ""))
+        if _upd.get(_lk) != "void":
+            _upd[_lk] = "geraakt"
+    return _upd
+
+
 def _get_secret(key: str, default: str = "") -> str:
     try:
         return st.secrets.get(key, default) or default
@@ -611,9 +626,13 @@ with tab_dashboard:
                     _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
                     db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val)
                     _dop_odds_val = float(_dop.get("odds", 1.0))
+                    # Parlay gewonnen → alle (niet-void) legs zijn per definitie geraakt,
+                    # dus die hoeven niet nog los beoordeeld te worden.
+                    _dop_legs_win = _mark_all_legs_geraakt(_prl_legs, _raw_prl.get("legs_json") or {})
                     db.update_parlay(_raw_pid, {
                         "uitkomst": "gewonnen",
                         "winst_verlies": round(_dop_inzet_val * (_dop_odds_val - 1), 2),
+                        "legs_json": _dop_legs_win,
                     })
                     st.rerun()
                 if _dopc2.button("❌ Loss",  key=f"dsh_lost_{_dop_id}", use_container_width=True):
@@ -2730,6 +2749,36 @@ with tab_parlay:
     if _saved_parlays:
         st.markdown("---")
         st.markdown("#### 📋 Opgeslagen Parlays")
+
+        # Eenmalige opschoning: parlays die al langer geleden als "Gewonnen"
+        # zijn gemarkeerd, maar waarvan de losse legs (van vóór deze fix) nog
+        # niet op "geraakt" stonden. Vandaag geplaatste parlays worden hierbij
+        # overgeslagen — die zijn nog vers en hoeven niet met terugwerkende
+        # kracht aangepast te worden.
+        with st.expander("🔧 Eenmalig: oude gewonnen parlays bijwerken naar 'geraakt'"):
+            st.caption("Zet bij alle al eerder gewonnen parlays (behalve die van vandaag) de nog openstaande legs op 'geraakt'.")
+            if st.button("Bijwerken", key="backfill_geraakt_legs"):
+                _today_s = datetime.date.today().isoformat()
+                _bf_touched = 0
+                for _bf_prl in _saved_parlays:
+                    if (_bf_prl.get("uitkomst") or "") != "gewonnen":
+                        continue
+                    if str(_bf_prl.get("datum", ""))[:10] == _today_s:
+                        continue
+                    _bf_legs = _bf_prl.get("props_json") or []
+                    _bf_lj   = _bf_prl.get("legs_json") or {}
+                    if isinstance(_bf_lj, str):
+                        try: _bf_lj = json.loads(_bf_lj)
+                        except Exception: _bf_lj = {}
+                    if not _bf_legs:
+                        continue
+                    _bf_new = _mark_all_legs_geraakt(_bf_legs, _bf_lj)
+                    if _bf_new != _bf_lj:
+                        db.update_parlay(_bf_prl.get("id", ""), {"legs_json": _bf_new})
+                        _bf_touched += 1
+                st.success(f"✅ {_bf_touched} parlay(s) bijgewerkt.")
+                st.rerun()
+
         for _prl in _saved_parlays:
             _prl_legs = _prl.get("props_json") or []
             _prl_lj   = _prl.get("legs_json") or {}
@@ -2748,10 +2797,14 @@ with tab_parlay:
             # nog aandacht nodig hebben.
             _prl_open_n = _parlay_open_leg_count(_prl_legs, _prl_lj)
             _prl_open_badge = f" · ⏳ {_prl_open_n} nog te beoordelen" if _prl_open_n else " · ✅ alle legs beoordeeld"
+            # Blijft openstaan na "Verwerken" (anders klapt st.rerun() de rij dicht
+            # en lijkt het alsof er niets is gebeurd, terwijl de update wel degelijk
+            # is opgeslagen).
             with st.expander(
                 f"🎯 {len(_prl_legs)} legs · Odds {_prl.get('gecombineerde_odds',0):.2f}"
                 f" · EV {_prl_ev_s} · {(_prl.get('uitkomst') or 'open').upper()}"
-                f"{_prl_open_badge}"
+                f"{_prl_open_badge}",
+                expanded=(st.session_state.get("_prl_expanded_id") == _prl.get("id", "")),
             ):
                 _leg_opts = ["open", "geraakt", "gemist", "void"]
                 # Alle leg-statussen worden in één formulier verzameld — pas bij
@@ -2777,11 +2830,17 @@ with tab_parlay:
                 _upd_laj  = dict(_prl_laj)
                 _changed  = False
                 if _legs_submitted:
+                    # Zorgt dat deze rij openblijft na de rerun hieronder, zodat de
+                    # bijgewerkte ⏳-badge meteen zichtbaar is in plaats van dat de
+                    # rij dichtklapt en het lijkt alsof "Verwerken" niets deed.
+                    st.session_state["_prl_expanded_id"] = _prl.get("id", "")
                     for _lk, _nst in _new_statuses.items():
                         if _upd_legs.get(_lk, "open") != _nst:
                             _upd_legs[_lk] = _nst
                             _upd_laj.pop(_lk, None)  # handmatige override → niet meer 'auto'
                             _changed = True
+                    if not _changed:
+                        st.toast("ℹ️ Geen wijzigingen om te verwerken.")
                 if _changed:
                     # Herbereken gecombineerde odds: void legs tellen niet mee
                     _eff_odds = 1.0
@@ -2830,6 +2889,7 @@ with tab_parlay:
                                 _pw = round(_auto_inzet * _eff_odds - _auto_inzet, 2)
                                 db.update_parlay(_auto_id, {"uitkomst": "gewonnen", "winst_verlies": _pw})
                                 db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "gewonnen", _auto_inzet)
+                    st.toast("✅ Leg-statussen bijgewerkt.")
                     st.rerun()
 
                 _oc1, _oc2, _oc3 = st.columns(3)
@@ -2839,7 +2899,9 @@ with tab_parlay:
                         _prl_inzet = _prl.get("inzet", 10)
                         _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
                         _pw = round(_prl_inzet * _prl_odds - _prl_inzet, 2)
-                        db.update_parlay(_prl_id, {"uitkomst":"gewonnen","winst_verlies":_pw})
+                        # Parlay gewonnen → alle (niet-void) legs zijn per definitie geraakt.
+                        _prl_legs_win = _mark_all_legs_geraakt(_prl_legs, _prl_lj)
+                        db.update_parlay(_prl_id, {"uitkomst":"gewonnen","winst_verlies":_pw, "legs_json": _prl_legs_win})
                         _prl_legs = _prl.get("props_json", []) or []
                         _prl_fav  = {
                             "odds":      _prl_odds,
@@ -3314,12 +3376,17 @@ with tab_geplaatst:
                                                   else round(-_e_inzet, 2)
                                                   if _e_uit == "verloren"
                                                   else 0.0)  # void en open: 0
-                                        db.update_parlay(_ep_id, {
+                                        _ep_fields = {
                                             "inzet":              float(_e_inzet),
                                             "gecombineerde_odds": float(_e_odds),
                                             "uitkomst":           _e_uit,
                                             "winst_verlies":      _ep_wl,
-                                        })
+                                        }
+                                        if _e_uit == "gewonnen":
+                                            # Parlay gewonnen → alle (niet-void) legs zijn
+                                            # per definitie geraakt.
+                                            _ep_fields["legs_json"] = _mark_all_legs_geraakt(_parlay_legs, _leg_status)
+                                        db.update_parlay(_ep_id, _ep_fields)
                                     st.session_state.gp_editing = None
                                     st.rerun()
                                 if _cancel_e:
