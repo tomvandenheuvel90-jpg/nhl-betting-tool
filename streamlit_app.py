@@ -172,6 +172,50 @@ def _leg_context_suffix(leg: dict) -> str:
     return ""
 
 
+def _wl_stats(results: list) -> dict:
+    """
+    Telt gewonnen/verloren/void bets op de juiste manier: void is ONGELDIG en
+    telt nergens in mee — niet als loss, niet in de win%-noemer, niet in het
+    "gespeeld"-aantal. Vóór deze fix werden void-bets wél meegeteld in de
+    "gedaan/afgerond/settled"-lijsten (nodig voor P&L, dat wél 0.0 boekt voor
+    void), en werd diezelfde lijst hergebruikt als noemer voor win% en als
+    basis voor "loss = totaal − won" — waardoor elke void bet ten onrechte als
+    verlies meetelde in win/loss en win%-statistieken door de hele app heen.
+
+    Root cause gerapporteerd door Robert Beune (via Tom, 02-07-2026): "Als je
+    een bet void, telt ie m mee als loss in win/loss en win%".
+
+    Gebruik: geef een lijst van result-dicts (elk met een "uitkomst"-veld) die
+    AL gefilterd is op afgeronde/settled bets (dus "gewonnen"/"verloren"/"void",
+    geen "open"). Retourneert:
+      - won:     aantal gewonnen
+      - lost:    aantal verloren (void telt hier NIET in mee)
+      - void:    aantal void
+      - decided: won + lost (de juiste noemer voor win%, void uitgesloten)
+      - win_pct: won / decided * 100, of 0.0 als decided leeg is
+    """
+    _won_rows  = [r for r in (results or []) if r.get("uitkomst") == "gewonnen"]
+    _lost_rows = [r for r in (results or []) if r.get("uitkomst") == "verloren"]
+    _void_rows = [r for r in (results or []) if r.get("uitkomst") == "void"]
+    _won, _lost, _void = len(_won_rows), len(_lost_rows), len(_void_rows)
+    _decided = _won + _lost
+    # Inzet van void-bets telt niet mee als "gestaakt" (stake wordt terugbetaald),
+    # dus ook de ROI-noemer sluit void uit — anders drukt een void-bet ROI
+    # kunstmatig omlaag alsof er geld op stond zonder rendement.
+    _staked = sum(float(r.get("inzet", 0) or 0) for r in (_won_rows + _lost_rows))
+    _pnl    = sum(float(r.get("winst_verlies", 0) or 0) for r in (results or []))
+    return {
+        "won": _won,
+        "lost": _lost,
+        "void": _void,
+        "decided": _decided,
+        "win_pct": (_won / _decided * 100) if _decided else 0.0,
+        "staked": _staked,
+        "pnl": _pnl,
+        "roi": (_pnl / _staked * 100) if _staked else 0.0,
+    }
+
+
 def _parlay_leg_key(leg: dict, leg_status: dict, idx: int = None) -> str:
     """
     Bepaalt welke sleutel voor déze leg daadwerkelijk in het legs_json-dict
@@ -429,11 +473,14 @@ with tab_dashboard:
     _dsh_start_bk    = float(db.get_setting("start_bankroll") or 0.0)
 
     # ── KPI berekeningen ──────────────────────────────────────────────────────
-    _dsh_won         = sum(1 for r in _dsh_gedaan if r.get("uitkomst") == "gewonnen")
-    _dsh_total_inzet = sum(r.get("inzet", 0) for r in _dsh_gedaan)
+    # Void bets zijn ongeldig en tellen nergens mee: niet als loss, niet in de
+    # win%-noemer, niet in de ROI-noemer (stake wordt terugbetaald). Zie _wl_stats().
+    _dsh_stats       = _wl_stats(_dsh_gedaan)
+    _dsh_won         = _dsh_stats["won"]
+    _dsh_total_inzet = _dsh_stats["staked"]
     _dsh_total_wl    = sum(r.get("winst_verlies", 0) for r in _dsh_gedaan)
-    _dsh_roi         = (_dsh_total_wl / _dsh_total_inzet * 100) if _dsh_total_inzet > 0 else 0.0
-    _dsh_wr          = (_dsh_won / len(_dsh_gedaan) * 100) if _dsh_gedaan else 0.0
+    _dsh_roi         = _dsh_stats["roi"]
+    _dsh_wr          = _dsh_stats["win_pct"]
     _dsh_mutations_total = db.get_bankroll_mutations_total()
     # Deducteer openstaande inzetten direct van het saldo (stake al gecommitteerd)
     _dsh_open_inzet   = sum(float(r.get("inzet", 0)) for r in _dsh_open)
@@ -484,9 +531,9 @@ with tab_dashboard:
     _roi_val    = f"{_dsh_roi:+.0f}%" if _dsh_gedaan else "—"
     _roi_sub    = f"over {len(_dsh_gedaan)} afgeronde bets" if _dsh_gedaan else ""
     _roi_pos    = (True if _dsh_roi > 0 else False) if _dsh_gedaan and _dsh_roi != 0 else None
-    _wr_val     = f"{_dsh_wr:.0f}%" if _dsh_gedaan else "—"
-    _wr_sub     = f"{_dsh_won} gewonnen / {len(_dsh_gedaan) - _dsh_won} verloren" if _dsh_gedaan else ""
-    _wr_pos     = (True if _dsh_wr >= 55 else False) if _dsh_gedaan else None
+    _wr_val     = f"{_dsh_wr:.0f}%" if _dsh_stats["decided"] else "—"
+    _wr_sub     = f"{_dsh_won} gewonnen / {_dsh_stats['lost']} verloren" if _dsh_stats["decided"] else ""
+    _wr_pos     = (True if _dsh_wr >= 55 else False) if _dsh_stats["decided"] else None
 
     _kr1, _kr2, _kr3, _kr4 = st.columns(4)
     _kr1.markdown(kpi_card("🏦", "Bankroll", _bk_val, _bk_sub, _bk_pos, tooltip=_bk_val), unsafe_allow_html=True)
@@ -536,16 +583,17 @@ with tab_dashboard:
     _dsh_m_all     = [r for r in _dsh_resultaten if _in_sel_month(r)]
     _dsh_m_open    = [r for r in _dsh_m_all if r.get("uitkomst") == "open"]
     _dsh_m_settled = [r for r in _dsh_m_all if r.get("uitkomst") in ("gewonnen","verloren","void")]
-    _dsh_m_won     = sum(1 for r in _dsh_m_settled if r.get("uitkomst") == "gewonnen")
-    _dsh_m_lost    = sum(1 for r in _dsh_m_settled if r.get("uitkomst") == "verloren")
-    _dsh_m_stk_set = sum(float(r.get("inzet") or 0) for r in _dsh_m_settled)
+    _dsh_m_stats   = _wl_stats(_dsh_m_settled)
+    _dsh_m_won     = _dsh_m_stats["won"]
+    _dsh_m_lost    = _dsh_m_stats["lost"]
+    _dsh_m_stk_set = _dsh_m_stats["staked"]
     _dsh_m_stk_tot = sum(float(r.get("inzet") or 0) for r in _dsh_m_all)
     _dsh_m_open_st = sum(float(r.get("inzet") or 0) for r in _dsh_m_open)
     _dsh_m_open_pt = sum(float(r.get("inzet") or 0) * float(r.get("odds") or 1.0)
                          for r in _dsh_m_open)
     _dsh_m_wl      = sum(float(r.get("winst_verlies") or 0) for r in _dsh_m_settled)
-    _dsh_m_roi     = (_dsh_m_wl / _dsh_m_stk_set * 100) if _dsh_m_stk_set > 0 else 0.0
-    _dsh_m_wr      = (_dsh_m_won / len(_dsh_m_settled) * 100) if _dsh_m_settled else 0.0
+    _dsh_m_roi     = _dsh_m_stats["roi"]
+    _dsh_m_wr      = _dsh_m_stats["win_pct"]
     _dsh_m_str_cnt, _dsh_m_str_typ = _dsh_streak(_dsh_m_settled)
     _dsh_m_str_ico = ("🔥" if _dsh_m_str_typ == "gewonnen"
                       else "❄️" if _dsh_m_str_typ == "verloren" else "—")
@@ -570,9 +618,9 @@ with tab_dashboard:
         _m_roi_pos, tooltip=_m_roi_val), unsafe_allow_html=True)
 
     # Rij 2: Win rate · Streak · Open in maand
-    _m_wr_val  = f"{_dsh_m_wr:.0f}%" if _dsh_m_settled else "—"
-    _m_wr_sub  = f"{_dsh_m_won} W / {_dsh_m_lost} L" if _dsh_m_settled else ""
-    _m_wr_pos  = (True if _dsh_m_wr >= 55 else False) if _dsh_m_settled else None
+    _m_wr_val  = f"{_dsh_m_wr:.0f}%" if _dsh_m_stats["decided"] else "—"
+    _m_wr_sub  = f"{_dsh_m_won} W / {_dsh_m_lost} L" if _dsh_m_stats["decided"] else ""
+    _m_wr_pos  = (True if _dsh_m_wr >= 55 else False) if _dsh_m_stats["decided"] else None
     _m_str_val = f"{_dsh_m_str_cnt}×" if _dsh_m_settled else "—"
     _m_str_sub = (("gewonnen" if _dsh_m_str_typ == "gewonnen"
                    else "verloren" if _dsh_m_str_typ == "verloren" else "")
@@ -1308,16 +1356,17 @@ with tab_favorieten:
         # Samenvatting als er afgeronde resultaten zijn
         _done = [r for r in db.load_resultaten() if r.get("uitkomst") in ("gewonnen", "verloren", "void")]
         if _done:
-            _fn_won   = sum(1 for r in _done if r.get("uitkomst") == "gewonnen")
-            _fn_lost  = len(_done) - _fn_won
-            _ft_inzet = sum(r.get("inzet", 0) for r in _done)
-            _ft_wl    = sum(r.get("winst_verlies", 0) for r in _done)
-            _froi     = (_ft_wl / _ft_inzet * 100) if _ft_inzet > 0 else 0.0
+            _fn_stats = _wl_stats(_done)
+            _fn_won   = _fn_stats["won"]
+            _fn_lost  = _fn_stats["lost"]
+            _ft_inzet = _fn_stats["staked"]
+            _ft_wl    = _fn_stats["pnl"]
+            _froi     = _fn_stats["roi"]
             _sc1, _sc2, _sc3, _sc4 = st.columns(4)
-            _sc1.markdown(kpi_card("✅", "Gewonnen", str(_fn_won), f"{_fn_won}/{len(_done)} bets"), unsafe_allow_html=True)
+            _sc1.markdown(kpi_card("✅", "Gewonnen", str(_fn_won), f"{_fn_won}/{_fn_stats['decided']} bets"), unsafe_allow_html=True)
             _sc2.markdown(kpi_card("❌", "Verloren",  str(_fn_lost), positive=(False if _fn_lost > 0 else None)), unsafe_allow_html=True)
             _sc3.markdown(kpi_card("💰", "P&L", (f"+€{abs(_ft_wl):.2f}" if _ft_wl >= 0 else f"-€{abs(_ft_wl):.2f}"), f"inzet €{_ft_inzet:.2f}", positive=(_ft_wl > 0) if _ft_wl != 0 else None, tooltip=(f"+€{abs(_ft_wl):.4f}" if _ft_wl >= 0 else f"-€{abs(_ft_wl):.4f}")), unsafe_allow_html=True)
-            _sc4.markdown(kpi_card("📈", "ROI", f"{_froi:+.1f}%", f"over {len(_done)} bets", positive=(_froi > 0) if _froi != 0 else None, tooltip=f"{_froi:+.4f}%"), unsafe_allow_html=True)
+            _sc4.markdown(kpi_card("📈", "ROI", f"{_froi:+.1f}%", f"over {_fn_stats['decided']} bets", positive=(_froi > 0) if _froi != 0 else None, tooltip=f"{_froi:+.4f}%"), unsafe_allow_html=True)
             st.markdown("---")
 
         # ── Splits favorieten in actief vs. verlopen ──────────────────────────
@@ -1655,9 +1704,10 @@ with tab_bankroll:
 
         # Stat-kaartjes
         _7d_bets_all = [b for _wd4 in _week_days for b in _wd4["bets"]]
-        _7d_won_n    = sum(1 for b in _7d_bets_all if b.get("uitkomst") == "gewonnen")
+        _7d_stats    = _wl_stats(_7d_bets_all)
+        _7d_won_n    = _7d_stats["won"]
         _7d_n        = len(_7d_bets_all)
-        _7d_wr       = (_7d_won_n / _7d_n * 100) if _7d_n > 0 else 0.0
+        _7d_wr       = _7d_stats["win_pct"]
         _7d_pnl_sum  = sum(b.get("winst_verlies",0) for b in _7d_bets_all)
 
         st.markdown("")
@@ -1669,9 +1719,9 @@ with tab_bankroll:
         _sc2.markdown(kpi_card("🎯", "Bets",
             str(_7d_n), "in periode"), unsafe_allow_html=True)
         _sc3.markdown(kpi_card("📊", "Win rate",
-            f"{_7d_wr:.0f}%",
+            f"{_7d_wr:.0f}%" if _7d_stats["decided"] else "—",
             f"{_7d_won_n} gewonnen",
-            positive=(_7d_wr >= 50) if _7d_n > 0 else None), unsafe_allow_html=True)
+            positive=(_7d_wr >= 50) if _7d_stats["decided"] else None), unsafe_allow_html=True)
 
         # Dag-detail
         st.markdown("---")
@@ -1736,9 +1786,10 @@ with tab_bankroll:
         _m_bets_all = [b for _md in _m_days
                        for b in _bets_by_date.get(_md.isoformat(), [])]
         _m_total_pnl = sum(b.get("winst_verlies",0) for b in _m_bets_all)
-        _m_won_n     = sum(1 for b in _m_bets_all if b.get("uitkomst") == "gewonnen")
+        _m_stats_cal = _wl_stats(_m_bets_all)
+        _m_won_n     = _m_stats_cal["won"]
         _m_n         = len(_m_bets_all)
-        _m_wr        = (_m_won_n / _m_n * 100) if _m_n > 0 else 0.0
+        _m_wr        = _m_stats_cal["win_pct"]
 
         st.markdown(f"#### {_bk_today.strftime('%B %Y')}")
         _mc1, _mc2, _mc3 = st.columns(3)
@@ -1748,9 +1799,9 @@ with tab_bankroll:
             tooltip=f"€{_m_total_pnl:+.4f}"), unsafe_allow_html=True)
         _mc2.markdown(kpi_card("🎯", "Bets", str(_m_n), "in maand"), unsafe_allow_html=True)
         _mc3.markdown(kpi_card("📊", "Win rate",
-            f"{_m_wr:.0f}%",
+            f"{_m_wr:.0f}%" if _m_stats_cal["decided"] else "—",
             f"{_m_won_n} gewonnen",
-            positive=(_m_wr >= 50) if _m_n > 0 else None), unsafe_allow_html=True)
+            positive=(_m_wr >= 50) if _m_stats_cal["decided"] else None), unsafe_allow_html=True)
         st.markdown("---")
 
         # Groepeer in kalender-weken
@@ -2126,11 +2177,12 @@ with tab_bankroll:
         else:
             # ── Overzicht metrics ────────────────────────────────────────────────
             st.markdown("#### 🎯 Overzicht")
-            _bn_won   = sum(1 for r in _gedaan if r.get("uitkomst") == "gewonnen")
-            _bt_inzet = sum(r.get("inzet", 0) for r in _gedaan)
+            _b_stats  = _wl_stats(_gedaan)
+            _bn_won   = _b_stats["won"]
+            _bt_inzet = _b_stats["staked"]
             _bt_wl    = sum(r.get("winst_verlies", 0) for r in _gedaan)
-            _broi     = (_bt_wl / _bt_inzet * 100) if _bt_inzet > 0 else 0.0
-            _bwin_pct = (_bn_won / len(_gedaan) * 100) if _gedaan else 0.0
+            _broi     = _b_stats["roi"]
+            _bwin_pct = _b_stats["win_pct"]
     
             # Huidig saldo (alleen als startbankroll ingesteld)
             # Gebruik altijd de ONGEFILTERDE totalen (_bk_balance / _bk_total_wl) zodat
@@ -2148,7 +2200,7 @@ with tab_bankroll:
             _bc1, _bc2, _bc3, _bc4 = st.columns(4)
             _bc1.markdown(kpi_card("💰", "Totaal P&L",   f"€{_bt_wl:+.2f}", positive=(_bt_wl > 0) if _bt_wl != 0 else None, tooltip=f"€{_bt_wl:+.4f}"), unsafe_allow_html=True)
             _bc2.markdown(kpi_card("📈", "ROI",           f"{_broi:+.1f}%",  positive=(_broi > 0) if _broi != 0 else None, tooltip=f"{_broi:+.4f}%"), unsafe_allow_html=True)
-            _bc3.markdown(kpi_card("📊", "W / L",         f"{_bn_won} / {len(_gedaan) - _bn_won}", f"{len(_gedaan)} bets gespeeld"), unsafe_allow_html=True)
+            _bc3.markdown(kpi_card("📊", "W / L",         f"{_bn_won} / {_b_stats['lost']}", f"{len(_gedaan)} bets gespeeld"), unsafe_allow_html=True)
             _bc4.markdown(kpi_card("🎰", "Bets gespeeld", str(len(_gedaan))), unsafe_allow_html=True)
     
             # Streak + drawdown
@@ -2183,23 +2235,23 @@ with tab_bankroll:
             st.markdown("#### 🏟️ Per sport")
             for _bsport in sorted({r.get("sport","?") for r in _gedaan_sport}):
                 _sr   = [r for r in _gedaan_sport if r.get("sport","") == _bsport]
-                _sw   = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen")
+                _sr_stats = _wl_stats(_sr)
+                _sw   = _sr_stats["won"]
                 _si   = sum(r.get("inzet", 0) for r in _sr)
                 _swl  = sum(r.get("winst_verlies", 0) for r in _sr)
-                _sroi = (_swl / _si * 100) if _si > 0 else 0.0
+                _sroi = (_swl / _sr_stats["staked"] * 100) if _sr_stats["staked"] > 0 else 0.0
                 # Onderscheid single bets vs parlay legs in dit sport-bucket
                 _sr_singles = [r for r in _sr if not r.get("_parlay_id")]
                 _sr_legs    = [r for r in _sr if r.get("_parlay_id")]
                 _icon = SPORT_ICONS.get(_bsport.upper(), "⚽") if _bsport != "Parlay" else "🎰"
                 with st.expander(f"{_icon} {_bsport}  —  P&L: €{_swl:+.2f}  |  ROI: {_sroi:+.1f}%", expanded=True):
                     _sc1, _sc2, _sc3 = st.columns(3)
-                    _sc1.metric("W / L",        f"{_sw} / {len(_sr) - _sw}")
+                    _sc1.metric("W / L",        f"{_sw} / {_sr_stats['lost']}")
                     _sc2.metric("Totale inzet", f"€{_si:.2f}")
                     _sc3.metric("P&L",          f"€{_swl:+.2f}")
                     if _sr_legs:
-                        _pl_w = sum(1 for r in _sr_legs if r.get("uitkomst") == "gewonnen")
-                        _pl_l = len(_sr_legs) - _pl_w
-                        st.caption(f"🎰 Waarvan parlay legs: {_pl_w}W / {_pl_l}L  ·  {len(_sr_singles)} singles")
+                        _pl_stats = _wl_stats(_sr_legs)
+                        st.caption(f"🎰 Waarvan parlay legs: {_pl_stats['won']}W / {_pl_stats['lost']}L  ·  {len(_sr_singles)} singles")
                     _btype_wl = {}
                     for _r in _sr_singles:  # alleen singles voor meest winstgevend bet type
                         _bt = _r.get("bet","?")
@@ -2221,12 +2273,12 @@ with tab_bankroll:
             for _label, _lo, _hi in _odds_buckets:
                 _br = [r for r in _gedaan if _lo <= float(r.get("odds",0) or 0) <= _hi]
                 if not _br: continue
-                _bw  = sum(1 for r in _br if r.get("uitkomst") == "gewonnen")
+                _br_stats = _wl_stats(_br)
                 _bwv = sum(r.get("winst_verlies",0) for r in _br)
-                _bi  = sum(r.get("inzet",0) for r in _br)
+                _bi  = _br_stats["staked"]
                 _odds_rows.append({
                     "Odds-range": _label, "N": len(_br),
-                    "Win %":  f"{_bw/len(_br)*100:.0f}%",
+                    "Win %":  (f"{_br_stats['win_pct']:.0f}%" if _br_stats["decided"] else "—"),
                     "P&L":    f"€{_bwv:+.2f}",
                     "ROI":    f"{(_bwv/_bi*100) if _bi else 0:+.1f}%",
                 })
@@ -2305,14 +2357,17 @@ with tab_bankroll:
                     if "~" not in _tier:
                         _has_stored_rating = True
                     if _tier not in _tier_agg:
-                        _tier_agg[_tier] = {"n": 0, "won": 0, "ev_sum": 0.0,
+                        _tier_agg[_tier] = {"n": 0, "won": 0, "lost": 0, "ev_sum": 0.0,
                                             "wl_sum": 0.0, "inzet_sum": 0.0}
                     _td = _tier_agg[_tier]
                     _td["n"] += 1
                     if _mr.get("uitkomst") == "gewonnen": _td["won"] += 1
+                    if _mr.get("uitkomst") == "verloren": _td["lost"] += 1
                     _td["ev_sum"]    += float(_mr.get("ev_score") or 0)
                     _td["wl_sum"]    += float(_mr.get("winst_verlies") or 0)
-                    _td["inzet_sum"] += float(_mr.get("inzet") or 0)
+                    # Void-inzet telt niet mee (stake terugbetaald, geen echte ROI-noemer)
+                    if _mr.get("uitkomst") != "void":
+                        _td["inzet_sum"] += float(_mr.get("inzet") or 0)
 
                 _tier_order = ["✅ Sterk", "✅ Sterk ~", "⚠️ Matig", "⚠️ Matig ~",
                                "❌ Vermijd", "❌ Vermijd ~"]
@@ -2321,7 +2376,10 @@ with tab_bankroll:
                     _td = _tier_agg.get(_tier)
                     if not _td or _td["n"] == 0:
                         continue
-                    _t_winpct = _td["won"] / _td["n"] * 100
+                    # Win% is won / (won+lost) — void telt nergens in mee (niet als
+                    # loss, niet in de noemer). Zie _wl_stats() voor dezelfde logica.
+                    _t_decided = _td["won"] + _td["lost"]
+                    _t_winpct = (_td["won"] / _t_decided * 100) if _t_decided else 0.0
                     _t_gem_ev = _td["ev_sum"] / _td["n"]
                     _t_roi    = (_td["wl_sum"] / _td["inzet_sum"] * 100) if _td["inzet_sum"] > 0 else 0.0
                     _t_diff   = _t_roi - _t_gem_ev * 100
@@ -2363,17 +2421,18 @@ with tab_bankroll:
                     if len(_bb) < 2:
                         continue
                     _bn      = len(_bb)
-                    _bwon    = sum(1 for r in _bb if r.get("uitkomst") == "gewonnen")
+                    _bb_stats = _wl_stats(_bb)
+                    _bwon    = _bb_stats["won"]
                     _bgev    = sum(float(r.get("ev_score") or 0) for r in _bb) / _bn
                     _bwl     = sum(float(r.get("winst_verlies") or 0) for r in _bb)
-                    _binzet  = sum(float(r.get("inzet") or 0) for r in _bb)
+                    _binzet  = _bb_stats["staked"]
                     _broi    = (_bwl / _binzet * 100) if _binzet > 0 else 0.0
                     _bvoor   = _bgev * 100
                     _bdelta  = _broi - _bvoor
                     _bsig    = "🟢" if _bdelta >= -5 else ("🟡" if _bdelta >= -15 else "🔴")
                     _calib_rows.append({
                         "EV Bucket": _bl, "N": _bn,
-                        "Win %": f"{_bwon/_bn*100:.0f}%",
+                        "Win %": (f"{_bb_stats['win_pct']:.0f}%" if _bb_stats["decided"] else "—"),
                         "Voorspeld ROI": f"{_bvoor:+.1f}%",
                         "Werkelijk ROI": f"{_broi:+.1f}%",
                         "Delta": f"{_bdelta:+.1f}% {_bsig}",
@@ -2389,8 +2448,9 @@ with tab_bankroll:
                     _sr = [r for r in _model_bets if r.get("sport", "") == _bsport]
                     if len(_sr) < 3:
                         continue
-                    _s_won   = sum(1 for r in _sr if r.get("uitkomst") == "gewonnen")
-                    _s_inzet = sum(float(r.get("inzet") or 0) for r in _sr)
+                    _s_stats = _wl_stats(_sr)
+                    _s_won   = _s_stats["won"]
+                    _s_inzet = _s_stats["staked"]
                     _s_wl    = sum(float(r.get("winst_verlies") or 0) for r in _sr)
                     _s_ev    = [float(r.get("ev_score") or 0) for r in _sr]
                     _s_gev   = sum(_s_ev) / len(_s_ev)
@@ -2403,7 +2463,7 @@ with tab_bankroll:
                                    f"(voorspeld {_s_gev*100:+.1f}%, werkelijk {_s_roi:+.1f}%)")
                     _sport_model_rows.append({
                         "Sport": _bsport, "N": len(_sr),
-                        "Win %": f"{_s_won/len(_sr)*100:.0f}%",
+                        "Win %": f"{_s_stats['win_pct']:.0f}%",
                         "Gem. EV": f"{_s_gev:+.3f}",
                         "ROI": f"{_s_roi:+.1f}%",
                         "Model bias": f"{_s_bias:+.1f}% {_s_sig}",
@@ -2417,15 +2477,20 @@ with tab_bankroll:
             _bt_agg: dict = {}
             for _r in _gedaan:
                 _bt = (_r.get("bet") or _r.get("bet_type") or "Onbekend").split(" ")[0]
-                _bt_agg.setdefault(_bt, {"n":0,"won":0,"ev":0.0,"wv":0.0,"inzet":0.0})
+                _bt_agg.setdefault(_bt, {"n":0,"won":0,"lost":0,"ev":0.0,"wv":0.0,"inzet":0.0})
                 _bt_agg[_bt]["n"] += 1
-                if (_r.get("uitkomst") or "") == "gewonnen": _bt_agg[_bt]["won"] += 1
+                _r_uit = _r.get("uitkomst") or ""
+                if _r_uit == "gewonnen": _bt_agg[_bt]["won"] += 1
+                if _r_uit == "verloren": _bt_agg[_bt]["lost"] += 1
                 _bt_agg[_bt]["ev"]    += float(_r.get("ev_score") or 0)
                 _bt_agg[_bt]["wv"]    += float(_r.get("winst_verlies") or 0)
-                _bt_agg[_bt]["inzet"] += float(_r.get("inzet") or 0)
+                # Void-inzet telt niet mee als gestaakt (stake terugbetaald)
+                if _r_uit != "void":
+                    _bt_agg[_bt]["inzet"] += float(_r.get("inzet") or 0)
             _bt_rows = [
                 {"Bet Type": _bt, "N": _s["n"],
-                 "Win %":  f"{_s['won']/_s['n']*100:.0f}%"  if _s["n"] else "0%",
+                 # Win% = won / (won+lost) — void telt nergens in mee.
+                 "Win %":  (f"{_s['won']/(_s['won']+_s['lost'])*100:.0f}%" if (_s["won"]+_s["lost"]) else "0%"),
                  "ROI":    f"{(_s['wv']/_s['inzet']*100) if _s['inzet'] else 0:+.1f}%",
                  "P&L":    f"€{_s['wv']:+.2f}",
                  "Gem. EV": f"{_s['ev']/_s['n']:.3f}" if _s["n"] else "0.000"}
@@ -2439,14 +2504,16 @@ with tab_bankroll:
             if _all_parlays_bk:
                 st.markdown("---")
                 st.markdown("#### 🎯 Parlay ROI")
-                _p_n    = len(_all_parlays_bk)
-                _p_won  = sum(1 for p in _all_parlays_bk if (p.get("uitkomst") or "") == "gewonnen")
-                _p_inzet = sum(float(p.get("inzet") or 10) for p in _all_parlays_bk)
-                _p_wv   = sum(float(p.get("winst_verlies") or 0) for p in _all_parlays_bk)
-                _p_roi  = _p_wv / _p_inzet * 100 if _p_inzet else 0
+                _p_n       = len(_all_parlays_bk)
+                _p_settled = [p for p in _all_parlays_bk if (p.get("uitkomst") or "") in ("gewonnen", "verloren", "void")]
+                _p_stats   = _wl_stats(_p_settled)
+                _p_won     = _p_stats["won"]
+                _p_inzet   = _p_stats["staked"]
+                _p_wv      = sum(float(p.get("winst_verlies") or 0) for p in _all_parlays_bk)
+                _p_roi     = _p_wv / _p_inzet * 100 if _p_inzet else 0
                 _pc1, _pc2, _pc3, _pc4 = st.columns(4)
                 _pc1.metric("Parlays gespeeld", _p_n)
-                _pc2.metric("Gewonnen",          f"{_p_won}/{_p_n}")
+                _pc2.metric("Gewonnen",          f"{_p_won}/{_p_stats['decided']}")
                 _pc3.metric("Totaal W/V",        f"€{_p_wv:.2f}")
                 _pc4.metric("Parlay ROI",        f"{_p_roi:.1f}%")
 
@@ -3020,6 +3087,11 @@ with tab_parlay:
                     st.markdown(f"<span style='color:{_kl};font-weight:700'>Uitkomst: {_uit.upper()} · W/V: €{_wv:.2f}</span>", unsafe_allow_html=True)
                 if _oc3.button("🗑️ Verwijder", key=f"pdel_{_prl.get('id','')}"):
                     db.delete_parlay(_prl.get("id",""))
+                    # Als deze parlay al gesettled was, staat er een schaduw-rij in
+                    # de resultaten-tabel (parlay_{id}) — zonder deze cleanup blijft
+                    # die rij voor altijd meetellen in win/loss/ROI, ook al is de
+                    # parlay zelf "verwijderd". Zie Tom's melding over verwijderde bets.
+                    db.remove_resultaat(f"parlay_{_prl.get('id','')}")
                     st.rerun()
 
 
@@ -3095,14 +3167,15 @@ with tab_geplaatst:
             # ── Totaalsamenvatting ────────────────────────────────────────────
             _gp_afgerond = [r for r in _gp_data if r.get("uitkomst") in ("gewonnen","verloren","void")]
             if _gp_afgerond:
-                _gp_won   = sum(1 for r in _gp_afgerond if r.get("uitkomst") == "gewonnen")
-                _gp_inzet = sum(r.get("inzet", 0) for r in _gp_afgerond)
+                _gp_stats = _wl_stats(_gp_afgerond)
+                _gp_won   = _gp_stats["won"]
+                _gp_inzet = _gp_stats["staked"]
                 _gp_wl    = sum(r.get("winst_verlies", 0) for r in _gp_afgerond)
-                _gp_roi   = (_gp_wl / _gp_inzet * 100) if _gp_inzet > 0 else 0.0
-                _gp_wr    = (_gp_won / len(_gp_afgerond) * 100) if _gp_afgerond else 0.0
+                _gp_roi   = _gp_stats["roi"]
+                _gp_wr    = _gp_stats["win_pct"]
                 sc1, sc2, sc3, sc4, sc5 = st.columns(5)
                 sc1.markdown(kpi_card("🎰", "Totaal bets",  str(len(_gp_data)), f"{len(_gp_afgerond)} afgerond"), unsafe_allow_html=True)
-                sc2.markdown(kpi_card("🎯", "Win rate",     f"{_gp_wr:.1f}%",   f"{_gp_won}/{len(_gp_afgerond)}", positive=(_gp_wr >= 55) if _gp_afgerond else None), unsafe_allow_html=True)
+                sc2.markdown(kpi_card("🎯", "Win rate",     f"{_gp_wr:.1f}%",   f"{_gp_won}/{_gp_stats['decided']}", positive=(_gp_wr >= 55) if _gp_stats["decided"] else None), unsafe_allow_html=True)
                 sc3.markdown(kpi_card("💶", "Totale inzet", f"€{_gp_inzet:.2f}"), unsafe_allow_html=True)
                 sc4.markdown(kpi_card("💰", "P&L",          f"€{_gp_wl:+.2f}",  positive=(_gp_wl > 0) if _gp_wl != 0 else None, tooltip=f"€{_gp_wl:+.4f}"), unsafe_allow_html=True)
                 sc5.markdown(kpi_card("📈", "ROI",          f"{_gp_roi:+.1f}%", positive=(_gp_roi > 0) if _gp_roi != 0 else None, tooltip=f"{_gp_roi:+.4f}%"), unsafe_allow_html=True)
@@ -3147,14 +3220,15 @@ with tab_geplaatst:
                 _m_rijen      = [r for wk in _weken.values() for r in wk]
                 _m_afgerond   = [r for r in _m_rijen if r.get("uitkomst") in ("gewonnen","verloren","void")]
                 _m_open       = [r for r in _m_rijen if r.get("uitkomst") == "open"]
-                _m_won        = sum(1 for r in _m_afgerond if r.get("uitkomst") == "gewonnen")
-                _m_inzet_set  = sum(float(r.get("inzet") or 0) for r in _m_afgerond)
+                _m_stats      = _wl_stats(_m_afgerond)
+                _m_won        = _m_stats["won"]
+                _m_inzet_set  = _m_stats["staked"]
                 _m_inzet_tot  = sum(float(r.get("inzet") or 0) for r in _m_rijen)
                 _m_open_st    = sum(float(r.get("inzet") or 0) for r in _m_open)
                 _m_open_pot   = sum(float(r.get("inzet") or 0) * float(r.get("odds") or 1.0) for r in _m_open)
                 _m_wl         = sum(float(r.get("winst_verlies") or 0) for r in _m_afgerond)
-                _m_roi        = (_m_wl / _m_inzet_set * 100) if _m_inzet_set > 0 else 0.0
-                _m_wr_str     = f"{_m_won}/{len(_m_afgerond)}" if _m_afgerond else "—"
+                _m_roi        = _m_stats["roi"]
+                _m_wr_str     = f"{_m_won}/{_m_stats['decided']}" if _m_stats["decided"] else "—"
                 _m_wl_str     = f"€{_m_wl:+.2f}" if _m_afgerond else "—"
                 _m_roi_str    = f"{_m_roi:+.1f}%" if _m_afgerond else "—"
                 _m_open_str   = f"{len(_m_open)} open €{_m_open_st:.0f}" if _m_open else "0 open"
@@ -3201,12 +3275,14 @@ with tab_geplaatst:
                         if _u == "open":
                             _ps["open"] += 1
                         elif _u in ("gewonnen", "verloren", "void"):
-                            _ps["settled_stake"] += float(_r.get("inzet") or 0)
                             _ps["pnl"] += float(_r.get("winst_verlies") or 0)
                             if _u == "gewonnen":
                                 _ps["won"] += 1
+                                _ps["settled_stake"] += float(_r.get("inzet") or 0)
                             elif _u == "verloren":
                                 _ps["lost"] += 1
+                                _ps["settled_stake"] += float(_r.get("inzet") or 0)
+                            # void: stake wordt terugbetaald, telt niet mee als "gestaakt"
                     if len(_per_sport) > 1:
                         _ps_rows = []
                         # Sorteer op aantal bets aflopend
@@ -3271,10 +3347,11 @@ with tab_geplaatst:
                     for _week, _bets in _weken.items():
                         # Week samenvatting
                         _w_afgerond = [r for r in _bets if r.get("uitkomst") in ("gewonnen","verloren","void")]
-                        _w_won      = sum(1 for r in _w_afgerond if r.get("uitkomst") == "gewonnen")
+                        _w_stats    = _wl_stats(_w_afgerond)
+                        _w_won      = _w_stats["won"]
                         _w_inzet    = sum(r.get("inzet",0) for r in _w_afgerond)
                         _w_wl       = sum(r.get("winst_verlies",0) for r in _w_afgerond)
-                        _w_wr_str   = f"{_w_won}/{len(_w_afgerond)}" if _w_afgerond else "—"
+                        _w_wr_str   = f"{_w_won}/{_w_stats['decided']}" if _w_stats["decided"] else "—"
                         _w_wl_str   = f"€{_w_wl:+.2f}" if _w_afgerond else "—"
 
                         st.markdown(
