@@ -232,6 +232,36 @@ def _deduplicate_matches(matches: list) -> list:
 
 # ─── Extractie via Claude ─────────────────────────────────────────────────────
 
+def _propagate_match_context(bets: list) -> None:
+    """
+    Vult ontbrekende match_home/match_away in op basis van andere legs binnen
+    dezelfde screenshot. Bedoeld voor Bet Builder/Same Game Parlay-slips waarbij
+    de wedstrijd-context (bijv. een scorebord onderaan) maar op één plek
+    zichtbaar is, en Claude Vision die niet aan elke afzonderlijke leg meegeeft
+    (met name team-markten zonder speler, zoals "Beide teams scoren - Nee").
+
+    Werkt uitsluitend als ALLE bets binnen deze screenshot die al een
+    match_home/match_away hebben het eens zijn over precies ÉÉN wedstrijd.
+    Bij meerdere verschillende wedstrijden in dezelfde screenshot (bijv. een
+    gewoon Linemate Trends-scherm met meerdere games) gebeurt er niets, om
+    nooit de verkeerde wedstrijd aan een prop te plakken. Muteert `bets` in-place.
+    """
+    pairs = set()
+    for b in bets:
+        mh = (b.get("match_home") or "").strip()
+        ma = (b.get("match_away") or "").strip()
+        if mh and ma:
+            pairs.add((mh, ma))
+    if len(pairs) != 1:
+        return
+    home, away = next(iter(pairs))
+    for b in bets:
+        if not (b.get("match_home") or "").strip():
+            b["match_home"] = home
+        if not (b.get("match_away") or "").strip():
+            b["match_away"] = away
+
+
 def extract_bets(client, image_paths: list) -> tuple:
     """
     Stuurt afbeeldingen naar Claude en extraheert bets + matches als JSON.
@@ -312,6 +342,10 @@ def extract_bets(client, image_paths: list) -> tuple:
                 else:
                     _bets.extend(_data.get("bets", []) or [])
                     _matches.extend(_data.get("matches", []) or [])
+
+            # Bet Builder/SGP-fix: vul ontbrekende match_home/match_away in
+            # tussen legs van dezelfde screenshot als het eenduidig 1 wedstrijd is.
+            _propagate_match_context(_bets)
 
             return {"i": _i, "bets": _bets, "matches": _matches, "raw": _raw, "steps": _local_steps}
 

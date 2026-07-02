@@ -118,17 +118,42 @@ EXTRACT_PROMPT = """
 Je ziet één of meerdere screenshots. Dit kan een combinatie zijn van:
   A) Linemate Trends-scherm (spelersprops met hit-rate statistieken)
   B) Linemate 100% Club / Recent Games (simpele lijst: speler, prop, odds, % en N/M)
-  C) Bookmaker odds-overzicht (Flashscore, Bet365, Unibet, etc.) met wedstrijden en odds
+  C) Bookmaker odds-overzicht (Flashscore, Bet365, Unibet, Toto, etc.) met wedstrijden en odds
+  D) Bet Builder / Same Game Parlay-slip, of een "Weddenschap geplaatst"-bevestigingsscherm:
+     meerdere markten (legs) in één bookmaker-app. Dit komt in twee varianten voor:
+       D1) ÉÉN wedstrijd, meerdere markten (bijv. "BET BUILDER" bovenaan, gecombineerd met
+           een scorebord met twee teamvlaggen/-namen en een live of nog-te-spelen score — dat
+           scorebord staat vaak HELEMAAL ONDERAAN het scherm, niet boven de lijst).
+       D2) MEERDERE wedstrijden gecombineerd in één weddenschap (een "combi"/accumulator, of
+           een Bet Builder-groep binnen een grotere combi). Elke wedstrijd heeft dan zijn EIGEN
+           label, bijv. een regel "SD Padres @ LA Dodgers" (met eigen odds ernaast, bijv. 2.15)
+           die als groeps-header boven een setje bij elkaar horende legs staat, of gewoon
+           platte tekst "CIN Reds @ MIL Brewers" direct onder of boven één losse leg.
+           LET OP: het scherm kan BOVENAAN een grote, generieke wedstrijd-banner tonen (met
+           logo's, competitie en datum) — die banner is vaak alleen de laatst-bekeken wedstrijd
+           en geldt NIET automatisch voor de hele weddenschap. Gebruik die banner NOOIT blind
+           voor legs die een eigen, andere wedstrijd-label hebben.
+     Voorbeelden van legs: "Beide teams scoren - Nee", "Spanje - 1e team dat scoort",
+     "Meer dan 0.5 doelpunten in de 1e helft", "Wedstrijdresultaat wordt LA Dodgers", maar ook
+     een individuele spelersprop zoals "Lamine Yamal: 1+ schoten op doel" of
+     "Chase Burns: 6+ strikeouts". Elke leg wordt een apart object in de "bets"-array (zie
+     hieronder), ook de non-spelersmarkten. BELANGRIJK bij D2: bepaal voor ELKE leg
+     AFZONDERLIJK bij welke wedstrijd hij hoort — kijk naar het dichtstbijzijnde/relevante
+     wedstrijd-label (groeps-header erboven, of tekstregel direct bij die leg), niet naar één
+     wedstrijd voor de hele screenshot.
 
 Geef een JSON object terug met twee arrays: "bets" en "matches".
 
 ══════════════════════════════════════════════════════
-ARRAY 1 — "bets"  (uit screenshot-type A of B)
+ARRAY 1 — "bets"  (uit screenshot-type A, B of D)
 ══════════════════════════════════════════════════════
-Extraheer ELKE zichtbare spelersprop. Elk object heeft:
-  - "player"       : ALTIJD de naam van de speler zelf, nooit een teamnaam (bijv. "J. Duren" of
-                     "Connor McDavid"). Dit veld bepaalt wat prominent getoond wordt in de app,
-                     dus wees hier extra zorgvuldig.
+Extraheer ELKE zichtbare spelersprop OF Bet Builder-leg. Elk object heeft:
+  - "player"       : bij een spelersprop ALTIJD de naam van de speler zelf, nooit een teamnaam
+                     (bijv. "J. Duren" of "Connor McDavid"). Dit veld bepaalt wat prominent
+                     getoond wordt in de app, dus wees hier extra zorgvuldig.
+                     Bij een Bet Builder-leg die GEEN spelersprop is (bijv. "Beide teams
+                     scoren - Nee", "1e team dat scoort", "Meer dan 0.5 doelpunten") is er
+                     geen speler → gebruik null. Verzin nooit een speler voor een team-markt.
   - "sport"        : "NHL", "NBA", "MLB", of de exacte voetbalcompetitie (bijv. "EPL",
                      "Championship", "La Liga", "Bundesliga", "Serie A", "Ligue 1",
                      "Champions League", "Europa League", "Eredivisie", "MLS").
@@ -136,15 +161,34 @@ Extraheer ELKE zichtbare spelersprop. Elk object heeft:
   - "team"         : ALLEEN een teamafkorting of teamnaam (bijv. "DET"), en NOOIT de naam van
                      de speler zelf. Twijfel je of iets een team of de spelersnaam is? Gebruik null.
   - "opponent"     : tegenstander van de speler indien zichtbaar (bijv. "MIN" uit "vs MIN"), anders null
-  - "match_home"   : volledige naam of afkorting van de thuisploeg van DEZE wedstrijd indien
-                     zichtbaar (bijv. "DET Tigers"), anders null. Dit is de belangrijkste en
-                     meest betrouwbare bron van wedstrijd-context — vaak zichtbaar boven de
-                     spelerslijst — dus vul dit in wanneer mogelijk, ook als "team"/"opponent" null zijn.
+  - "match_home"   : volledige naam of afkorting van de thuisploeg van DEZE SPECIFIEKE leg
+                     indien ergens op de afbeelding zichtbaar (bijv. "DET Tigers" of "Spanje"),
+                     anders null. Dit is de belangrijkste en meest betrouwbare bron van
+                     wedstrijd-context — vul dit in wanneer mogelijk, ook als "team"/"opponent"
+                     null zijn. Zoek hiervoor de HELE afbeelding af: dit staat meestal boven de
+                     spelerslijst (type A/B), maar bij een Bet Builder-slip (type D1) staat het
+                     vaak juist ONDERAAN als scorebord met twee teamvlaggen/-namen en een score
+                     (bijv. "Spanje 0 - Oostenrijk 0").
+                     BELANGRIJK bij D1 (1 wedstrijd): geef AAN ELKE leg in de slip dezelfde
+                     "match_home"/"match_away" mee — ook aan de legs zonder speler (team-markten)
+                     en ook als de match-naam maar op één plek (bijv. het scorebord) zichtbaar is.
+                     BELANGRIJK bij D2 (meerdere wedstrijden in 1 weddenschap/combi): bepaal
+                     "match_home"/"match_away" PER LEG AFZONDERLIJK op basis van het label dat
+                     het dichtst bij/relevant is voor DIE leg (een groeps-header zoals "SD Padres
+                     @ LA Dodgers" boven een setje legs, of een tekstregel zoals "CIN Reds @ MIL
+                     Brewers" direct bij één losse leg). Gebruik NOOIT een generieke bovenaan-
+                     staande wedstrijd-banner voor legs die een eigen, ander wedstrijd-label
+                     hebben — die banner toont vaak maar één van de wedstrijden uit de combi.
   - "match_away"   : volledige naam of afkorting van de uitploeg van DEZE wedstrijd indien
-                     zichtbaar (bijv. "NY Yankees"), anders null
-  - "bet_type"     : bijv. "Over 13.5 REB+AST" of "Over 0.5 Points"
-  - "linemate_odds": odds als decimaal getal (number), bijv. 1.95
-  - "hit_rate"     : PRIMAIRE hit rate als decimaal (0–1). Zie keuzeregel hieronder.
+                     zichtbaar (bijv. "NY Yankees" of "Oostenrijk"), anders null. Zelfde
+                     zoek-instructie als "match_home" hierboven.
+  - "bet_type"     : bijv. "Over 13.5 REB+AST" of "Over 0.5 Points". Bij een Bet Builder-leg
+                     zonder speler: gebruik de zichtbare marktnaam, bijv. "Beide teams scoren -
+                     Nee" of "1e team dat scoort - Spanje" of "Meer dan 0.5 doelpunten 1e helft".
+  - "linemate_odds": odds als decimaal getal (number), bijv. 1.95. Indien geen odds per leg
+                     zichtbaar (sommige Bet Builder-slips tonen alleen de totale odds): null.
+  - "hit_rate"     : PRIMAIRE hit rate als decimaal (0–1). Zie keuzeregel hieronder. Niet van
+                     toepassing bij Bet Builder-legs (type D) zonder Linemate-stats → null.
   - "sample"       : bijv. "4/5" of "9/9" (string), de sample horend bij de primaire hit rate
   - "sample_n"     : totaal aantal wedstrijden als getal (number), bijv. 5 of 9
   - "trend_stats"  : array met ALLE zichtbare statistiekregels voor deze prop, bijv.:
@@ -155,15 +199,15 @@ Extraheer ELKE zichtbare spelersprop. Elk object heeft:
         {"label": "last 5 games when starting","hit_rate": 0.80, "sample": "4/5"},
         {"label": "last 5 without C. Cunningham","hit_rate": 0.80, "sample": "4/5"}
       ]
-    Als er geen losse regels zichtbaar zijn (type B), geef dan een lege array [].
+    Als er geen losse regels zichtbaar zijn (type B of D), geef dan een lege array [].
 
 KEUZEREGEL voor "hit_rate" (primaire waarde):
   - Kies bij voorkeur de hit rate van "last N games" (algemeen, niet gefilterd).
   - Als dat niet beschikbaar is: gebruik de eerste regel die zichtbaar is.
   - Formaat: percentage als decimaal → 100%=1.0, 80%=0.80, 75%=0.75
 
-VOLLEDIGHEID: Extraheer ELKE prop die zichtbaar is, ook onderaan de lijst.
-Scroll mentaal door de hele afbeelding. Mis geen enkele speler of prop.
+VOLLEDIGHEID: Extraheer ELKE prop of leg die zichtbaar is, ook onderaan de lijst.
+Scroll mentaal door de hele afbeelding. Mis geen enkele speler, prop of Bet Builder-leg.
 
 ══════════════════════════════════════════════════════
 ARRAY 2 — "matches"  (uit screenshot-type C)
