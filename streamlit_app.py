@@ -147,6 +147,31 @@ def _team_caption_suffix(bet: dict) -> str:
     return f"  ·  {_team}"
 
 
+def _leg_context_suffix(leg: dict) -> str:
+    """
+    Geeft '  ·  Tampa Bay Rays vs New York Yankees' (wedstrijd) terug, of als
+    dat niet bekend is '  ·  Tampa Bay Rays' (team) — zodat je bij een
+    parlay-leg (Dashboard, Parlay Builder, Opgeslagen Parlays) kunt zien bij
+    welke wedstrijd/welk team de speler hoort. Lege string als er niets
+    zinvols bekend is voor deze leg.
+
+    Let op: dit werkt alleen als "team"/"match_home"/"match_away" daadwerkelijk
+    op de leg zelf staan. Legs die zijn toegevoegd vóórdat deze velden werden
+    meegegeven bij het aanmaken van de parlay (zie de parlay_legs.append()-
+    aanroepen) hebben deze info niet met terugwerkende kracht beschikbaar.
+    """
+    _home = str(leg.get("match_home") or "").strip()
+    _away = str(leg.get("match_away") or "").strip()
+    if _home and _away:
+        return f"  ·  {_home} vs {_away}"
+    _team_suffix = _team_caption_suffix(leg)
+    if _team_suffix:
+        return _team_suffix
+    if _home or _away:
+        return f"  ·  {_home or _away}"
+    return ""
+
+
 def _parlay_leg_key(leg: dict, leg_status: dict, idx: int = None) -> str:
     """
     Bepaalt welke sleutel voor déze leg daadwerkelijk in het legs_json-dict
@@ -613,13 +638,23 @@ with tab_dashboard:
                     _leg_icon   = _DSH_SPORT_ICONS.get(_leg_sport, "🎯")
                     _leg_odds   = _leg.get("odds")
                     _leg_odds_s = f"@ {float(_leg_odds):.2f}" if _leg_odds is not None else ""
+                    # Wedstrijd/team-context, indien beschikbaar — zodat op de
+                    # dashboardkaart direct zichtbaar is in welke wedstrijd de
+                    # speler actief is (was voorheen nergens zichtbaar).
+                    _leg_ctx_s = _leg_context_suffix(_leg).strip(" ·")
+                    _leg_ctx_html = (
+                        f"<div style='color:#4b5563;font-size:0.72rem;margin-left:16px;'>{_leg_ctx_s}</div>"
+                        if _leg_ctx_s else ""
+                    )
                     _legs_html += (
-                        f"<div style='display:flex;justify-content:space-between;"
-                        f"padding:5px 0;border-bottom:1px solid #161630;font-size:0.88rem;'>"
+                        f"<div style='padding:5px 0;border-bottom:1px solid #161630;font-size:0.88rem;'>"
+                        f"<div style='display:flex;justify-content:space-between;'>"
                         f"<span><span style='color:#555;font-size:0.8rem;'>{_li}.</span> "
                         f"{_leg_icon} <b style='color:#e2e8f0;'>{_leg_player}</b>"
                         f"<span style='color:#a78bfa;'> — {_leg_bet}</span></span>"
                         f"<span style='color:#64748b;font-size:0.82rem;'>{_leg_odds_s}</span>"
+                        f"</div>"
+                        f"{_leg_ctx_html}"
                         f"</div>"
                     )
                 if not _legs_html:
@@ -1396,6 +1431,9 @@ with tab_favorieten:
                             "odds":     float(_fav.get("odds") or 1.5),
                             "hit_rate": None,
                             "game_date": _fav_game_date(_fav),
+                            "team":       _fav.get("team", ""),
+                            "match_home": _fav.get("match_home", ""),
+                            "match_away": _fav.get("match_away", ""),
                         })
                         st.success(f"✅ Toegevoegd aan Parlay Builder — ga naar 🎯 tab")
 
@@ -2577,6 +2615,9 @@ with tab_parlay:
     _p_bet_det = st.text_input("Details", key=f"p_bet_det_{_fv}",
                                 placeholder="bijv. Anytime Goal Scorer, Over 2.5 goals, Colorado Avalanche to win")
     _p_bet     = f"{_p_bet_cat} — {_p_bet_det.strip()}" if _p_bet_det.strip() else _p_bet_cat
+    _p_match   = st.text_input("Wedstrijd (optioneel)", key=f"p_match_{_fv}",
+                                placeholder="bijv. Tampa Bay Rays @ New York Yankees",
+                                help="Wordt getoond bij de leg zodat je kunt zien in welke wedstrijd deze speler actief is.")
     _p_game_date = st.date_input("Wedstrijddatum", value=datetime.date.today(), key=f"p_game_date_{_fv}",
                                   help="Wordt gebruikt om deze leg later automatisch te beoordelen.")
 
@@ -2593,6 +2634,17 @@ with tab_parlay:
     if _padd_col.button("➕ Voeg toe aan parlay", key="p_add_leg",
                         type="primary", use_container_width=True):
         st.session_state.parlay_last_sport = _p_sport
+        # Vrij ingevulde "Wedstrijd"-tekst opsplitsen in thuis/uit als er een
+        # duidelijke scheiding in staat ("@" of "vs"), anders bewaren als team.
+        _p_match_txt = _p_match.strip()
+        _p_match_home, _p_match_away, _p_team_txt = "", "", ""
+        for _sep in (" @ ", " vs ", " v "):
+            if _sep in _p_match_txt:
+                _parts = _p_match_txt.split(_sep, 1)
+                _p_match_home, _p_match_away = _parts[0].strip(), _parts[1].strip()
+                break
+        else:
+            _p_team_txt = _p_match_txt
         st.session_state.parlay_legs.append({
             "player":   _p_speler,
             "sport":    _p_sport,
@@ -2600,6 +2652,9 @@ with tab_parlay:
             "odds":     float(_p_odds),
             "hit_rate": float(_p_hr_val) / 100 if _p_hr_val is not None else None,
             "game_date": _p_game_date.isoformat(),
+            "team":       _p_team_txt,
+            "match_home": _p_match_home,
+            "match_away": _p_match_away,
         })
         st.session_state.parlay_form_ver += 1
         st.rerun()
@@ -2633,7 +2688,7 @@ with tab_parlay:
                         for l in st.session_state.parlay_legs
                     )
                     _pc1, _pc2, _pc3, _pc4 = st.columns([3, 1, 1, 1])
-                    _pc1.write(f"{b.get('player','?')} — {b.get('bet_type','?')}")
+                    _pc1.write(f"{b.get('player','?')} — {b.get('bet_type','?')}{_leg_context_suffix(b)}")
                     _pc2.write(f"Odds: {b.get('odds','—')}")
                     _pc3.write(f"{_ev_clr} EV {_ev_b:+.3f}")
                     if not _already:
@@ -2646,6 +2701,9 @@ with tab_parlay:
                                 "odds":     float(b.get("odds") or 1.5),
                                 "hit_rate": float(b.get("composite") or b.get("linemate_hr") or 0.5),
                                 "game_date": b.get("game_date") or datetime.date.today().isoformat(),
+                                "team":       b.get("team", ""),
+                                "match_home": b.get("match_home", ""),
+                                "match_away": b.get("match_away", ""),
                             })
                             st.rerun()
                     else:
@@ -2658,7 +2716,7 @@ with tab_parlay:
         legs_to_remove = []
         for _li, _leg in enumerate(st.session_state.parlay_legs):
             _lc1, _lc2, _lc3, _lc4 = st.columns([3, 1, 1, 0.5])
-            _lc1.write(f"**{_leg.get('player','')}** — {_leg.get('bet_type','')}")
+            _lc1.write(f"**{_leg.get('player','')}** — {_leg.get('bet_type','')}{_leg_context_suffix(_leg)}")
             _new_odds = _lc2.number_input(
                 "Odds", min_value=1.01, max_value=50.0,
                 value=float(_leg.get("odds",1.5)), step=0.05, format="%.2f",
@@ -2792,6 +2850,7 @@ with tab_parlay:
             if st.button("Bijwerken", key="backfill_geraakt_legs"):
                 _today_s = datetime.date.today().isoformat()
                 _bf_touched = 0
+                _bf_failed = []
                 for _bf_prl in _saved_parlays:
                     if (_bf_prl.get("uitkomst") or "") != "gewonnen":
                         continue
@@ -2806,9 +2865,25 @@ with tab_parlay:
                         continue
                     _bf_new = _mark_all_legs_geraakt(_bf_legs, _bf_lj)
                     if _bf_new != _bf_lj:
-                        db.update_parlay(_bf_prl.get("id", ""), {"legs_json": _bf_new})
-                        _bf_touched += 1
-                st.success(f"✅ {_bf_touched} parlay(s) bijgewerkt.")
+                        # db.update_parlay geeft nu {"ok": bool, "error": str|None}
+                        # terug — voorheen kon een mislukte Supabase-write hier
+                        # stilzwijgend niets opslaan terwijl de knop toch
+                        # "bijgewerkt" meldde. Nu tellen we alleen écht
+                        # geslaagde writes mee en tonen we mislukkingen apart.
+                        _bf_res = db.update_parlay(_bf_prl.get("id", ""), {"legs_json": _bf_new})
+                        if _bf_res.get("ok"):
+                            _bf_touched += 1
+                        else:
+                            _bf_failed.append((_bf_prl.get("id", "?"), _bf_res.get("error", "onbekende fout")))
+                if _bf_touched:
+                    st.success(f"✅ {_bf_touched} parlay(s) daadwerkelijk bijgewerkt in de database.")
+                if _bf_failed:
+                    st.error(
+                        f"⚠️ {len(_bf_failed)} parlay(s) NIET opgeslagen (Supabase-fout). "
+                        f"Eerste fout (parlay {_bf_failed[0][0]}): {_bf_failed[0][1]}"
+                    )
+                if not _bf_touched and not _bf_failed:
+                    st.info("Niets om bij te werken — alle legs stonden al op 'geraakt'.")
                 st.rerun()
 
         for _prl in _saved_parlays:
@@ -2855,7 +2930,7 @@ with tab_parlay:
                         _lst = _prl_lj.get(_lk, "open")
                         _auto_badge = " 🤖" if _lk in _prl_laj else ""
                         _plc1, _plc2 = st.columns([3, 2])
-                        _plc1.write(f"**{_pleg.get('player','')}** — {_pleg.get('bet_type','')} @ {_pleg.get('odds','—')}{_auto_badge}")
+                        _plc1.write(f"**{_pleg.get('player','')}** — {_pleg.get('bet_type','')} @ {_pleg.get('odds','—')}{_auto_badge}{_leg_context_suffix(_pleg)}")
                         _new_statuses[_lk] = _plc2.selectbox(
                             "Status", options=_leg_opts,
                             index=_leg_opts.index(_lst) if _lst in _leg_opts else 0,
@@ -2893,7 +2968,18 @@ with tab_parlay:
                     _upd_parlay_fields = {"legs_json": _upd_legs, "legs_auto_json": _upd_laj}
                     if abs(_eff_odds - _stored_odds) > 0.001:
                         _upd_parlay_fields["gecombineerde_odds"] = _eff_odds
-                    db.update_parlay(_prl.get("id",""), _upd_parlay_fields)
+                    _save_res = db.update_parlay(_prl.get("id",""), _upd_parlay_fields)
+                    if not _save_res.get("ok"):
+                        # Belangrijk: hier NIET "bijgewerkt" tonen. db.update_parlay()
+                        # kan de legs_json-write stilzwijgend hebben laten vallen als
+                        # de Supabase-call faalde (zie db.py). Zonder deze check leek
+                        # het alsof "Verwerken" had gewerkt terwijl er niets was
+                        # opgeslagen — precies het gemelde probleem.
+                        st.error(
+                            "⚠️ Opslaan van de leg-statussen is MISLUKT (Supabase-fout). "
+                            f"De statussen hierboven zijn dus NIET bewaard.\n\nFout: {_save_res.get('error')}"
+                        )
+                        st.stop()
                     # Auto-settle op basis van leg-statussen (alleen als parlay nog open is)
                     if (_prl.get("uitkomst") or "open") == "open":
                         _auto_id    = _prl.get("id","")
@@ -2910,22 +2996,25 @@ with tab_parlay:
                         # Alle leg-statussen ophalen (ook voor legs die nog niet gewijzigd zijn)
                         _all_keys     = [_parlay_leg_key(l, _upd_legs, _ki) for _ki, l in enumerate(_prl_legs)]
                         _all_statuses = [_upd_legs.get(k, "open") for k in _all_keys]
+                        _auto_res = None
                         if any(s == "gemist" for s in _all_statuses):
                             # Eén leg gemist → parlay verloren
-                            db.update_parlay(_auto_id, {"uitkomst": "verloren", "winst_verlies": round(-_auto_inzet, 2)})
+                            _auto_res = db.update_parlay(_auto_id, {"uitkomst": "verloren", "winst_verlies": round(-_auto_inzet, 2)})
                             db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "verloren", _auto_inzet)
                         elif all(s != "open" for s in _all_statuses) and _all_statuses:
                             # Alle legs gesettled, geen gemist
                             if all(s == "void" for s in _all_statuses):
                                 # Alle legs void → parlay void
-                                db.update_parlay(_auto_id, {"uitkomst": "void", "winst_verlies": 0.0})
+                                _auto_res = db.update_parlay(_auto_id, {"uitkomst": "void", "winst_verlies": 0.0})
                                 db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "void", _auto_inzet)
                             else:
                                 # Alle legs geraakt (of mix geraakt+void) → parlay gewonnen
                                 # Uitbetaling op basis van effectieve odds (zonder void legs)
                                 _pw = round(_auto_inzet * _eff_odds - _auto_inzet, 2)
-                                db.update_parlay(_auto_id, {"uitkomst": "gewonnen", "winst_verlies": _pw})
+                                _auto_res = db.update_parlay(_auto_id, {"uitkomst": "gewonnen", "winst_verlies": _pw})
                                 db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "gewonnen", _auto_inzet)
+                        if _auto_res is not None and not _auto_res.get("ok"):
+                            st.warning(f"⚠️ Leg-statussen zijn opgeslagen, maar de automatische parlay-settlement is mislukt: {_auto_res.get('error')}")
                     st.toast("✅ Leg-statussen bijgewerkt.")
                     st.rerun()
 
@@ -2938,7 +3027,9 @@ with tab_parlay:
                         _pw = round(_prl_inzet * _prl_odds - _prl_inzet, 2)
                         # Parlay gewonnen → alle (niet-void) legs zijn per definitie geraakt.
                         _prl_legs_win = _mark_all_legs_geraakt(_prl_legs, _prl_lj)
-                        db.update_parlay(_prl_id, {"uitkomst":"gewonnen","winst_verlies":_pw, "legs_json": _prl_legs_win})
+                        _win_res = db.update_parlay(_prl_id, {"uitkomst":"gewonnen","winst_verlies":_pw, "legs_json": _prl_legs_win})
+                        if not _win_res.get("ok"):
+                            st.error(f"⚠️ Parlay is als Gewonnen gemarkeerd, maar de leg-statussen ('geraakt') zijn NIET opgeslagen: {_win_res.get('error')}")
                         _prl_legs = _prl.get("props_json", []) or []
                         _prl_fav  = {
                             "odds":      _prl_odds,
@@ -3325,12 +3416,10 @@ with tab_geplaatst:
                                                        else "❌" if _lg_st == "gemist"
                                                        else "⚪" if _lg_st == "void"
                                                        else "⏳")
-                                            # Team tonen als het niet al in speler/bet-type voorkomt
-                                            _lg_team_suffix = ""
-                                            if (_lg_team
-                                                and _lg_team.lower() not in _lg_player.lower()
-                                                and _lg_team.lower() not in _lg_bt.lower()):
-                                                _lg_team_suffix = f"  ·  {_lg_team}"
+                                            # Wedstrijd/team tonen (match_home vs match_away heeft
+                                            # voorrang, valt terug op team-veld) zodat direct
+                                            # zichtbaar is in welke wedstrijd de speler actief is.
+                                            _lg_team_suffix = _leg_context_suffix(_lg)
                                             st.markdown(
                                                 f"- {_lg_ico} **{_lg_player or '—'}** — "
                                                 f"{_lg_bt or '—'}  {_lg_odds_s}"
@@ -3423,7 +3512,9 @@ with tab_geplaatst:
                                             # Parlay gewonnen → alle (niet-void) legs zijn
                                             # per definitie geraakt.
                                             _ep_fields["legs_json"] = _mark_all_legs_geraakt(_parlay_legs, _leg_status)
-                                        db.update_parlay(_ep_id, _ep_fields)
+                                        _ep_res = db.update_parlay(_ep_id, _ep_fields)
+                                        if not _ep_res.get("ok"):
+                                            st.error(f"⚠️ Opslaan mislukt: {_ep_res.get('error')}")
                                     st.session_state.gp_editing = None
                                     st.rerun()
                                 if _cancel_e:
@@ -3542,6 +3633,9 @@ with tab_history:
                             "ev":       _hev,
                             "sport":    _hp.get("sport",""),
                             "source_session_id": _sid,
+                            "team":       _hp.get("team", ""),
+                            "match_home": _hp.get("match_home", ""),
+                            "match_away": _hp.get("match_away", ""),
                         }, source_session_id=_sid, game_date=datetime.date.today().isoformat())
                         st.success(f"✅ {_player} toegevoegd aan Shortlist")
                         st.rerun()
@@ -3555,6 +3649,9 @@ with tab_history:
                             "odds":     float(_hp.get("odds") or 1.5),
                             "hit_rate": float(_hp.get("composite") or 0.5),
                             "game_date": _hp.get("game_date") or (datum[:10] if datum else datetime.date.today().isoformat()),
+                            "team":       _hp.get("team", ""),
+                            "match_home": _hp.get("match_home", ""),
+                            "match_away": _hp.get("match_away", ""),
                         })
                         st.rerun()
 

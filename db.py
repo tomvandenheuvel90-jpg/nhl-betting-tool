@@ -868,37 +868,65 @@ def save_parlay(parlay: dict) -> None:
     _ttl_clear("parlays")
 
 
-def update_parlay(parlay_id: str, updates: dict) -> None:
-    """Update velden van een parlay."""
+def update_parlay(parlay_id: str, updates: dict) -> dict:
+    """Update velden van een parlay.
+
+    Retourneert altijd een status-dict {"ok": bool, "error": str|None} zodat de
+    UI een eerlijke melding kan tonen. BELANGRIJK — vroeger gaf deze functie
+    niets terug en werd bij een mislukte Supabase-write stilzwijgend
+    teruggevallen op een retry ZONDER legs_json/legs_auto_json. Als `updates`
+    ALLEEN uit die twee velden bestond (zoals bij het verwerken van
+    leg-statussen), was die fallback-retry een complete no-op: er werd
+    helemaal niets weggeschreven, maar de functie retourneerde alsnog
+    "succes". De UI toonde dan "✅ Leg-statussen bijgewerkt", terwijl de
+    leg-status in werkelijkheid nooit was opgeslagen — precies het "alsof er
+    niets gebeurt"-symptoom dat Tom meldde. Nu geeft de functie expliciet
+    ok=False + de originele foutmelding terug zodra legs_json/legs_auto_json
+    niet daadwerkelijk zijn weggeschreven, zodat de aanroepende code dat kan
+    tonen in plaats van een valse succesmelding.
+    """
     if _using_supabase:
+        row = dict(updates)
+        for field in ("props_json", "legs_json", "legs_auto_json"):
+            if isinstance(row.get(field), (list, dict)):
+                row[field] = json.dumps(row[field], ensure_ascii=False)
         try:
-            row = dict(updates)
-            for field in ("props_json", "legs_json", "legs_auto_json"):
-                if isinstance(row.get(field), (list, dict)):
-                    row[field] = json.dumps(row[field], ensure_ascii=False)
             _supabase.table("parlays").update(row).eq("id", parlay_id).execute()
             _ttl_clear("parlays")
-            return
+            return {"ok": True, "error": None}
         except Exception as e:
             import logging; logging.warning(f"Supabase update_parlay (full): {e}")
+            _full_error = str(e)
+            _had_legs = any(k in row for k in ("legs_json", "legs_auto_json"))
             # Retry zonder legs_json/legs_auto_json — kolommen bestaan mogelijk nog niet in Supabase
+            row_no_legs = {k: v for k, v in row.items() if k not in ("legs_json", "legs_auto_json")}
             try:
-                row_no_legs = {k: v for k, v in row.items() if k not in ("legs_json", "legs_auto_json")}
                 if row_no_legs:
                     _supabase.table("parlays").update(row_no_legs).eq("id", parlay_id).execute()
                 _ttl_clear("parlays")
-                return
+                if _had_legs:
+                    # Fallback kan hier een no-op zijn geweest (row_no_legs leeg) —
+                    # in beide gevallen zijn legs_json/legs_auto_json niet opgeslagen.
+                    return {"ok": False, "error": _full_error}
+                return {"ok": True, "error": None}
             except Exception as e2:
                 import logging; logging.warning(f"Supabase update_parlay (fallback): {e2}")
+                return {"ok": False, "error": str(e2)}
     existing = load_parlays()
+    _found = False
     for p in existing:
         if p.get("id") == parlay_id:
             p.update(updates)
+            _found = True
     try:
         _local_path("parlays.json").write_text(json.dumps(existing, indent=2, ensure_ascii=False))
-    except Exception:
-        pass
+    except Exception as e:
+        _ttl_clear("parlays")
+        return {"ok": False, "error": str(e)}
     _ttl_clear("parlays")
+    if not _found:
+        return {"ok": False, "error": f"parlay id '{parlay_id}' niet gevonden"}
+    return {"ok": True, "error": None}
 
 
 def delete_parlay(parlay_id: str) -> None:
