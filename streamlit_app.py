@@ -658,7 +658,10 @@ with tab_dashboard:
         _DSH_SPORT_ICONS = {"NHL": "🏒", "NBA": "🏀", "MLB": "⚾",
                             "SOCCER": "⚽", "FOOTBALL": "⚽", "VOETBAL": "⚽"}
 
-        for _dop in _dsh_open_sorted:
+        _dsh_open_page_key = "dash_open_shown"
+        _dsh_open_shown    = st.session_state.get(_dsh_open_page_key, 20)
+
+        for _dop in _dsh_open_sorted[:_dsh_open_shown]:
             _dop_id  = _dop.get("id","")
             _dop_dag = ""
             try:
@@ -785,6 +788,12 @@ with tab_dashboard:
                     _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
                     db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val)
                     st.rerun()
+
+        if _dsh_open_shown < len(_dsh_open_sorted):
+            _dsh_open_rest = len(_dsh_open_sorted) - _dsh_open_shown
+            if st.button(f"⬇️ Toon {min(20, _dsh_open_rest)} meer (nog {_dsh_open_rest} verborgen)", key=f"toon_meer_dashopen_{_dsh_open_shown}"):
+                st.session_state[_dsh_open_page_key] = _dsh_open_shown + 20
+                st.rerun()
     else:
         st.success("✅ Geen open weddenschappen — alles is up-to-date.")
 
@@ -1420,8 +1429,13 @@ with tab_favorieten:
         if not _favs_active and not _favs_expired:
             st.markdown('<small style="color:#a0c4ff;">ℹ️ Nog geen actieve bets.</small>', unsafe_allow_html=True)
 
-        # Actieve bets
-        for _idx, _fav in enumerate(_favs_active):
+        # Actieve bets — paginering: elke rij is een expander met meerdere
+        # number_inputs + knoppen, bij veel actieve bets tegelijk kan dit
+        # dezelfde mobiele-browser-geheugendruk geven als elders in de app.
+        _act_page_key = "shortlist_active_shown"
+        _act_shown    = st.session_state.get(_act_page_key, 20)
+
+        for _idx, _fav in enumerate(_favs_active[:_act_shown]):
             _fid      = _fav.get("id", "")
             _res      = _res_map.get(_fid, {})
             _uitkomst = _res.get("uitkomst", "")
@@ -1515,11 +1529,19 @@ with tab_favorieten:
                         })
                         st.success(f"✅ Toegevoegd aan Parlay Builder — ga naar 🎯 tab")
 
+        if _act_shown < len(_favs_active):
+            _act_rest = len(_favs_active) - _act_shown
+            if st.button(f"⬇️ Toon {min(20, _act_rest)} meer (nog {_act_rest} verborgen)", key=f"toon_meer_active_{_act_shown}"):
+                st.session_state[_act_page_key] = _act_shown + 20
+                st.rerun()
+
         # ── Verlopen bets (ingeklapt) ─────────────────────────────────────────
         if _favs_expired:
             with st.expander(f"🕐 Verlopen bets ({len(_favs_expired)}) — wedstrijd al gespeeld, niet ingezet", expanded=False):
                 st.caption("Deze bets staan nog in je database. Je kunt ze handmatig verwijderen.")
-                for _idx_e, _fav_e in enumerate(_favs_expired):
+                _exp_page_key = "shortlist_expired_shown"
+                _exp_shown    = st.session_state.get(_exp_page_key, 20)
+                for _idx_e, _fav_e in enumerate(_favs_expired[:_exp_shown]):
                     _fid_e  = _fav_e.get("id", "")
                     _gd_e   = _fav_game_date(_fav_e)
                     _ev_e   = f"{float(_fav_e.get('ev_score') or 0):+.3f}"
@@ -1530,6 +1552,12 @@ with tab_favorieten:
                     )
                     if _ec2.button("🗑️", key=f"del_exp_{_fid_e}_{_idx_e}", help="Verwijder"):
                         db.remove_favoriet(_fid_e)
+                        st.rerun()
+
+                if _exp_shown < len(_favs_expired):
+                    _exp_rest = len(_favs_expired) - _exp_shown
+                    if st.button(f"⬇️ Toon {min(20, _exp_rest)} meer (nog {_exp_rest} verborgen)", key=f"toon_meer_expired_{_exp_shown}"):
+                        st.session_state[_exp_page_key] = _exp_shown + 20
                         st.rerun()
 
 
@@ -1930,7 +1958,10 @@ with tab_bankroll:
             _mutations = db.load_bankroll_mutations()
             if _mutations:
                 st.markdown("**Mutatiehistorie:**")
-                for _m in sorted(_mutations, key=lambda x: x.get("datum",""), reverse=True):
+                _mut_sorted    = sorted(_mutations, key=lambda x: x.get("datum",""), reverse=True)
+                _mut_page_key  = "bankroll_mut_shown"
+                _mut_shown     = st.session_state.get(_mut_page_key, 20)
+                for _m in _mut_sorted[:_mut_shown]:
                     _m_bedrag = float(_m.get("bedrag", 0) or 0)
                     _m_kleur  = "#4ade80" if _m_bedrag >= 0 else "#f87171"
                     _m_icon   = "💰" if _m_bedrag >= 0 else "💸"
@@ -1940,6 +1971,12 @@ with tab_bankroll:
                     _mc3.caption(f"{_m_icon} {_m.get('omschrijving','')}")
                     if _mc4.button("🗑️", key=f"del_mut_{_m['id']}"):
                         db.delete_bankroll_mutation(_m["id"])
+                        st.rerun()
+
+                if _mut_shown < len(_mut_sorted):
+                    _mut_rest = len(_mut_sorted) - _mut_shown
+                    if st.button(f"⬇️ Toon {min(20, _mut_rest)} meer (nog {_mut_rest} verborgen)", key=f"toon_meer_mut_{_mut_shown}"):
+                        st.session_state[_mut_page_key] = _mut_shown + 20
                         st.rerun()
 
         # ── Geld overboeken tussen bankroll en bankrekening ──────────────────────
@@ -2776,7 +2813,14 @@ with tab_parlay:
                 or zoek_l in (b.get("bet_type") or "").lower()
             ]
             if filtered_p:
-                for b in filtered_p:
+                # Zelfde paginering als in de Analyse-tab: deze lijst rendert
+                # anders alle props uit de analyse met 4 widgets per rij tegelijk
+                # zodra de expander opengaat — op mobiel (weinig geheugen per
+                # tab) kan dat de pagina laten crashen/herladen.
+                _pp_key   = f"parlay_props_shown_{st.session_state.get('current_session_id','')}"
+                _pp_shown = st.session_state.get(_pp_key, 20)
+
+                for b in filtered_p[:_pp_shown]:
                     _ev_b   = float(b.get("ev") or 0)
                     _ev_clr = "🟢" if _ev_b >= 0.05 else ("🟡" if _ev_b >= 0 else "🔴")
                     _already = any(
@@ -2804,6 +2848,12 @@ with tab_parlay:
                             st.rerun()
                     else:
                         _pc4.caption("✅ Toegevoegd")
+
+                if _pp_shown < len(filtered_p):
+                    _pp_rest = len(filtered_p) - _pp_shown
+                    if st.button(f"⬇️ Toon {min(20, _pp_rest)} meer (nog {_pp_rest} verborgen)", key=f"toon_meer_parlayprops_{_pp_shown}"):
+                        st.session_state[_pp_key] = _pp_shown + 20
+                        st.rerun()
 
     st.markdown("---")
 
@@ -2936,7 +2986,16 @@ with tab_parlay:
         st.markdown("---")
         st.markdown("#### 📋 Opgeslagen Parlays")
 
-        for _prl in _saved_parlays:
+        # Paginering: elke parlay in deze lijst heeft een eigen st.form met
+        # per-leg selectbox + knoppen. Streamlit rendert dit voor ALLE
+        # opgeslagen parlays, ook als de expander dichtstaat — dat bleek 's
+        # avonds op mobiel Safari (weinig geheugen per tab) tot precies
+        # dezelfde crash te leiden als bij de "Alle props"-lijsten. Daarom
+        # ook hier: standaard de 20 meest recente, met een "Toon meer"-knop.
+        _prl_page_key = "saved_parlays_shown"
+        _prl_shown    = st.session_state.get(_prl_page_key, 20)
+
+        for _prl in _saved_parlays[:_prl_shown]:
             _prl_legs = _prl.get("props_json") or []
             _prl_lj   = _prl.get("legs_json") or {}
             if isinstance(_prl_lj, str):
@@ -3123,6 +3182,12 @@ with tab_parlay:
                     db.remove_resultaat(f"parlay_{_prl.get('id','')}")
                     st.rerun()
 
+        if _prl_shown < len(_saved_parlays):
+            _prl_rest = len(_saved_parlays) - _prl_shown
+            if st.button(f"⬇️ Toon {min(20, _prl_rest)} meer parlays (nog {_prl_rest} verborgen)", key=f"toon_meer_parlays_{_prl_shown}"):
+                st.session_state[_prl_page_key] = _prl_shown + 20
+                st.rerun()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — GEPLAATSTE BETS
@@ -3244,7 +3309,22 @@ with tab_geplaatst:
                     _maand_dict[_ml][_wl] = []
                 _maand_dict[_ml][_wl].append(_r)
 
-            for _maand, _weken in _maand_dict.items():
+            # Paginering op maandniveau: dit was voorheen een expander per maand
+            # met expanded=True voor ELKE maand — Streamlit voert de code in een
+            # with-blok gewoon uit ongeacht expanded=True/False (het bepaalt
+            # alleen de initiële weergavestatus, niet of de elementen gebouwd
+            # worden). Bij een historie van meerdere maanden werden dus alle
+            # weken en alle losse bets (elk met 9 kolommen + 3 knoppen) van de
+            # VOLLEDIGE geschiedenis bij elke render opnieuw opgebouwd en naar
+            # de browser gestuurd. Op mobiel Safari (weinig geheugen per tab)
+            # is dat vermoedelijk de zwaarste plek in de hele app. Daarom hier
+            # écht stoppen met doorlopen na de eerste N maanden, i.p.v. alleen
+            # het scherm dichtklappen.
+            _maand_items       = list(_maand_dict.items())
+            _gp_months_page_key = "gp_months_shown"
+            _gp_months_shown    = st.session_state.get(_gp_months_page_key, 2)
+
+            for _maand_idx, (_maand, _weken) in enumerate(_maand_items[:_gp_months_shown]):
                 # Maand samenvatting
                 _m_rijen      = [r for wk in _weken.values() for r in wk]
                 _m_afgerond   = [r for r in _m_rijen if r.get("uitkomst") in ("gewonnen","verloren","void")]
@@ -3266,7 +3346,7 @@ with tab_geplaatst:
                     f"📅 **{_maand}**  ·  {len(_m_rijen)} bets  ·  {_m_open_str}"
                     f"  ·  Stake €{_m_inzet_tot:.0f}  ·  W/L {_m_wr_str}"
                     f"  ·  P&L {_m_wl_str}  ·  ROI {_m_roi_str}",
-                    expanded=True,
+                    expanded=(_maand_idx == 0),
                 ):
                     # ── Open bets samenvatting (wat staat er nog uit?) ─────
                     if _m_open:
@@ -3581,6 +3661,15 @@ with tab_geplaatst:
                                     st.session_state.gp_editing = None
                                     st.rerun()
 
+            if _gp_months_shown < len(_maand_items):
+                _gp_months_rest = len(_maand_items) - _gp_months_shown
+                if st.button(
+                    f"⬇️ Toon {min(2, _gp_months_rest)} maand(en) meer (nog {_gp_months_rest} verborgen)",
+                    key=f"toon_meer_maanden_{_gp_months_shown}",
+                ):
+                    st.session_state[_gp_months_page_key] = _gp_months_shown + 2
+                    st.rerun()
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 6 — ANALYSE GESCHIEDENIS
@@ -3671,7 +3760,15 @@ with tab_history:
                 f"📅 {datum} {tijd}  ·  {len(_filt_p)} props  ·  {_sport_str}{_bewaard_badge}",
                 expanded=False,
             ):
-                for _idx_hp, _hp in enumerate(_filt_p):
+                # Paginering: zelfde reden als bij "Alle props" in de Analyse-tab
+                # en "Props uit analyse" in de Parlay Builder — een sessie met
+                # veel props zou anders bij het openen van deze expander in één
+                # keer tientallen rijen x 2 widgets renderen, wat op mobiel tot
+                # een geheugen-crash kan leiden.
+                _hist_page_key = f"hist_props_shown_{_sid}_{_entry_idx}"
+                _hist_shown     = st.session_state.get(_hist_page_key, 20)
+
+                for _idx_hp, _hp in enumerate(_filt_p[:_hist_shown]):
                     _player   = _hp.get("player", _hp.get("speler",""))
                     _bet_type = _hp.get("bet_type", _hp.get("bet",""))
                     _cat_tag  = _bet_categorie(_bet_type)
@@ -3713,6 +3810,12 @@ with tab_history:
                             "match_home": _hp.get("match_home", ""),
                             "match_away": _hp.get("match_away", ""),
                         })
+                        st.rerun()
+
+                if _hist_shown < len(_filt_p):
+                    _hist_rest = len(_filt_p) - _hist_shown
+                    if st.button(f"⬇️ Toon {min(20, _hist_rest)} meer (nog {_hist_rest} verborgen)", key=f"toon_meer_hist_{_sid}_{_entry_idx}_{_hist_shown}"):
+                        st.session_state[_hist_page_key] = _hist_shown + 20
                         st.rerun()
 
         if _shown == 0:
