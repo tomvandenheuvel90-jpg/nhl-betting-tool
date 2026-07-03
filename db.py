@@ -402,9 +402,15 @@ def supabase_probe_write(table: str = "settings") -> dict:
 # ─── Hulpfuncties ─────────────────────────────────────────────────────────────
 
 def make_fav_id(player: str, bet_type: str) -> str:
-    """Stabiele 10-karakter ID op basis van speler + bet type."""
+    """Stabiele 10-karakter ID op basis van speler + bet type.
+
+    player/bet_type kunnen None zijn (bijv. team-markt legs zonder speler,
+    zoals Bet Builder/SGP-props) — daarom defensief naar string omgezet.
+    """
+    safe_player = str(player or "").strip().lower()
+    safe_bet_type = str(bet_type or "").strip().lower()
     return hashlib.md5(
-        f"{player.strip().lower()}|{bet_type.strip().lower()}".encode()
+        f"{safe_player}|{safe_bet_type}".encode()
     ).hexdigest()[:10]
 
 

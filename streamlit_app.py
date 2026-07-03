@@ -21,6 +21,7 @@ import traceback
 import logging as _logging
 import tempfile
 from pathlib import Path
+from PIL import Image
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -903,7 +904,18 @@ with tab_analyse:
     if uploaded_files:
         cols = st.columns(min(len(uploaded_files), 4))
         for i, f in enumerate(uploaded_files):
-            cols[i % 4].image(f, use_container_width=True)
+            # Preview verkleind tonen i.p.v. de originele (vaak 3-9MB) iPhone-foto —
+            # scheelt gedecodeerd browsergeheugen, vooral belangrijk op mobiel.
+            # f.seek(0) na afloop is essentieel: dezelfde file-objecten worden
+            # hierna (bij klik op "Analyseren") nog een keer volledig gelezen.
+            try:
+                _thumb = Image.open(f)
+                _thumb.thumbnail((480, 480))
+                cols[i % 4].image(_thumb, use_container_width=True)
+            except Exception:
+                cols[i % 4].image(f, use_container_width=True)
+            finally:
+                f.seek(0)
 
     # Odds API gebruik indicator
     if odds_api and _odds_key:
@@ -1269,10 +1281,27 @@ with tab_analyse:
             _fav_ids_set = {f["id"] for f in db.load_favorieten()}
             _cur_sid     = st.session_state.get("current_session_id", "")
             _enriched_ids = {(b["player"], b["bet_type"]) for b in enriched_ranked}
-            for i, bet in enumerate(_display_props, 1):
+
+            # Paginering: bij grote screenshot-batches (meerdere uploads met elk
+            # tientallen props) rendert Streamlit anders honderden kaarten +
+            # widgets tegelijk in de DOM. Op desktop merk je dat niet, maar op
+            # mobiel (weinig geheugen per browsertab) kan dit de pagina laten
+            # crashen/herladen. Daarom eerst een beperkt aantal tonen, met een
+            # knop om de rest op te vragen. Reset automatisch bij een nieuwe
+            # analyse omdat de key aan current_session_id hangt.
+            _page_key = f"props_shown_{_cur_sid}"
+            _shown = st.session_state.get(_page_key, 20)
+
+            for i, bet in enumerate(_display_props[:_shown], 1):
                 _is_fav   = db.make_fav_id(bet["player"], bet["bet_type"]) in _fav_ids_set
                 _in_ranked = (bet["player"], bet["bet_type"]) in _enriched_ids
                 render_bet_card(bet, i, len(_display_props), is_fav=_is_fav, session_id=_cur_sid, dimmed=not _in_ranked)
+
+            if _shown < len(_display_props):
+                _resterend = len(_display_props) - _shown
+                if st.button(f"⬇️ Toon {min(20, _resterend)} meer (nog {_resterend} verborgen)", key=f"toon_meer_{_cur_sid}_{_shown}"):
+                    st.session_state[_page_key] = _shown + 20
+                    st.rerun()
 
         st.caption("⚠️ Statistische analyse ter ondersteuning. Wedden brengt financiële risico's. Speel verantwoord.")
 

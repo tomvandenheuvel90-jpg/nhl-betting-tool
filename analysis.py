@@ -1005,9 +1005,12 @@ def enrich_bet(bet: dict, cache: dict,
     Bug 3 fix: sample_n default is nu 0 (onbekend) in plaats van 5.
     """
     sport       = (bet.get("sport") or "").upper().strip()
-    player_name = bet.get("player", "")
+    # bet.get("player", "") vangt een ontbrekende key op, maar niet een
+    # aanwezige key met waarde None (bijv. Bet Builder/SGP team-markt legs
+    # zonder speler) — vandaar "or ''" om altijd een string te garanderen.
+    player_name = bet.get("player") or ""
     team_hint   = bet.get("team") or ""
-    bet_type    = bet.get("bet_type", "")
+    bet_type    = bet.get("bet_type") or ""
 
     # Defensief: een extractiefout kan de spelersnaam in het "team"-veld zetten
     # (verwart Vision-model bij drukke screenshots). Zo'n team_hint mag nooit
