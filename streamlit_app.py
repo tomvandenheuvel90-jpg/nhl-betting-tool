@@ -237,11 +237,13 @@ def _parlay_leg_key(leg: dict, leg_status: dict, idx: int = None) -> str:
     veranderde er zichtbaar niets: de echte, gelezen sleutel bleef op "open"
     staan.
     """
+    if not isinstance(leg_status, dict):
+        leg_status = {}
     _player = str(leg.get("player") or "")
     _bt     = str(leg.get("bet_type") or "")
     if idx is not None:
         _k_idx = f"{idx}_{_player}_{_bt}"
-        if _k_idx in (leg_status or {}):
+        if _k_idx in leg_status:
             return _k_idx
     return f"{_player}_{_bt}"
 
@@ -253,8 +255,10 @@ def _parlay_leg_status(leg: dict, leg_status: dict, idx: int = None) -> str:
     "player_bettype"), zodat oudere en nieuwere parlays hetzelfde werken.
     Retourneert "open" als er nog geen status bekend is (nog niet beoordeeld).
     """
+    if not isinstance(leg_status, dict):
+        leg_status = {}
     _k = _parlay_leg_key(leg, leg_status, idx)
-    return (leg_status or {}).get(_k, "open")
+    return leg_status.get(_k, "open")
 
 
 def _parlay_open_leg_count(legs: list, leg_status: dict) -> int:
@@ -638,6 +642,12 @@ with tab_dashboard:
 
     st.markdown("---")
 
+    # Sport-emoji helper (inline dict, geen functiedefinitie nodig)
+    # Buiten de "open bets"-sectie gedefinieerd omdat de "Laatste resultaten"-sectie
+    # verderop deze ook nodig heeft, ongeacht of er open bets zijn.
+    _DSH_SPORT_ICONS = {"NHL": "🏒", "NBA": "🏀", "MLB": "⚾",
+                        "SOCCER": "⚽", "FOOTBALL": "⚽", "VOETBAL": "⚽"}
+
     # ── Open bets (meest actioneerbaar) ───────────────────────────────────────
     if _dsh_open:
         _dsh_open_sorted = sorted(_dsh_open, key=lambda r: r.get("datum",""))
@@ -653,10 +663,6 @@ with tab_dashboard:
             _open_header += f"  ⚠️ oudste al {_days_open_max} dagen open"
         st.markdown(f"#### {_open_header}")
         st.caption("Markeer de uitkomst zodra de wedstrijd gespeeld is.")
-
-        # Sport-emoji helper (inline dict, geen functiedefinitie nodig)
-        _DSH_SPORT_ICONS = {"NHL": "🏒", "NBA": "🏀", "MLB": "⚾",
-                            "SOCCER": "⚽", "FOOTBALL": "⚽", "VOETBAL": "⚽"}
 
         _dsh_open_page_key = "dash_open_shown"
         _dsh_open_shown    = st.session_state.get(_dsh_open_page_key, 20)

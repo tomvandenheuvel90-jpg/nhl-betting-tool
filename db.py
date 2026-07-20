@@ -831,6 +831,18 @@ def load_parlays() -> list:
     if path.exists():
         try:
             result = json.loads(path.read_text())
+            # Zelfde string→dict conversie als het Supabase-pad hierboven, zodat
+            # legs_json/legs_auto_json/props_json altijd dicts/lijsten zijn,
+            # ongeacht welke databron gebruikt is (voorkomt AttributeError
+            # verderop in de UI als een van deze velden per ongeluk als
+            # JSON-string is opgeslagen).
+            for r in result:
+                for field in ("props_json", "legs_json", "legs_auto_json"):
+                    if r.get(field) and isinstance(r[field], str):
+                        try:
+                            r[field] = json.loads(r[field])
+                        except Exception:
+                            pass
             _ttl_set("parlays", result)
             return result
         except Exception:
