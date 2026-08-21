@@ -5,7 +5,11 @@
 streamlit>=1.35
 
 # Claude API
-anthropic>=0.25
+# Bovengrens <2 is BEWUST: zonder bovengrens installeert Streamlit Cloud bij elke
+# herstart automatisch de nieuwste versie. Zo brak de screenshot-import in aug 2026
+# spontaan, toen anthropic 1.0 uitkwam en temperature= uit messages.create() haalde.
+# De code werkt op zowel 0.x als 1.x; de bovengrens vangt de vólgende major-release af.
+anthropic>=0.25,<2
 
 # NBA stats (gratis, geen key)
 nba_api>=1.4

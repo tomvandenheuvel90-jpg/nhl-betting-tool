@@ -23,10 +23,25 @@ except Exception:  # defensief — bij import-fouten functioneert de rest nog
 
 IMPORT_MODEL = "claude-sonnet-4-6"
 
+# ── Waarom hier geen temperature= wordt meegegeven ────────────────────────────
+# De anthropic Python SDK 1.0 heeft de parameters temperature/top_p/top_k
+# VERWIJDERD uit messages.create(). Ze meegeven geeft geen nette API-fout maar
+# een harde TypeError ("unexpected keyword argument 'temperature'") nog vóórdat
+# er een request wordt verstuurd. Omdat requirements.txt lange tijd alleen
+# "anthropic>=0.25" pinde, installeerde Streamlit Cloud bij een herstart vanzelf
+# de nieuwe 1.x en brak de screenshot-import van het ene op het andere moment,
+# zonder dat er ook maar één regel code was gewijzigd.
+# Anthropic's advies is om determinisme via de prompt te sturen in plaats van via
+# temperature — dat gebeurt hieronder in _SYSTEM_PROMPT.
+# Voeg temperature dus NIET opnieuw toe.
+
 _SYSTEM_PROMPT = (
     "You are a sports betting data extraction assistant. "
     "Extract all bet data from the screenshot and return ONLY valid JSON. "
-    "No explanation, no markdown, no code blocks. Raw JSON only."
+    "No explanation, no markdown, no code blocks. Raw JSON only. "
+    "Be strictly literal and deterministic: transcribe only what is actually "
+    "visible on screen. Never guess, infer, round or invent a value. "
+    "If a field is not visible in the screenshot, return null for it."
 )
 
 # ── Gedeelde JSON-structuur ────────────────────────────────────────────────────
@@ -184,10 +199,12 @@ def extract_bet_from_screenshot(client, image_bytes: bytes, bookmaker: str = "au
     # Unified prompt — model detecteert bookmaker zelf uit de screenshot
     prompt = _UNIFIED_PROMPT_TEMPLATE.format(today=today.isoformat(), year=today.year) + _JSON_SPEC
 
+    # LET OP: geef hier GEEN temperature= mee. De anthropic SDK 1.x heeft die
+    # parameter verwijderd; meegeven levert een harde TypeError op en breekt de
+    # hele screenshot-import. Zie de toelichting bij IMPORT_MODEL hierboven.
     resp = client.messages.create(
         model=IMPORT_MODEL,
         max_tokens=4096,
-        temperature=0,
         system=_SYSTEM_PROMPT,
         messages=[{
             "role": "user",
@@ -292,14 +309,32 @@ def _render_upload(context: str, client) -> None:
                         st.session_state[_sk(context, "state")] = "confirm"
                         st.rerun()
                         return
+                    except TypeError as exc:
+                        # Een TypeError betekent dat de aanroep zélf niet klopt
+                        # (bijv. een parameter die de anthropic SDK niet meer kent).
+                        # Opnieuw proberen heeft dan geen enkele zin — het gaat
+                        # altijd exact hetzelfde mis. Meteen stoppen en dit
+                        # duidelijk als code/versie-probleem benoemen.
+                        last_exc = exc
+                        break
                     except Exception as exc:
                         last_exc = exc
                         if attempt == 0:
                             continue
-                st.error("❌ Kon screenshot niet uitlezen. Probeer opnieuw of voer handmatig in.")
+
+                if isinstance(last_exc, TypeError):
+                    st.error(
+                        "❌ Dit ligt niet aan je screenshot, maar aan de app. "
+                        "De Claude-bibliotheek is bijgewerkt naar een versie die "
+                        "een andere aanroep verwacht. Opnieuw proberen helpt niet — "
+                        "dit moet in de code worden opgelost."
+                    )
+                else:
+                    st.error("❌ Kon screenshot niet uitlezen. Probeer opnieuw of voer handmatig in.")
+
                 if last_exc is not None:
                     with st.expander("🔍 Foutdetails (voor debug)", expanded=True):
-                        st.code(str(last_exc), language=None)
+                        st.code(f"{type(last_exc).__name__}: {last_exc}", language=None)
 
 
 # ─── Bevestigingsscherm ───────────────────────────────────────────────────────

@@ -301,10 +301,12 @@ def extract_bets(client, image_paths: list) -> tuple:
             _content.append({"type": "text", "text": EXTRACT_PROMPT})
 
             _local_steps.append(f"    → Claude {EXTRACT_MODEL} aanroepen (max_tokens=8000)")
+            # LET OP: geen temperature= meer meegeven. De anthropic SDK 1.x heeft
+            # deze parameter verwijderd (Anthropic-advies: sturen via de prompt).
+            # Zie de uitleg bij IMPORT_MODEL in screenshot_import.py.
             _resp = client.messages.create(
                 model=EXTRACT_MODEL,
                 max_tokens=8000,
-                temperature=0,
                 messages=[{"role": "user", "content": _content}],
             )
             _raw = _resp.content[0].text.strip()
@@ -325,7 +327,7 @@ def extract_bets(client, image_paths: list) -> tuple:
                     _local_steps.append(f"      → Analyseer helft: {Path(_half).name}")
                     _hc = [_image_content_block(_half), {"type": "text", "text": EXTRACT_PROMPT}]
                     _hr = client.messages.create(
-                        model=EXTRACT_MODEL, max_tokens=8000, temperature=0,
+                        model=EXTRACT_MODEL, max_tokens=8000,
                         messages=[{"role": "user", "content": _hc}],
                     )
                     _hraw  = _hr.content[0].text.strip()
