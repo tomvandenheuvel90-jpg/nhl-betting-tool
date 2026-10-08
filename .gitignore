@@ -33,6 +33,7 @@ analyse_geschiedenis.json
 odds_api_usage.json
 settings.json
 bankroll_mutations.json
+bank_mutations.json
 
 # macOS
 .DS_Store
