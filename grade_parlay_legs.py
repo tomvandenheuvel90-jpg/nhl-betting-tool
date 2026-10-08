@@ -269,6 +269,7 @@ def main(dry_run: bool = False):
     n_graded = 0
     n_left_open = 0
     n_parlays_touched = 0
+    n_write_failed = 0
     details = []
 
     for parlay in parlays:
@@ -290,6 +291,7 @@ def main(dry_run: bool = False):
         fallback_date = str(parlay.get("datum") or "")[:10]
         parlay_id = parlay.get("id", "")
         changed = False
+        n_graded_deze_parlay = 0
 
         for _leg_idx, leg in enumerate(legs):
             key = _leg_key(leg, legs_json, _leg_idx)
@@ -307,15 +309,31 @@ def main(dry_run: bool = False):
             legs_auto[key] = _today_iso()
             changed = True
             n_graded += 1
+            n_graded_deze_parlay += 1
             details.append(f"  \u2705 {new_status} — parlay {parlay_id} · {key} — {reason}")
 
         if changed:
             n_parlays_touched += 1
             if not dry_run:
-                db.update_parlay(parlay_id, {
+                _upd = db.update_parlay(parlay_id, {
                     "legs_json": legs_json,
                     "legs_auto_json": legs_auto,
                 })
+                # update_parlay() geeft {"ok", "error"} terug en kan de
+                # legs_json-write stilzwijgend hebben laten vallen. Zonder deze
+                # check zou de dagelijkse job "X legs beoordeeld" rapporteren
+                # terwijl er niets is opgeslagen.
+                if isinstance(_upd, dict) and not _upd.get("ok"):
+                    # Niets opgeslagen → ook de al getelde legs terugdraaien,
+                    # anders meldt de samenvatting "N legs beoordeeld" terwijl
+                    # er in de database niets is veranderd.
+                    n_parlays_touched -= 1
+                    n_graded -= n_graded_deze_parlay
+                    n_write_failed += 1
+                    details.append(
+                        f"  \u274c OPSLAAN MISLUKT — parlay {parlay_id} "
+                        f"({n_graded_deze_parlay} leg(s) niet bewaard): {_upd.get('error')}"
+                    )
 
     summary = (
         f"Parlay-leg beoordeling voltooid ({_today_iso()}).\n"
@@ -323,6 +341,8 @@ def main(dry_run: bool = False):
         f"  Legs open gelaten (handmatige review nodig): {n_left_open}\n"
         f"  Parlays bijgewerkt: {n_parlays_touched}\n"
     )
+    if n_write_failed:
+        summary += f"  ⚠️ Parlays NIET opgeslagen (databasefout): {n_write_failed}\n"
     if dry_run:
         summary += "  (DRY RUN — er is niets opgeslagen)\n"
 
@@ -334,9 +354,14 @@ def main(dry_run: bool = False):
         "graded": n_graded,
         "left_open": n_left_open,
         "parlays_touched": n_parlays_touched,
+        "write_failed": n_write_failed,
     }
 
 
 if __name__ == "__main__":
     _dry = "--dry-run" in sys.argv
-    main(dry_run=_dry)
+    _res = main(dry_run=_dry)
+    # Laat de GitHub Actions-run rood worden als een write is mislukt, zodat een
+    # stille databasefout niet wekenlang onopgemerkt blijft.
+    if (_res or {}).get("write_failed"):
+        sys.exit(1)

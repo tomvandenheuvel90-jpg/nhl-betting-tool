@@ -576,11 +576,18 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         fav_id = db.make_fav_id(player, desc)
         try:
             db.add_favoriet(fav_id, bet_obj, game_date=game_date.isoformat())
-            db.upsert_resultaat(fav_id, bet_obj, status, stake)
-            st.toast("✅ Weddenschap opgeslagen in Shortlist!", icon="✅")
+            _res_status = db.upsert_resultaat(fav_id, bet_obj, status, stake)
         except Exception as exc:
             st.error(f"Fout bij opslaan: {exc}")
             return
+        # add_favoriet() is hier al gelukt, dus de bet staat wél in de Shortlist —
+        # alleen de P&L-rij in `resultaten` ontbreekt. De melding moet dat precies
+        # zo zeggen, anders gaat Tom de bet opnieuw toevoegen en staat hij dubbel.
+        if not _db_write_ok(_res_status, "als geplaatste bet (de P&L-rij)",
+                            extra="De bet staat wél in je Shortlist — voeg hem niet "
+                                  "opnieuw toe, maar zet de uitkomst daar handmatig."):
+            return
+        st.toast("✅ Weddenschap opgeslagen in Shortlist!", icon="✅")
         _reset(context)
         return
 
@@ -596,15 +603,45 @@ def _do_save(context, db, data, edited_legs, odds, stake, status,
         return
 
 
+def _db_write_ok(status, waar: str, extra: str = "") -> bool:
+    """Controleer de status-dict van db.upsert_resultaat()/save_parlay().
+
+    `db.upsert_resultaat()` gooit geen exceptie meer bij een mislukte write maar
+    geeft {"ok", "error", "degraded"} terug. Zonder deze check zou de app een
+    groene "✅ opgeslagen"-melding tonen terwijl er niets is geboekt.
+
+    Retourneert True als de bet daadwerkelijk is opgeslagen (ook als dat alleen
+    lokaal gelukt is — dan volgt een waarschuwing).
+    """
+    if not isinstance(status, dict):
+        return True  # oudere db-versie zonder status
+    if not status.get("ok"):
+        st.error(
+            f"❌ De weddenschap is NIET opgeslagen {waar}. "
+            f"Databasefout: {status.get('error') or 'onbekend'}"
+            + (f"\n\n{extra}" if extra else "")
+        )
+        return False
+    if status.get("degraded"):
+        st.warning(
+            "⚠️ Alleen lokaal opgeslagen — de database was onbereikbaar "
+            f"({status.get('error') or 'onbekende fout'}). Op Streamlit Cloud "
+            "verdwijnt deze bet bij de volgende herstart; controleer hem later."
+        )
+    return True
+
+
 def _save_as_single(db, player, desc, bet_obj, status, stake):
     fav_id = db.make_fav_id(player, desc)
     try:
-        db.upsert_resultaat(fav_id, bet_obj, status, float(stake))
-        st.toast("✅ Weddenschap opgeslagen in Geplaatste Bets!", icon="✅")
-        return True
+        _res_status = db.upsert_resultaat(fav_id, bet_obj, status, float(stake))
     except Exception as exc:
         st.error(f"Fout bij opslaan: {exc}")
         return False
+    if not _db_write_ok(_res_status, "in Geplaatste Bets"):
+        return False
+    st.toast("✅ Weddenschap opgeslagen in Geplaatste Bets!", icon="✅")
+    return True
 
 
 def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
@@ -668,12 +705,19 @@ def _save_as_parlay(db, edited_legs, odds, stake, status, sport,
             "bet":       ", ".join(l.get("player") or "" for l in edited_legs[:3]) or "Parlay",
             "sport":     "Parlay",
         }
-        db.upsert_resultaat(f"parlay_{parlay_id}", prl_fav, status, float(stake))
-        st.toast("✅ Parlay opgeslagen in Geplaatste Bets!", icon="✅")
-        return True
+        _res_status = db.upsert_resultaat(f"parlay_{parlay_id}", prl_fav, status, float(stake))
     except Exception as exc:
         st.error(f"Fout bij opslaan: {exc}")
         return False
+    if not _db_write_ok(_res_status, "in Geplaatste Bets"):
+        # De parlay zelf staat er wél in (save_parlay lukte), alleen de
+        # spiegelrij in `resultaten` niet. _sync_parlay_drift() kan dit NIET
+        # repareren — die slaat ids over die helemaal niet in `resultaten`
+        # staan. De parlay valt dan terug op de merge-loop in Dashboard /
+        # Geplaatste Bets, die hem synthetisch toevoegt. Vandaar: wél melden.
+        return False
+    st.toast("✅ Parlay opgeslagen in Geplaatste Bets!", icon="✅")
+    return True
 
 
 def _reset(context: str) -> None:

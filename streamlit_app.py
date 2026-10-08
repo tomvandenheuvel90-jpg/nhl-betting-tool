@@ -204,7 +204,7 @@ def _wl_stats(results: list) -> dict:
     # dus ook de ROI-noemer sluit void uit — anders drukt een void-bet ROI
     # kunstmatig omlaag alsof er geld op stond zonder rendement.
     _staked = sum(float(r.get("inzet", 0) or 0) for r in (_won_rows + _lost_rows))
-    _pnl    = sum(float(r.get("winst_verlies", 0) or 0) for r in (results or []))
+    _pnl    = sum(float(r.get("winst_verlies") or 0) for r in (results or []))
     return {
         "won": _won,
         "lost": _lost,
@@ -215,6 +215,145 @@ def _wl_stats(results: list) -> dict:
         "pnl": _pnl,
         "roi": (_pnl / _staked * 100) if _staked else 0.0,
     }
+
+
+def _sync_parlay_drift(rows: list, parlays: list) -> list:
+    """Houdt de resultaten-spiegelrijen van parlays in lijn met de parlays-tabel.
+
+    Een parlay staat in de `parlays`-tabel én — zodra hij gesettled is — als
+    spiegelrij in `resultaten` (id "parlay_<id>"). Die twee kunnen uit elkaar
+    lopen als de ene write lukt en de andere faalt. Gevolgen van zo'n drift:
+
+      * parlay gesettled, spiegelrij nog "open"  → inzet twee keer van het saldo
+        (één keer als open inzet, één keer als verlies) en de P&L ontbreekt;
+      * parlay weer "open", spiegelrij nog gesettled → oude P&L blijft meetellen
+        terwijl de inzet niet meer als openstaand geldt.
+
+    De `parlays`-tabel is de bron van waarheid voor de uitkomst, dus beide
+    richtingen worden hier gecorrigeerd.
+
+    Geeft een NIEUWE lijst met kopieën terug: de lijst uit db.load_resultaten()
+    komt uit de TTL-cache in db.py en wordt door álle tabs gedeeld, dus die mag
+    nooit in-place aangepast worden.
+    """
+    out   = [dict(r) for r in (rows or [])]
+    by_id = {str(r.get("id", "")): r for r in out}
+    for _p in (parlays or []):
+        _row = by_id.get(f"parlay_{_p.get('id')}")
+        if _row is None:
+            continue
+        _p_uit = (_p.get("uitkomst") or "open")
+        _r_uit = (_row.get("uitkomst") or "open")
+        if _p_uit == _r_uit:
+            continue
+        if _p_uit in ("gewonnen", "verloren", "void"):
+            _row["uitkomst"]      = _p_uit
+            _row["winst_verlies"] = float(_p.get("winst_verlies") or 0)
+        elif _p_uit == "open":
+            _row["uitkomst"]      = "open"
+            _row["winst_verlies"] = 0.0
+    return out
+
+
+_DB_ERROR_KEY = "_db_write_errors"
+
+
+def _db_check(status, wat: str) -> bool:
+    """Controleer de status-dict van een db-schrijfactie en onthoud fouten.
+
+    `db.upsert_resultaat()`, `db.remove_resultaat()` en `db.update_parlay()`
+    geven {"ok", "error", "degraded"} terug. Deze helper is de enige plek die
+    dat interpreteert:
+
+      * ok=False      → rood foutbericht; de bet is NERGENS opgeslagen.
+      * degraded=True → oranje waarschuwing; alleen lokaal opgeslagen terwijl
+                        Supabase wél geconfigureerd is. Op Streamlit Cloud is
+                        die rij bij de volgende herstart verdwenen.
+
+    De melding wordt in session_state gezet in plaats van direct getoond, omdat
+    vrijwel elke aanroep wordt gevolgd door st.rerun() — en een st.error() die
+    direct vóór een rerun staat, wordt nooit gerenderd. `_render_db_errors()`
+    bovenaan de pagina toont ze na de rerun.
+
+    Retourneert True als de schrijfactie geslaagd is (ook bij degraded), zodat
+    aanroepers kunnen kiezen om hun succesmelding over te slaan bij een fout.
+    """
+    if not isinstance(status, dict):
+        return True  # oudere db-functie zonder status — niets te checken
+    _msgs = st.session_state.setdefault(_DB_ERROR_KEY, [])
+    if not status.get("ok"):
+        _msgs.append(
+            ("error", f"❌ {wat} is NIET opgeslagen. Databasefout: "
+                      f"{status.get('error') or 'onbekend'}")
+        )
+        return False
+    if status.get("degraded"):
+        _msgs.append(
+            ("warning", f"⚠️ {wat} is alleen lokaal opgeslagen — de database was "
+                        f"onbereikbaar ({status.get('error') or 'onbekende fout'}). "
+                        "Op Streamlit Cloud verdwijnt dit bij de volgende herstart. "
+                        "Controleer de bet later nog een keer.")
+        )
+    return True
+
+
+def _db_melding(soort: str, tekst: str) -> None:
+    """Onthoud een eigen melding ("error" of "warning") voor ná de rerun.
+
+    Zelfde mechanisme als _db_check(), maar voor meldingen die niet uit een
+    status-dict komen. Nodig omdat st.error()/st.warning() direct vóór een
+    st.rerun() nooit zichtbaar wordt.
+    """
+    st.session_state.setdefault(_DB_ERROR_KEY, []).append((soort, tekst))
+
+
+def _render_db_errors() -> None:
+    """Toon en wis de onthouden database-foutmeldingen."""
+    for _soort, _tekst in st.session_state.pop(_DB_ERROR_KEY, []):
+        if _soort == "error":
+            st.error(_tekst)
+        else:
+            st.warning(_tekst)
+
+
+_INZET_LAST_KEY = "_shortlist_laatste_inzet"
+
+
+def _remember_inzet(bedrag: float) -> None:
+    """Onthoud de laatst gebruikte inzet binnen deze sessie.
+
+    Het inzetveld in de Shortlist viel voorheen altijd terug op een hardcoded
+    €10,00 zodra er nog geen resultaten-rij was. Druk je dan op ✅/❌ zonder dat
+    veld aan te raken, dan werd er €10 geboekt in plaats van je echte inzet —
+    waardoor P&L en bankroll er stil naast zaten. Door de laatst gebruikte inzet
+    te onthouden staat het veld standaard op een bedrag dat voor jou klopt.
+    """
+    try:
+        st.session_state[_INZET_LAST_KEY] = round(float(bedrag), 2)
+    except Exception:
+        pass
+
+
+def _shortlist_inzet_default(res: dict) -> tuple:
+    """Bepaalt de voorgevulde inzet en of die nog onbekend/geschat is.
+
+    Retourneert (bedrag, onbekend). `onbekend=True` betekent: voor deze bet is
+    nog nooit een inzet vastgelegd, dus de waarde is een aanname en de UI moet
+    de gebruiker waarschuwen het bedrag te controleren.
+    """
+    _opgeslagen = (res or {}).get("inzet")
+    try:
+        if _opgeslagen is not None and float(_opgeslagen) > 0:
+            return round(float(_opgeslagen), 2), False
+    except Exception:
+        pass
+    _laatst = st.session_state.get(_INZET_LAST_KEY)
+    try:
+        if _laatst is not None and float(_laatst) > 0:
+            return round(float(_laatst), 2), True
+    except Exception:
+        pass
+    return 10.0, True
 
 
 def _parlay_leg_key(leg: dict, leg_status: dict, idx: int = None) -> str:
@@ -415,6 +554,12 @@ elif _os.path.exists("assets/banner.svg"):
     except Exception:
         pass
 
+# ─── Database-foutmeldingen ───────────────────────────────────────────────────
+# Staat bewust bóven de tabs: een mislukte write wordt altijd gevolgd door een
+# st.rerun(), waardoor een st.error() op de plek van de actie zelf nooit
+# gerenderd wordt. Zo is een fout zichtbaar in welke tab je ook zit.
+_render_db_errors()
+
 # ─── Tabs ─────────────────────────────────────────────────────────────────────
 
 tab_dashboard, tab_analyse, tab_favorieten, tab_parlay, tab_geplaatst, tab_bankroll, tab_history = st.tabs(
@@ -426,7 +571,13 @@ tab_dashboard, tab_analyse, tab_favorieten, tab_parlay, tab_geplaatst, tab_bankr
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab_dashboard:
-    _dsh_resultaten  = db.load_resultaten()
+    _dsh_all_parlays_raw = db.load_parlays()
+    _dsh_parlay_map      = {p["id"]: p for p in _dsh_all_parlays_raw}
+    # _sync_parlay_drift() geeft kopieën terug en brengt de parlay-spiegelrijen in
+    # lijn met de parlays-tabel. Zonder kopie zouden die correcties stil doorlekken
+    # naar de Bankroll- en Geplaatste Bets-tab (gedeelde TTL-cache in db.py);
+    # zonder de correctie zelf zou dezelfde parlay per tab andere cijfers geven.
+    _dsh_resultaten  = _sync_parlay_drift(db.load_resultaten(), _dsh_all_parlays_raw)
     _dsh_favorieten  = db.load_favorieten()
     _dsh_history     = db.load_history()
 
@@ -439,8 +590,6 @@ with tab_dashboard:
         r.get("id", "") for r in _dsh_resultaten
         if str(r.get("id", "")).startswith("parlay_")
     }
-    _dsh_all_parlays_raw = db.load_parlays()
-    _dsh_parlay_map      = {p["id"]: p for p in _dsh_all_parlays_raw}
     for _dp in _dsh_all_parlays_raw:
         # Alle parlays (open én gesettled) samenvoegen zodat open parlays
         # zichtbaar zijn als open bets en gesettlede parlays niet ontbreken.
@@ -483,12 +632,12 @@ with tab_dashboard:
     _dsh_stats       = _wl_stats(_dsh_gedaan)
     _dsh_won         = _dsh_stats["won"]
     _dsh_total_inzet = _dsh_stats["staked"]
-    _dsh_total_wl    = sum(r.get("winst_verlies", 0) for r in _dsh_gedaan)
+    _dsh_total_wl    = sum(float(r.get("winst_verlies") or 0) for r in _dsh_gedaan)
     _dsh_roi         = _dsh_stats["roi"]
     _dsh_wr          = _dsh_stats["win_pct"]
     _dsh_mutations_total = db.get_bankroll_mutations_total()
     # Deducteer openstaande inzetten direct van het saldo (stake al gecommitteerd)
-    _dsh_open_inzet   = sum(float(r.get("inzet", 0)) for r in _dsh_open)
+    _dsh_open_inzet   = sum(float(r.get("inzet") or 0) for r in _dsh_open)
     _dsh_huidig_saldo = (_dsh_start_bk + _dsh_mutations_total + _dsh_total_wl - _dsh_open_inzet) if _dsh_start_bk > 0 else None
 
     # Streak berekenen
@@ -517,7 +666,7 @@ with tab_dashboard:
     # Week P&L (laatste 7 dagen)
     _dsh_week_cutoff = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
     _dsh_week_gedaan = [r for r in _dsh_gedaan if r.get("datum","") >= _dsh_week_cutoff]
-    _dsh_week_wl     = sum(r.get("winst_verlies",0) for r in _dsh_week_gedaan)
+    _dsh_week_wl     = sum(float(r.get("winst_verlies") or 0) for r in _dsh_week_gedaan)
 
     # ── Welkomstregel ─────────────────────────────────────────────────────────
     st.markdown("### 🏠 Dashboard")
@@ -528,7 +677,17 @@ with tab_dashboard:
     # ── KPI-kaartjes (algemeen / All Time) ────────────────────────────────────
     # Streak en Open inzet zijn verhuisd naar het maand-overzicht hieronder.
     _bk_val     = f"€{_dsh_huidig_saldo:.0f}" if _dsh_huidig_saldo is not None else "—"
-    _bk_sub     = f"start €{_dsh_start_bk:.0f}  ·  P&L {_dsh_total_wl:+.0f}" if _dsh_start_bk > 0 else "Stel startbankroll in via Bankroll tab"
+    # De inzet van open bets is al van het saldo af (dat geld staat bij de
+    # bookmaker). Dat is correct, maar zonder deze vermelding lijkt het alsof een
+    # verloren bet "niet van de bankroll af gaat": het saldo beweegt dan niet,
+    # omdat de inzet al bij het plaatsen is afgeboekt. Zie ook de uitleg in de
+    # Bankroll-tab.
+    if _dsh_start_bk > 0:
+        _bk_sub = f"start €{_dsh_start_bk:.0f}  ·  P&L {_dsh_total_wl:+.0f}"
+        if _dsh_open_inzet > 0:
+            _bk_sub += f"  ·  €{_dsh_open_inzet:.0f} open inzet al afgeboekt"
+    else:
+        _bk_sub = "Stel startbankroll in via Bankroll tab"
     _bk_pos     = (True if _dsh_total_wl > 0 else False) if _dsh_start_bk > 0 and _dsh_total_wl != 0 else None
     _wk_val     = f"€{_dsh_week_wl:+.0f}" if _dsh_week_gedaan else "—"
     _wk_sub     = f"{len(_dsh_week_gedaan)} bets deze week" if _dsh_week_gedaan else "Geen bets deze week"
@@ -744,55 +903,55 @@ with tab_dashboard:
                 if _dopb2.button("✅ Win",   key=f"dsh_won_{_dop_id}",  use_container_width=True):
                     _dop_inzet_val = float(_dop.get("inzet", 10))
                     _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                    db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val)
+                    _db_check(db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val), "De uitkomst van de bet")
                     _dop_odds_val = float(_dop.get("odds", 1.0))
                     # Parlay gewonnen → alle (niet-void) legs zijn per definitie geraakt,
                     # dus die hoeven niet nog los beoordeeld te worden.
                     _dop_legs_win = _mark_all_legs_geraakt(_prl_legs, _raw_prl.get("legs_json") or {})
-                    db.update_parlay(_raw_pid, {
+                    _db_check(db.update_parlay(_raw_pid, {
                         "uitkomst": "gewonnen",
                         "winst_verlies": round(_dop_inzet_val * (_dop_odds_val - 1), 2),
                         "legs_json": _dop_legs_win,
-                    })
+                    }), "De parlay-uitkomst en leg-statussen")
                     st.rerun()
                 if _dopc2.button("❌ Loss",  key=f"dsh_lost_{_dop_id}", use_container_width=True):
                     _dop_inzet_val = float(_dop.get("inzet", 10))
                     _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                    db.upsert_resultaat(_dop_id, _dop_fav, "verloren", _dop_inzet_val)
-                    db.update_parlay(_raw_pid, {
+                    _db_check(db.upsert_resultaat(_dop_id, _dop_fav, "verloren", _dop_inzet_val), "De uitkomst van de bet")
+                    _db_check(db.update_parlay(_raw_pid, {
                         "uitkomst": "verloren",
                         "winst_verlies": round(-_dop_inzet_val, 2),
-                    })
+                    }), "De parlay-uitkomst")
                     st.rerun()
                 if _dopd2.button("⚪ Void",  key=f"dsh_void_{_dop_id}", use_container_width=True):
                     _dop_inzet_val = float(_dop.get("inzet", 10))
                     _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                    db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val)
-                    db.update_parlay(_raw_pid, {
+                    _db_check(db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val), "De uitkomst van de bet")
+                    _db_check(db.update_parlay(_raw_pid, {
                         "uitkomst": "void",
                         "winst_verlies": 0.0,
-                    })
+                    }), "De parlay-uitkomst")
                     st.rerun()
 
             else:
                 # ── Single bet (bestaande compacte weergave) ──────────────────
                 _dopa, _dopb, _dopc, _dopd, _dope = st.columns([3, 1, 1, 1, 1])
                 _dopa.write(f"**{_dop.get('speler','')}** — {_dop.get('bet','')}")
-                _dopa.caption(f"{_dop.get('sport','')}{_team_caption_suffix(_dop)} · @ {_dop.get('odds','—')} · inzet €{_dop.get('inzet',0):.0f} · te winnen {_dop_te_winnen_s} · {_dop_dag}")
+                _dopa.caption(f"{_dop.get('sport','')}{_team_caption_suffix(_dop)} · @ {_dop.get('odds','—')} · inzet €{float(_dop.get('inzet') or 0):.0f} · te winnen {_dop_te_winnen_s} · {_dop_dag}")
                 if _dopb.button("✅ Win",     key=f"dsh_won_{_dop_id}",  use_container_width=True):
                     _dop_inzet_val = float(_dop.get("inzet", 10))
                     _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                    db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val)
+                    _db_check(db.upsert_resultaat(_dop_id, _dop_fav, "gewonnen", _dop_inzet_val), "De uitkomst van de bet")
                     st.rerun()
                 if _dopc.button("❌ Loss", key=f"dsh_lost_{_dop_id}", use_container_width=True):
                     _dop_inzet_val = float(_dop.get("inzet", 10))
                     _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                    db.upsert_resultaat(_dop_id, _dop_fav, "verloren", _dop_inzet_val)
+                    _db_check(db.upsert_resultaat(_dop_id, _dop_fav, "verloren", _dop_inzet_val), "De uitkomst van de bet")
                     st.rerun()
                 if _dopd.button("⚪ Void", key=f"dsh_void_{_dop_id}", use_container_width=True):
                     _dop_inzet_val = float(_dop.get("inzet", 10))
                     _dop_fav = dict(_dop); _dop_fav["datum"] = datetime.date.today().isoformat()
-                    db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val)
+                    _db_check(db.upsert_resultaat(_dop_id, _dop_fav, "void", _dop_inzet_val), "De uitkomst van de bet")
                     st.rerun()
 
         if _dsh_open_shown < len(_dsh_open_sorted):
@@ -816,7 +975,7 @@ with tab_dashboard:
         else:
             for _dr in _dsh_recent:
                 _dr_icon  = "✅" if _dr.get("uitkomst") == "gewonnen" else ("⚪" if _dr.get("uitkomst") == "void" else "❌")
-                _dr_wl    = _dr.get("winst_verlies", 0)
+                _dr_wl    = float(_dr.get("winst_verlies") or 0)
                 _dr_wl_s  = f"+€{abs(_dr_wl):.0f}" if _dr_wl >= 0 else f"-€{abs(_dr_wl):.0f}"
                 _dr_kleur = "#4ade80" if _dr_wl >= 0 else "#f87171"
                 _dr_is_parlay = str(_dr.get("id","")).startswith("parlay_") or bool(_dr.get("is_parlay"))
@@ -1383,7 +1542,7 @@ with tab_favorieten:
             _m_fid = db.make_fav_id(_m_speler, _m_bet)
             db.add_favoriet(_m_fid, _m_bet_obj, game_date=_m_game_date.isoformat())
             if _m_uitkomst != "open" or _m_direct_inzet:
-                db.upsert_resultaat(_m_fid, _m_bet_obj, _m_uitkomst, _m_inzet)
+                _db_check(db.upsert_resultaat(_m_fid, _m_bet_obj, _m_uitkomst, _m_inzet), "De handmatig toegevoegde bet")
             st.success(f"✅ '{_m_speler} — {_m_bet}' toegevoegd!")
             st.rerun()
 
@@ -1457,32 +1616,55 @@ with tab_favorieten:
                 with _ci:
                     _cap = f"Sport: {_fav.get('sport','')}{_team_caption_suffix(_fav)} · Bet365: {_fav.get('bet365_status','')}"
                     if _res:
-                        _cap += f"  ·  Inzet: €{_res.get('inzet',0):.2f}"
+                        _cap += f"  ·  Inzet: €{float(_res.get('inzet') or 0):.2f}"
                         if _uitkomst == "void":
                             _cap += "  ·  P&L: ⚪ Void"
                         elif _uitkomst in ("gewonnen", "verloren"):
-                            _r_wl = _res.get('winst_verlies', 0)
+                            _r_wl = float(_res.get('winst_verlies') or 0)
                             _cap += f"  ·  P&L: {'+€' if _r_wl >= 0 else '-€'}{abs(_r_wl):.2f}"
                         else:
                             _cap += "  ·  P&L: —"
                     st.caption(_cap)
                 with _cd:
-                    if st.button("🗑️", key=f"delfav_{_fid}_{_idx}", help="Verwijder favoriet"):
+                    # De resultaat-rij wordt ALLEEN meeverwijderd als de bet nog niet
+                    # is afgerond. Dit was de oorzaak van "de loss gaat niet van de
+                    # bankroll af" bij een screenshot-import via de Shortlist die
+                    # meteen op 'verloren' werd gezet: die import maakt zowel een
+                    # favoriet als een resultaat-rij aan, de favoriet bleef daarna als
+                    # afgeronde ❌-regel in de Shortlist staan, en opruimen met 🗑️
+                    # verwijderde stilletjes ook de P&L-rij. De bet verdween daarmee
+                    # uit de bankroll terwijl hij eerder wél in het weekoverzicht stond.
+                    # Afgeronde bets verwijder je nu bewust via 📋 Geplaatste Bets.
+                    _settled_a = _uitkomst in ("gewonnen", "verloren", "void")
+                    if st.button(
+                        "🗑️", key=f"delfav_{_fid}_{_idx}",
+                        help=("Verwijder uit Shortlist (de afgeronde bet en de P&L blijven "
+                              "in Geplaatste Bets staan)" if _settled_a
+                              else "Verwijder favoriet"),
+                    ):
                         db.remove_favoriet(_fid)
-                        db.remove_resultaat(_fid)
+                        if not _settled_a:
+                            _db_check(db.remove_resultaat(_fid), "Het verwijderen van de bet")
                         st.rerun()
+                    if _settled_a:
+                        st.caption("ℹ️ P&L blijft")
 
                 _col_inzet, _col_odds = st.columns(2)
-                _inzet_default = float(_res.get("inzet", 10.0))
+                _inzet_default, _inzet_onbekend = _shortlist_inzet_default(_res)
                 _inzet = _col_inzet.number_input(
                     "💰 Inzet (€)", min_value=0.10, value=_inzet_default,
                     step=1.0, format="%.2f", key=f"inzet_{_fid}_{_idx}",
                 )
-                _odds_default = float(_res.get("odds") or _fav.get("odds") or 1.5)
+                _odds_default = max(1.01, float(_res.get("odds") or _fav.get("odds") or 1.5))
                 _odds = _col_odds.number_input(
                     "📊 Odds", min_value=1.01, value=_odds_default,
                     step=0.05, format="%.2f", key=f"odds_{_fid}_{_idx}",
                 )
+                if _inzet_onbekend:
+                    st.caption(
+                        "⚠️ Voor deze bet is nog geen inzet vastgelegd — controleer het "
+                        "bedrag hierboven voordat je de uitkomst zet, anders wijkt je P&L af."
+                    )
                 # Gebruik de (eventueel aangepaste) odds bij opslaan.
                 # Overschrijf _fav["datum"] met vandaag — dat veld is de datum
                 # waarop de favoriet aan de Shortlist werd toegevoegd (mogelijk
@@ -1493,21 +1675,28 @@ with tab_favorieten:
                                  "datum": datetime.date.today().isoformat()}
                 _cpl, _cw, _cl, _cv, _cp = st.columns(5)
                 if _cpl.button("📋 Geplaatst", key=f"placed_{_fid}_{_idx}", use_container_width=True,
-                               help="Markeer als geplaatst (uitkomst nog onbekend)"):
-                    db.upsert_resultaat(_fid, _fav_met_odds, "open", _inzet)
+                               help="Markeer als geplaatst (uitkomst nog onbekend). "
+                                    "De inzet gaat direct van je bankroll af."):
+                    _db_check(db.upsert_resultaat(_fid, _fav_met_odds, "open", _inzet), "De uitkomst van de bet")
+                    _remember_inzet(_inzet)
                     st.rerun()
                 if _cw.button("✅ Gewonnen", key=f"won_{_fid}_{_idx}",  use_container_width=True):
-                    db.upsert_resultaat(_fid, _fav_met_odds, "gewonnen", _inzet)
+                    _db_check(db.upsert_resultaat(_fid, _fav_met_odds, "gewonnen", _inzet), "De uitkomst van de bet")
+                    _remember_inzet(_inzet)
                     st.rerun()
-                if _cl.button("❌ Verloren", key=f"lost_{_fid}_{_idx}", use_container_width=True):
-                    db.upsert_resultaat(_fid, _fav_met_odds, "verloren", _inzet)
+                if _cl.button("❌ Verloren", key=f"lost_{_fid}_{_idx}", use_container_width=True,
+                               help="Stond deze bet al op 'Geplaatst'? Dan blijft je saldo gelijk — "
+                                    "de inzet was al afgeboekt. Alleen je P&L verandert."):
+                    _db_check(db.upsert_resultaat(_fid, _fav_met_odds, "verloren", _inzet), "De uitkomst van de bet")
+                    _remember_inzet(_inzet)
                     st.rerun()
                 if _cv.button("⚪ Void",     key=f"void_{_fid}_{_idx}",  use_container_width=True,
                                help="Inzet teruggestort (geen P&L)"):
-                    db.upsert_resultaat(_fid, _fav_met_odds, "void", _inzet)
+                    _db_check(db.upsert_resultaat(_fid, _fav_met_odds, "void", _inzet), "De uitkomst van de bet")
+                    _remember_inzet(_inzet)
                     st.rerun()
                 if _cp.button("⏳ Reset",    key=f"reset_{_fid}_{_idx}", use_container_width=True):
-                    db.remove_resultaat(_fid)
+                    _db_check(db.remove_resultaat(_fid), "Het terugzetten van de bet")
                     st.rerun()
 
                 # ── Doorsturen naar Parlay Builder ────────────────────────────
@@ -1542,23 +1731,105 @@ with tab_favorieten:
                 st.rerun()
 
         # ── Verlopen bets (ingeklapt) ─────────────────────────────────────────
+        # Deze sectie had eerder ALLEEN een verwijderknop. Gevolg: had je een bet
+        # wel echt ingezet maar nooit op "📋 Geplaatst" gedrukt, dan was de
+        # uitkomst de dag erna nergens meer vast te leggen — niet hier, niet op het
+        # Dashboard (dat toont alleen bets met status "open") en niet in Geplaatste
+        # Bets (dat toont alleen bets met een resultaten-rij). De loss verdween dus
+        # stil uit je administratie. Daarom staan de settle-knoppen nu ook hier.
         if _favs_expired:
-            with st.expander(f"🕐 Verlopen bets ({len(_favs_expired)}) — wedstrijd al gespeeld, niet ingezet", expanded=False):
-                st.caption("Deze bets staan nog in je database. Je kunt ze handmatig verwijderen.")
+            with st.expander(f"🕐 Verlopen bets ({len(_favs_expired)}) — wedstrijd al gespeeld", expanded=False):
+                st.caption(
+                    "De wedstrijddatum is verstreken. Heb je deze bet wél ingezet? "
+                    "Vul dan hieronder de inzet in en zet de uitkomst — dan komt hij alsnog "
+                    "in je Bankroll en Geplaatste Bets terecht. Niet ingezet? Gewoon verwijderen."
+                )
                 _exp_page_key = "shortlist_expired_shown"
                 _exp_shown    = st.session_state.get(_exp_page_key, 20)
                 for _idx_e, _fav_e in enumerate(_favs_expired[:_exp_shown]):
                     _fid_e  = _fav_e.get("id", "")
                     _gd_e   = _fav_game_date(_fav_e)
                     _ev_e   = f"{float(_fav_e.get('ev_score') or 0):+.3f}"
-                    _ec1, _ec2 = st.columns([5, 1])
+                    _res_e  = _res_map.get(_fid_e, {})
+                    _uit_e  = _res_e.get("uitkomst", "")
+                    _ic_e   = ("✅" if _uit_e == "gewonnen" else
+                               "❌" if _uit_e == "verloren" else
+                               "⚪" if _uit_e == "void" else
+                               "📋" if _uit_e == "open" else "·")
+                    _ec1, _ec2, _ec3 = st.columns([4.2, 1.2, 0.6])
                     _ec1.markdown(
-                        f"**{_fav_e.get('speler','')}** · {_fav_e.get('bet','')} "
+                        f"{_ic_e} **{_fav_e.get('speler','')}** · {_fav_e.get('bet','')} "
                         f"@ {_fav_e.get('odds','')}  ·  EV {_ev_e}  ·  📅 {_gd_e}"
                     )
-                    if _ec2.button("🗑️", key=f"del_exp_{_fid_e}_{_idx_e}", help="Verwijder"):
+                    # Checkbox i.p.v. expander: Streamlit staat geen expander binnen
+                    # een expander toe, en het gated renderen houdt tegelijk het aantal
+                    # widgets laag (zie de mobiele geheugendruk-notes elders in de app).
+                    _open_e = _ec2.checkbox(
+                        "💰 Afhandelen", key=f"settle_exp_{_fid_e}_{_idx_e}",
+                        help="Bet wél ingezet? Vul inzet + uitkomst in.",
+                    )
+                    # De resultaat-rij wordt ALLEEN meeverwijderd als die nog niet
+                    # gesettled is. Een gewonnen/verloren/void bet is echte P&L-historie;
+                    # die mag niet stil verdwijnen doordat je de favoriet opruimt.
+                    # Afgeronde bets verwijder je bewust via 📋 Geplaatste Bets.
+                    _settled_e = _uit_e in ("gewonnen", "verloren", "void")
+                    if _ec3.button(
+                        "🗑️", key=f"del_exp_{_fid_e}_{_idx_e}",
+                        help=("Verwijder favoriet (de afgeronde bet blijft in Geplaatste Bets staan)"
+                              if _settled_e else "Verwijder favoriet én resultaat"),
+                    ):
                         db.remove_favoriet(_fid_e)
+                        if not _settled_e:
+                            _db_check(db.remove_resultaat(_fid_e), "Het verwijderen van de bet")
                         st.rerun()
+
+                    # Alsnog afhandelen — zelfde logica als bij actieve bets
+                    if _open_e:
+                        _eci, _eco = st.columns(2)
+                        _inz_e_default, _inz_e_onbekend = _shortlist_inzet_default(_res_e)
+                        _inz_e = _eci.number_input(
+                            "💰 Inzet (€)", min_value=0.10, value=_inz_e_default,
+                            step=1.0, format="%.2f", key=f"inzet_exp_{_fid_e}_{_idx_e}",
+                        )
+                        _odd_e = _eco.number_input(
+                            "📊 Odds", min_value=1.01,
+                            value=max(1.01, float(_res_e.get("odds") or _fav_e.get("odds") or 1.5)),
+                            step=0.05, format="%.2f", key=f"odds_exp_{_fid_e}_{_idx_e}",
+                        )
+                        if _inz_e_onbekend:
+                            st.caption("⚠️ Voor deze bet is nog geen inzet vastgelegd — controleer het bedrag.")
+                        # datum = de wedstrijddatum, zodat de bet in de juiste week/maand
+                        # terechtkomt en niet op vandaag wordt geboekt.
+                        _fav_e_met_odds = {**_fav_e, "odds": _odd_e, "datum": _gd_e}
+                        _epl, _ew, _el, _ev_c, _er = st.columns(5)
+                        if _epl.button("📋 Geplaatst", key=f"placed_exp_{_fid_e}_{_idx_e}", use_container_width=True):
+                            _db_check(db.upsert_resultaat(_fid_e, _fav_e_met_odds, "open", _inz_e), "De uitkomst van de bet")
+                            _remember_inzet(_inz_e); st.rerun()
+                        if _ew.button("✅ Gewonnen", key=f"won_exp_{_fid_e}_{_idx_e}", use_container_width=True):
+                            _db_check(db.upsert_resultaat(_fid_e, _fav_e_met_odds, "gewonnen", _inz_e), "De uitkomst van de bet")
+                            _remember_inzet(_inz_e); st.rerun()
+                        if _el.button("❌ Verloren", key=f"lost_exp_{_fid_e}_{_idx_e}", use_container_width=True):
+                            _db_check(db.upsert_resultaat(_fid_e, _fav_e_met_odds, "verloren", _inz_e), "De uitkomst van de bet")
+                            _remember_inzet(_inz_e); st.rerun()
+                        if _ev_c.button("⚪ Void", key=f"void_exp_{_fid_e}_{_idx_e}", use_container_width=True):
+                            _db_check(db.upsert_resultaat(_fid_e, _fav_e_met_odds, "void", _inz_e), "De uitkomst van de bet")
+                            _remember_inzet(_inz_e); st.rerun()
+                        if _er.button("⏳ Reset", key=f"reset_exp_{_fid_e}_{_idx_e}", use_container_width=True):
+                            _db_check(db.remove_resultaat(_fid_e), "Het terugzetten van de bet")
+                            st.rerun()
+                        if _res_e:
+                            # Supabase kan null teruggeven voor beide velden; `or 0`
+                            # voorkomt een TypeError in de :.2f-formattering.
+                            _wl_e  = float(_res_e.get("winst_verlies") or 0)
+                            _inz_r = float(_res_e.get("inzet") or 0)
+                            if _uit_e == "void":
+                                st.caption(f"Huidig: ⚪ Void · inzet €{_inz_r:.2f} (terugbetaald)")
+                            elif _uit_e in ("gewonnen", "verloren"):
+                                st.caption(f"Huidig: {_ic_e} {_uit_e} · inzet €{_inz_r:.2f} · "
+                                           f"P&L {'+€' if _wl_e >= 0 else '-€'}{abs(_wl_e):.2f}")
+                            elif _uit_e == "open":
+                                st.caption(f"Huidig: 📋 open · inzet €{_inz_r:.2f} — "
+                                           "deze inzet is al van je bankroll af.")
 
                 if _exp_shown < len(_favs_expired):
                     _exp_rest = len(_favs_expired) - _exp_shown
@@ -1582,9 +1853,11 @@ with tab_bankroll:
         st.session_state.bk_selected_day = _bk_today.isoformat()
 
     # ── Laad alle data één keer ───────────────────────────────────────────────
-    _bk_all_raw      = db.load_resultaten()
     _all_parlays_bk  = db.load_parlays()
     _parlays_bk_map  = {p["id"]: p for p in _all_parlays_bk}
+    # Parlays eerst laden, zodat de spiegelrijen in resultaten direct in lijn
+    # gebracht kunnen worden met de parlays-tabel (zie _sync_parlay_drift).
+    _bk_all_raw      = _sync_parlay_drift(db.load_resultaten(), _all_parlays_bk)
 
     # Gesettlede parlays die (nog) niet in resultaten staan toevoegen
     _bk_settled_ids = {str(r.get("id","")) for r in _bk_all_raw
@@ -1620,12 +1893,26 @@ with tab_bankroll:
             _bets_by_date[_bkd].append(_bkr)
 
     # Globale totalen
-    _bk_total_wl      = sum(r.get("winst_verlies",0) for r in _bk_all_settled)
+    _bk_total_wl      = sum(float(r.get("winst_verlies") or 0) for r in _bk_all_settled)
     _start_bk_saved   = float(db.get_setting("start_bankroll") or 0.0)
     _mutations_total  = db.get_bankroll_mutations_total()
     # Deducteer openstaande inzetten (stake al gecommitteerd, nog niet gesettled)
     _bk_all_raw_ids   = {str(r.get("id","")) for r in _bk_all_raw}
-    _bk_open_inzet    = sum(float(r.get("inzet",0)) for r in _bk_all_raw if r.get("uitkomst") == "open")
+    # Parlays die in de parlays-tabel AL gesettled zijn, maar waarvan de
+    # resultaten-schaduwrij nog op "open" staat (dat kan gebeuren als
+    # update_parlay() lukte maar upsert_resultaat() faalde). Hun verlies/winst
+    # wordt hierboven al via _bk_all_settled meegeteld; zou de open schaduwrij
+    # óók meegenomen worden in de open-inzet, dan werd de inzet twee keer van
+    # het saldo afgetrokken.
+    _bk_parlay_settled_ids = {
+        f"parlay_{p['id']}" for p in _all_parlays_bk
+        if (p.get("uitkomst") or "open") in ("gewonnen", "verloren", "void")
+    }
+    _bk_open_inzet    = sum(
+        float(r.get("inzet", 0) or 0) for r in _bk_all_raw
+        if r.get("uitkomst") == "open"
+        and str(r.get("id", "")) not in _bk_parlay_settled_ids
+    )
     _bk_open_inzet   += sum(
         float(p.get("inzet") or 0)
         for p in _all_parlays_bk
@@ -1641,7 +1928,7 @@ with tab_bankroll:
 
     # ── HEADER ───────────────────────────────────────────────────────────────
     _7d_cutoff = (_bk_today - datetime.timedelta(days=6)).isoformat()
-    _7d_wl     = sum(r.get("winst_verlies",0) for r in _bk_all_settled
+    _7d_wl     = sum(float(r.get("winst_verlies") or 0) for r in _bk_all_settled
                      if (r.get("datum") or "")[:10] >= _7d_cutoff)
     _7d_color  = "#4ade80" if _7d_wl >= 0 else "#f87171"
     _7d_pill   = f"{'+ ' if _7d_wl >= 0 else ''}€{_7d_wl:+.2f}  laatste 7 dagen"
@@ -1706,7 +1993,7 @@ with tab_bankroll:
             _wd = _bk_today - datetime.timedelta(days=_di)
             _wd_str  = _wd.isoformat()
             _wd_bets = _bets_by_date.get(_wd_str, [])
-            _wd_pnl  = sum(r.get("winst_verlies",0) for r in _wd_bets)
+            _wd_pnl  = sum(float(r.get("winst_verlies") or 0) for r in _wd_bets)
             _week_days.append({
                 "date":    _wd_str,
                 "dayname": _wd.strftime("%a"),
@@ -1771,7 +2058,7 @@ with tab_bankroll:
         _7d_won_n    = _7d_stats["won"]
         _7d_n        = len(_7d_bets_all)
         _7d_wr       = _7d_stats["win_pct"]
-        _7d_pnl_sum  = sum(b.get("winst_verlies",0) for b in _7d_bets_all)
+        _7d_pnl_sum  = sum(float(b.get("winst_verlies") or 0) for b in _7d_bets_all)
 
         st.markdown("")
         _sc1, _sc2, _sc3 = st.columns(3)
@@ -1810,7 +2097,7 @@ with tab_bankroll:
                                    key=lambda x: x.get("datum",""), reverse=True):
                     _dsp  = _db2.get("sport","?")
                     _dico = SPORT_ICONS.get(_dsp.upper(), "🎮") if _dsp != "Parlay" else "🎰"
-                    _dpnl = _db2.get("winst_verlies", 0)
+                    _dpnl = float(_db2.get("winst_verlies") or 0)
                     _dcol = "#4ade80" if _dpnl > 0 else "#f87171"
                     _dbet = _db2.get("bet") or _db2.get("bet_type") or ""
                     _dspl = _db2.get("speler","")
@@ -1848,7 +2135,7 @@ with tab_bankroll:
 
         _m_bets_all = [b for _md in _m_days
                        for b in _bets_by_date.get(_md.isoformat(), [])]
-        _m_total_pnl = sum(b.get("winst_verlies",0) for b in _m_bets_all)
+        _m_total_pnl = sum(float(b.get("winst_verlies") or 0) for b in _m_bets_all)
         _m_stats_cal = _wl_stats(_m_bets_all)
         _m_won_n     = _m_stats_cal["won"]
         _m_n         = len(_m_bets_all)
@@ -1881,7 +2168,7 @@ with tab_bankroll:
             _wk_e  = _wk_days2[-1].strftime("%-d %b")
             _wk_bs = [b for _wd5 in _wk_days2
                       for b in _bets_by_date.get(_wd5.isoformat(), [])]
-            _wk_pnl  = sum(b.get("winst_verlies",0) for b in _wk_bs)
+            _wk_pnl  = sum(float(b.get("winst_verlies") or 0) for b in _wk_bs)
             _wk_won  = sum(1 for b in _wk_bs if b.get("uitkomst") == "gewonnen")
             _wk_n    = len(_wk_bs)
             _wk_col  = "#4ade80" if _wk_pnl > 0 else "#f87171" if _wk_pnl < 0 else "#a8aace"
@@ -1899,7 +2186,7 @@ with tab_bankroll:
                     for _wb in sorted(_wk_bs, key=lambda x: x.get("datum",""), reverse=True):
                         _ws   = _wb.get("sport","?")
                         _wico = SPORT_ICONS.get(_ws.upper(), "🎮") if _ws != "Parlay" else "🎰"
-                        _wpnl2 = _wb.get("winst_verlies",0)
+                        _wpnl2 = float(_wb.get("winst_verlies") or 0)
                         _wcol2 = "#4ade80" if _wpnl2 > 0 else "#f87171"
                         _wdate = (_wb.get("datum",""))[:10]
                         try:
@@ -2149,13 +2436,21 @@ with tab_bankroll:
             if _bk_kind == "Parlays" and not _r_is_parlay: return False
             return True
     
-        _alle_res = [r for r in db.load_resultaten() if _bk_filter(r)]
-        _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren", "void")]
-    
         # ── Parlays laden (één keer, hergebruikt voor per-sport en Parlay ROI) ────
         _all_parlays_bk = db.load_parlays()
         _parlays_bk_map = {p["id"]: p for p in _all_parlays_bk}
-    
+
+        # _sync_parlay_drift() geeft kopieën terug (de lijst uit db.load_resultaten()
+        # komt uit de gedeelde TTL-cache) en brengt de spiegelrijen in lijn vóór het
+        # bepalen van _gedaan, zodat een gesettlede parlay met een achtergebleven
+        # "open" spiegelrij hier wél als afgerond meetelt.
+        _alle_res = [
+            r for r in _sync_parlay_drift(db.load_resultaten(), _all_parlays_bk)
+            if _bk_filter(r)
+        ]
+
+        _gedaan   = [r for r in _alle_res if r.get("uitkomst") in ("gewonnen", "verloren", "void")]
+
         # Gesettlede parlays die ontbreken in _gedaan toevoegen (zelfde aanpak als Dashboard).
         # _gedaan komt uit resultaten; als upsert_resultaat ooit niet is uitgevoerd staan
         # de parlays daar niet in en worden ze hier handmatig ingevuld.
@@ -2200,8 +2495,8 @@ with tab_bankroll:
                         result.append({
                             "sport":         leg.get("sport", "") or "Parlay",
                             "uitkomst":      r["uitkomst"],
-                            "inzet":         round(r.get("inzet", 0) / n, 2),
-                            "winst_verlies": round(r.get("winst_verlies", 0) / n, 2),
+                            "inzet":         round(float(r.get("inzet") or 0) / n, 2),
+                            "winst_verlies": round(float(r.get("winst_verlies") or 0) / n, 2),
                             "ev_score":      0.0,
                             "odds":          float(leg.get("odds") or 1.0),
                             "bet":           leg.get("bet_type", ""),
@@ -2239,7 +2534,7 @@ with tab_bankroll:
             sorted_r = sorted(results, key=lambda r: r.get("datum",""))
             peak, max_dd, cum = 0.0, 0.0, 0.0
             for r in sorted_r:
-                cum  += r.get("winst_verlies", 0)
+                cum  += float(r.get("winst_verlies") or 0)
                 peak  = max(peak, cum)
                 max_dd = max(max_dd, peak - cum)
             return round(max_dd, 2)
@@ -2252,7 +2547,7 @@ with tab_bankroll:
             _b_stats  = _wl_stats(_gedaan)
             _bn_won   = _b_stats["won"]
             _bt_inzet = _b_stats["staked"]
-            _bt_wl    = sum(r.get("winst_verlies", 0) for r in _gedaan)
+            _bt_wl    = sum(float(r.get("winst_verlies") or 0) for r in _gedaan)
             _broi     = _b_stats["roi"]
             _bwin_pct = _b_stats["win_pct"]
     
@@ -2263,10 +2558,25 @@ with tab_bankroll:
                 _huidig_saldo = _bk_balance  # identiek aan header: start + mutaties + wl_all - open_inzet_all
                 _groei_pct    = (_bk_total_wl / _start_bk_saved * 100) if _start_bk_saved > 0 else 0.0
                 _bmc1, _bmc2, _bmc3, _bmc4 = st.columns(4)
-                _bmc1.markdown(kpi_card("💰", "Bankroll",      f"€{_huidig_saldo:.2f}", f"P&L {_bk_total_wl:+.2f}", positive=(_bk_total_wl > 0) if _bk_total_wl != 0 else None), unsafe_allow_html=True)
+                _bk_sub_saldo = f"P&L {_bk_total_wl:+.2f}"
+                if _bk_open_inzet > 0:
+                    _bk_sub_saldo += f"  ·  −€{_bk_open_inzet:.2f} open inzet"
+                _bmc1.markdown(kpi_card("💰", "Bankroll",      f"€{_huidig_saldo:.2f}", _bk_sub_saldo, positive=(_bk_total_wl > 0) if _bk_total_wl != 0 else None), unsafe_allow_html=True)
                 _bmc2.markdown(kpi_card("🏦", "Bankrekening",  f"€{_bank_balance:.2f}", f"start €{_bank_start:.0f}"), unsafe_allow_html=True)
                 _bmc3.markdown(kpi_card("💎", "Totaal kapitaal", f"€{(_huidig_saldo + _bank_balance):.2f}"), unsafe_allow_html=True)
                 _bmc4.markdown(kpi_card("📈", "Groei bankroll", f"{_groei_pct:+.1f}%", positive=(_groei_pct > 0) if _groei_pct != 0 else None), unsafe_allow_html=True)
+                # Expliciete uitleg: de inzet van open bets is al afgeboekt, dus een
+                # verlies op een al-geplaatste bet verandert het saldo niet meer.
+                # Zonder deze regel lijkt het alsof de app de loss "niet pakt".
+                if _bk_open_inzet > 0:
+                    st.caption(
+                        f"ℹ️ Je saldo = startbankroll €{_start_bk_saved:.2f} "
+                        f"{'+' if _mutations_total >= 0 else '−'} €{abs(_mutations_total):.2f} mutaties "
+                        f"{'+' if _bk_total_wl >= 0 else '−'} €{abs(_bk_total_wl):.2f} P&L "
+                        f"− €{_bk_open_inzet:.2f} openstaande inzet. "
+                        "De inzet van een geplaatste bet is dus **direct** van je saldo af, niet pas bij het verliezen — "
+                        "als een open bet verliest blijft je saldo daarom gelijk en verandert alleen je P&L."
+                    )
                 st.markdown("")
     
             _bc1, _bc2, _bc3, _bc4 = st.columns(4)
@@ -2291,7 +2601,7 @@ with tab_bankroll:
             if len(_sorted_res) >= 2:
                 _cum_wl, _rows = 0.0, []
                 for _r in _sorted_res:
-                    _cum_wl += _r.get("winst_verlies", 0)
+                    _cum_wl += float(_r.get("winst_verlies") or 0)
                     _row = {"Datum": _r.get("datum",""), "Cumulatief P&L (€)": round(_cum_wl, 2)}
                     if _start_bk_saved > 0:
                         _row["Bankroll (€)"] = round(_start_bk_saved + _mutations_total + _cum_wl, 2)
@@ -2309,8 +2619,8 @@ with tab_bankroll:
                 _sr   = [r for r in _gedaan_sport if r.get("sport","") == _bsport]
                 _sr_stats = _wl_stats(_sr)
                 _sw   = _sr_stats["won"]
-                _si   = sum(r.get("inzet", 0) for r in _sr)
-                _swl  = sum(r.get("winst_verlies", 0) for r in _sr)
+                _si   = sum(float(r.get("inzet") or 0) for r in _sr)
+                _swl  = sum(float(r.get("winst_verlies") or 0) for r in _sr)
                 _sroi = (_swl / _sr_stats["staked"] * 100) if _sr_stats["staked"] > 0 else 0.0
                 # Onderscheid single bets vs parlay legs in dit sport-bucket
                 _sr_singles = [r for r in _sr if not r.get("_parlay_id")]
@@ -2327,7 +2637,7 @@ with tab_bankroll:
                     _btype_wl = {}
                     for _r in _sr_singles:  # alleen singles voor meest winstgevend bet type
                         _bt = _r.get("bet","?")
-                        _btype_wl[_bt] = _btype_wl.get(_bt, 0.0) + _r.get("winst_verlies", 0)
+                        _btype_wl[_bt] = _btype_wl.get(_bt, 0.0) + float(_r.get("winst_verlies") or 0)
                     if _btype_wl:
                         _best_bt = max(_btype_wl, key=lambda k: _btype_wl[k])
                         if _btype_wl[_best_bt] > 0:
@@ -2346,7 +2656,7 @@ with tab_bankroll:
                 _br = [r for r in _gedaan if _lo <= float(r.get("odds",0) or 0) <= _hi]
                 if not _br: continue
                 _br_stats = _wl_stats(_br)
-                _bwv = sum(r.get("winst_verlies",0) for r in _br)
+                _bwv = sum(float(r.get("winst_verlies") or 0) for r in _br)
                 _bi  = _br_stats["staked"]
                 _odds_rows.append({
                     "Odds-range": _label, "N": len(_br),
@@ -2976,7 +3286,7 @@ with tab_parlay:
                     "rating":        "",
                     "composite":     0.0,
                 }
-                db.upsert_resultaat(f"parlay_{_new_prl_id}", _prl_fav_direct, "open", float(_inzet))
+                _db_check(db.upsert_resultaat(f"parlay_{_new_prl_id}", _prl_fav_direct, "open", float(_inzet)), "De parlay")
             st.session_state.parlay_legs = []
             st.success("✅ Parlay opgeslagen!")
             st.rerun()
@@ -3115,21 +3425,22 @@ with tab_parlay:
                         if any(s == "gemist" for s in _all_statuses):
                             # Eén leg gemist → parlay verloren
                             _auto_res = db.update_parlay(_auto_id, {"uitkomst": "verloren", "winst_verlies": round(-_auto_inzet, 2)})
-                            db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "verloren", _auto_inzet)
+                            _db_check(db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "verloren", _auto_inzet), "De parlay-uitkomst")
                         elif all(s != "open" for s in _all_statuses) and _all_statuses:
                             # Alle legs gesettled, geen gemist
                             if all(s == "void" for s in _all_statuses):
                                 # Alle legs void → parlay void
                                 _auto_res = db.update_parlay(_auto_id, {"uitkomst": "void", "winst_verlies": 0.0})
-                                db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "void", _auto_inzet)
+                                _db_check(db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "void", _auto_inzet), "De parlay-uitkomst")
                             else:
                                 # Alle legs geraakt (of mix geraakt+void) → parlay gewonnen
                                 # Uitbetaling op basis van effectieve odds (zonder void legs)
                                 _pw = round(_auto_inzet * _eff_odds - _auto_inzet, 2)
                                 _auto_res = db.update_parlay(_auto_id, {"uitkomst": "gewonnen", "winst_verlies": _pw})
-                                db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "gewonnen", _auto_inzet)
+                                _db_check(db.upsert_resultaat(f"parlay_{_auto_id}", _auto_fav_base, "gewonnen", _auto_inzet), "De parlay-uitkomst")
                         if _auto_res is not None and not _auto_res.get("ok"):
-                            st.warning(f"⚠️ Leg-statussen zijn opgeslagen, maar de automatische parlay-settlement is mislukt: {_auto_res.get('error')}")
+                            _db_melding("warning", "⚠️ Leg-statussen zijn opgeslagen, maar de automatische "
+                                                   f"parlay-settlement is mislukt: {_auto_res.get('error')}")
                     st.toast("✅ Leg-statussen bijgewerkt.")
                     st.rerun()
 
@@ -3144,7 +3455,8 @@ with tab_parlay:
                         _prl_legs_win = _mark_all_legs_geraakt(_prl_legs, _prl_lj)
                         _win_res = db.update_parlay(_prl_id, {"uitkomst":"gewonnen","winst_verlies":_pw, "legs_json": _prl_legs_win})
                         if not _win_res.get("ok"):
-                            st.error(f"⚠️ Parlay is als Gewonnen gemarkeerd, maar de leg-statussen ('geraakt') zijn NIET opgeslagen: {_win_res.get('error')}")
+                            _db_melding("error", "⚠️ Parlay is als Gewonnen gemarkeerd, maar de leg-statussen "
+                                                 f"('geraakt') zijn NIET opgeslagen: {_win_res.get('error')}")
                         _prl_legs = _prl.get("props_json", []) or []
                         _prl_fav  = {
                             "odds":      _prl_odds,
@@ -3155,13 +3467,14 @@ with tab_parlay:
                             "ev_score":  float(_prl.get("ev_score") or 0.0),
                             "props_json": _prl_legs,
                         }
-                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "gewonnen", _prl_inzet)
+                        _db_check(db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "gewonnen", _prl_inzet), "De parlay-uitkomst")
                         st.rerun()
                     if _oc2.button("❌ Verloren", key=f"plost_{_prl.get('id','')}"):
                         _prl_id    = _prl.get("id","")
                         _prl_inzet = _prl.get("inzet", 10)
                         _prl_odds  = _prl.get("gecombineerde_odds", 1.0)
-                        db.update_parlay(_prl_id, {"uitkomst":"verloren","winst_verlies":round(-_prl_inzet,2)})
+                        _db_check(db.update_parlay(_prl_id, {"uitkomst":"verloren","winst_verlies":round(-_prl_inzet,2)}),
+                                  "De parlay-uitkomst")
                         _prl_legs = _prl.get("props_json", []) or []
                         _prl_fav  = {
                             "odds":      _prl_odds,
@@ -3172,10 +3485,10 @@ with tab_parlay:
                             "ev_score":  float(_prl.get("ev_score") or 0.0),
                             "props_json": _prl_legs,
                         }
-                        db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "verloren", _prl_inzet)
+                        _db_check(db.upsert_resultaat(f"parlay_{_prl_id}", _prl_fav, "verloren", _prl_inzet), "De parlay-uitkomst")
                         st.rerun()
                 else:
-                    _wv  = _prl.get("winst_verlies", 0) or 0
+                    _wv  = float(_prl.get("winst_verlies") or 0)
                     _uit = _prl.get("uitkomst") or ""
                     _kl  = "#4ade80" if _wv > 0 else ("#a0a0c0" if _uit == "void" else "#f87171")
                     st.markdown(f"<span style='color:{_kl};font-weight:700'>Uitkomst: {_uit.upper()} · W/V: €{_wv:.2f}</span>", unsafe_allow_html=True)
@@ -3185,7 +3498,7 @@ with tab_parlay:
                     # de resultaten-tabel (parlay_{id}) — zonder deze cleanup blijft
                     # die rij voor altijd meetellen in win/loss/ROI, ook al is de
                     # parlay zelf "verwijderd". Zie Tom's melding over verwijderde bets.
-                    db.remove_resultaat(f"parlay_{_prl.get('id','')}")
+                    _db_check(db.remove_resultaat(f"parlay_{_prl.get('id','')}"), "Het verwijderen van de parlay")
                     st.rerun()
 
         if _prl_shown < len(_saved_parlays):
@@ -3208,14 +3521,27 @@ with tab_geplaatst:
 
     st.markdown("---")
 
+    # Foutmelding van de ↩️-knop uit de vorige run tonen (st.error() direct vóór
+    # st.rerun() rendert nooit, dus die wordt in session_state bewaard).
+    _gp_undo_err = st.session_state.pop("_gp_undo_error", None)
+    if _gp_undo_err:
+        st.error(_gp_undo_err)
+
     from datetime import date as _date
 
-    _alle_res_gp = db.load_resultaten()
+    # Kopie maken i.p.v. de lijst van db.load_resultaten() direct gebruiken: die
+    # lijst komt uit de TTL-cache in db.py, dus het is dezelfde objecten-lijst die
+    # álle tabs te zien krijgen. Hieronder worden rijen toegevoegd en aangepast;
+    # zonder kopie lekken die wijzigingen naar de andere tabs.
+    _alle_res_gp = [dict(r) for r in db.load_resultaten()]
 
     # Laad alle parlays één keer, zodat we per parlay-rij de legs kunnen tonen
     # in een expander. Map op de *resultaten*-id (= "parlay_<orig>").
     _gp_all_parlays    = db.load_parlays()
     _gp_parlays_by_rid = {f"parlay_{p['id']}": p for p in _gp_all_parlays}
+
+    # Spiegelrijen in lijn brengen met de parlays-tabel (zie _sync_parlay_drift).
+    _alle_res_gp = _sync_parlay_drift(_alle_res_gp, _gp_all_parlays)
 
     # ── Open en ontbrekende parlays toevoegen ─────────────────────────────────
     # Open parlays staan nooit in resultaten; gesettlede parlays die vóór de
@@ -3270,7 +3596,7 @@ with tab_geplaatst:
                 _gp_stats = _wl_stats(_gp_afgerond)
                 _gp_won   = _gp_stats["won"]
                 _gp_inzet = _gp_stats["staked"]
-                _gp_wl    = sum(r.get("winst_verlies", 0) for r in _gp_afgerond)
+                _gp_wl    = sum(float(r.get("winst_verlies") or 0) for r in _gp_afgerond)
                 _gp_roi   = _gp_stats["roi"]
                 _gp_wr    = _gp_stats["win_pct"]
                 sc1, sc2, sc3, sc4, sc5 = st.columns(5)
@@ -3464,8 +3790,8 @@ with tab_geplaatst:
                         _w_afgerond = [r for r in _bets if r.get("uitkomst") in ("gewonnen","verloren","void")]
                         _w_stats    = _wl_stats(_w_afgerond)
                         _w_won      = _w_stats["won"]
-                        _w_inzet    = sum(r.get("inzet",0) for r in _w_afgerond)
-                        _w_wl       = sum(r.get("winst_verlies",0) for r in _w_afgerond)
+                        _w_inzet    = sum(float(r.get("inzet") or 0) for r in _w_afgerond)
+                        _w_wl       = sum(float(r.get("winst_verlies") or 0) for r in _w_afgerond)
                         _w_wr_str   = f"{_w_won}/{_w_stats['decided']}" if _w_stats["decided"] else "—"
                         _w_wl_str   = f"€{_w_wl:+.2f}" if _w_afgerond else "—"
 
@@ -3482,7 +3808,7 @@ with tab_geplaatst:
                             _b_id   = _b.get("id","")
                             _b_uit  = _b.get("uitkomst","")
                             _b_icon = "✅" if _b_uit == "gewonnen" else ("❌" if _b_uit == "verloren" else ("⚪" if _b_uit == "void" else "⏳"))
-                            _b_wl   = _b.get("winst_verlies",0)
+                            _b_wl   = float(_b.get("winst_verlies") or 0)
                             _b_wl_s = "⚪ Void" if _b_uit == "void" else (f"€{_b_wl:+.2f}" if _b_uit not in ("open",) else "—")
                             _b_inzet_val = _b.get("inzet")
                             _b_odds_val  = _b.get("odds")
@@ -3512,7 +3838,7 @@ with tab_geplaatst:
                                 _bc1.write(f"{_b_icon} **{_speler_disp}** — {_bet_disp}{_team_suffix}")
                             _bc2.write(f"@ {_b.get('odds','—')}")
                             _bc2b.write(_b_te_winnen_s)
-                            _bc3.write(f"€{_b.get('inzet',0):.2f}")
+                            _bc3.write(f"€{float(_b.get('inzet') or 0):.2f}")
                             _bc4.write(_b_wl_s)
                             _bc5.caption(_b.get("datum",""))
                             if _bc6.button("✏️", key=f"gpedit_{_b_id}", help="Bewerk weddenschap"):
@@ -3523,21 +3849,71 @@ with tab_geplaatst:
                             _b_is_settled = _b.get("uitkomst") in ("gewonnen", "verloren", "void")
                             if _b_is_settled:
                                 if _bc7.button("↩️", key=f"gpundo_{_b_id}", help="Zet terug naar open (foutieve uitkomst)"):
+                                    # De knop heet "zet terug naar open", maar verwijderde de
+                                    # resultaten-rij volledig — waardoor de bet uit Geplaatste
+                                    # Bets verdween in plaats van weer als open bet te verschijnen,
+                                    # en de inzet niet meer van het saldo afging. Nu wordt de
+                                    # uitkomst echt naar "open" gezet met inzet/odds/datum intact.
+                                    _undo_fav = {
+                                        "speler":        _b.get("speler", ""),
+                                        "player":        _b.get("speler", ""),
+                                        "bet":           _b.get("bet", ""),
+                                        "bet_type":      _b.get("bet", ""),
+                                        "sport":         _b.get("sport", ""),
+                                        "team":          _b.get("team", ""),
+                                        "odds":          float(_b.get("odds") or 1.0),
+                                        "datum":         (_b.get("datum") or "")[:10],
+                                        "ev_score":      float(_b.get("ev_score") or 0),
+                                        "rating":        _b.get("rating", ""),
+                                        "composite":     float(_b.get("composite") or 0),
+                                        "import_method": _b.get("import_method", ""),
+                                        "bookmaker":     _b.get("bookmaker", ""),
+                                        "source_session_id": _b.get("source_session_id", ""),
+                                    }
+                                    _undo_inzet = float(_b.get("inzet") or 0)
+                                    # Een parlay-rij kan synthetisch zijn opgebouwd (zie de
+                                    # merge-loop bovenaan deze tab) en dan inzet=0 hebben.
+                                    # Val in dat geval terug op de inzet uit de parlays-tabel,
+                                    # anders zou de bet als open geboekt worden met €0 inzet.
+                                    if _undo_inzet <= 0 and _b_is_parlay:
+                                        _undo_prl = _gp_parlays_by_rid.get(_b_id) or {}
+                                        _undo_inzet = float(_undo_prl.get("inzet") or 0)
+
+                                    # Eerst de parlays-tabel (de bron van waarheid voor de
+                                    # status), dan de resultaten-spiegelrij. Andersom kon er
+                                    # een staat ontstaan waarin resultaten "open" zei terwijl
+                                    # de parlay nog gesettled stond.
+                                    _undo_ok = True
                                     if _b_is_parlay:
                                         _orig_prl_id = str(_b_id)[len("parlay_"):]
-                                        db.remove_resultaat(_b_id)
-                                        db.update_parlay(_orig_prl_id, {"uitkomst": "open", "winst_verlies": 0.0})
-                                    else:
-                                        db.remove_resultaat(_b_id)
+                                        _undo_res = db.update_parlay(
+                                            _orig_prl_id, {"uitkomst": "open", "winst_verlies": 0.0}
+                                        )
+                                        if not _undo_res.get("ok"):
+                                            _undo_ok = False
+                                            # st.error() direct vóór st.rerun() wordt nooit
+                                            # getoond; bewaar de melding en render hem
+                                            # bovenaan de tab na de rerun.
+                                            st.session_state["_gp_undo_error"] = (
+                                                f"⚠️ Parlay terugzetten mislukt: {_undo_res.get('error')} "
+                                                "— de uitkomst is NIET aangepast."
+                                            )
+                                    if _undo_ok:
+                                        # Toast alleen bij een geslaagde write — een toast
+                                        # overleeft de rerun, dus anders zie je een groene
+                                        # bevestiging én de rode foutmelding tegelijk.
+                                        if _db_check(db.upsert_resultaat(_b_id, _undo_fav, "open", _undo_inzet),
+                                                     "Het terugzetten naar open"):
+                                            st.toast("↩️ Terug naar open — de inzet staat weer als openstaand geboekt.")
                                     st.rerun()
                             # 🗑️ Volledig verwijderen — verwijdert altijd alles, inzet komt terug in saldo.
                             if _bc8.button("🗑️", key=f"gpdel_{_b_id}", help="Verwijder volledig (inzet terug naar saldo)"):
                                 if _b_is_parlay:
                                     _orig_prl_id = str(_b_id)[len("parlay_"):]
                                     db.delete_parlay(_orig_prl_id)      # verwijder uit parlays tabel
-                                    db.remove_resultaat(_b_id)          # verwijder eventuele resultaten-entry
+                                    _db_check(db.remove_resultaat(_b_id), "Het verwijderen van de bet")          # verwijder eventuele resultaten-entry
                                 else:
-                                    db.remove_resultaat(_b_id)
+                                    _db_check(db.remove_resultaat(_b_id), "Het verwijderen van de bet")
                                 st.rerun()
 
                             # ── Parlay legs: uitklapbaar per parlay-rij ────
@@ -3640,7 +4016,7 @@ with tab_geplaatst:
                                         "import_method": _b.get("import_method", ""),
                                         "bookmaker":     _b.get("bookmaker", ""),
                                     }
-                                    db.upsert_resultaat(_b_id, _upd_fav, _e_uit, _e_inzet)
+                                    _db_check(db.upsert_resultaat(_b_id, _upd_fav, _e_uit, _e_inzet), "De bijgewerkte bet")
                                     if str(_b_id).startswith("parlay_"):
                                         _ep_id = str(_b_id)[len("parlay_"):]
                                         _ep_wl = (round(_e_inzet * (_e_odds - 1), 2)
@@ -3658,9 +4034,8 @@ with tab_geplaatst:
                                             # Parlay gewonnen → alle (niet-void) legs zijn
                                             # per definitie geraakt.
                                             _ep_fields["legs_json"] = _mark_all_legs_geraakt(_parlay_legs, _leg_status)
-                                        _ep_res = db.update_parlay(_ep_id, _ep_fields)
-                                        if not _ep_res.get("ok"):
-                                            st.error(f"⚠️ Opslaan mislukt: {_ep_res.get('error')}")
+                                        _db_check(db.update_parlay(_ep_id, _ep_fields),
+                                                  "De bijgewerkte parlay")
                                     st.session_state.gp_editing = None
                                     st.rerun()
                                 if _cancel_e:

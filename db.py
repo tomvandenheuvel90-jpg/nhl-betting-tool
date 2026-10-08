@@ -708,15 +708,44 @@ def load_resultaten() -> list:
 
 def save_resultaten(results: list) -> None:
     """Alleen gebruikt als Supabase niet beschikbaar is."""
+    _write_resultaten(results)
+
+
+def _write_resultaten(results: list):
+    """Schrijf de lokale resultaten-JSON. Geeft None terug bij succes,
+    anders de foutmelding als tekst.
+
+    Bestaat zodat upsert_resultaat()/remove_resultaat() een mislukte lokale
+    write kunnen rapporteren; save_resultaten() slikt de fout nog steeds in
+    voor oudere aanroepers die geen status verwachten.
+    """
     try:
         RESULTS_FILE.write_text(
             json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-    except Exception:
-        pass
+        return None
+    except Exception as e:
+        import logging; logging.warning(f"_write_resultaten (lokale JSON): {e}")
+        return str(e)
 
 
-def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> None:
+def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> dict:
+    """Schrijf of werk een rij in de resultaten-tabel bij (de enige plek waar
+    P&L geboekt wordt).
+
+    Geeft een status-dict terug — zelfde patroon als update_parlay():
+        {"ok": bool, "error": str|None, "degraded": bool}
+
+    * ok=False       → de bet is NERGENS opgeslagen; de UI moet dit als fout tonen.
+    * degraded=True  → alleen lokaal opgeslagen terwijl Supabase wél is
+                       geconfigureerd. Op Streamlit Cloud (ephemeral filesystem)
+                       is die rij bij de volgende herstart verdwenen, dus dit
+                       verdient een waarschuwing in de UI.
+
+    Reden: de functie retourneerde eerder None en slikte alle excepties in,
+    waardoor een mislukte write nergens zichtbaar was en de app een groene
+    bevestiging toonde terwijl er niets was geboekt.
+    """
     odds = float(fav.get("odds", 1.0))
     if uitkomst == "gewonnen":
         wl = round(inzet * (odds - 1), 2)
@@ -767,11 +796,12 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
         "import_method":     fav.get("import_method", ""),
         "bookmaker":         fav.get("bookmaker", ""),
     }
+    _sb_error = None
     if _using_supabase:
         try:
             _supabase.table("resultaten").upsert(row).execute()
             _ttl_clear("resultaten")
-            return
+            return {"ok": True, "error": None, "degraded": False}
         except Exception as _exc_full:
             # Kolom bestaat mogelijk nog niet — probeer zonder optionele kolommen
             _optional_cols = ("source_session_id", "is_parlay", "rating",
@@ -781,27 +811,60 @@ def upsert_resultaat(fav_id: str, fav: dict, uitkomst: str, inzet: float) -> Non
                 _supabase.table("resultaten").upsert(row_basic).execute()
                 _note_schema_drift("resultaten", _optional_cols, _exc_full)
                 _ttl_clear("resultaten")
-                return
-            except Exception:
-                pass  # Supabase volledig onbeschikbaar → lokale fallback
+                # Alleen optionele kolommen gemist — id/inzet/uitkomst/winst_verlies
+                # (alles wat de P&L bepaalt) is wél geboekt, dus dit is geen fout.
+                return {"ok": True, "error": None, "degraded": False}
+            except Exception as _exc_basic:
+                # Supabase volledig onbeschikbaar → lokale fallback
+                import logging; logging.warning(f"Supabase upsert_resultaat: {_exc_basic}")
+                _sb_error = str(_exc_basic)
 
     results = [r for r in load_resultaten() if r.get("id") != fav_id]
     results.insert(0, row)
-    save_resultaten(results)
+    _local_err = _write_resultaten(results)
     _ttl_clear("resultaten")
+    if _local_err:
+        return {
+            "ok": False,
+            "error": (f"Supabase: {_sb_error} | lokaal: {_local_err}"
+                      if _sb_error else _local_err),
+            "degraded": False,
+        }
+    if _sb_error:
+        return {"ok": True, "error": _sb_error, "degraded": True}
+    return {"ok": True, "error": None, "degraded": False}
 
 
-def remove_resultaat(fav_id: str) -> None:
+def remove_resultaat(fav_id: str) -> dict:
+    """Verwijder een rij uit de resultaten-tabel.
+
+    Geeft dezelfde status-dict terug als upsert_resultaat():
+    {"ok": bool, "error": str|None, "degraded": bool}
+    """
+    _sb_error = None
     if _using_supabase:
         try:
             _supabase.table("resultaten").delete().eq("id", fav_id).execute()
             _ttl_clear("resultaten")
-            return
-        except Exception:
-            pass
+            return {"ok": True, "error": None, "degraded": False}
+        except Exception as e:
+            import logging; logging.warning(f"Supabase remove_resultaat: {e}")
+            _sb_error = str(e)
 
-    save_resultaten([r for r in load_resultaten() if r.get("id") != fav_id])
+    _local_err = _write_resultaten(
+        [r for r in load_resultaten() if r.get("id") != fav_id]
+    )
     _ttl_clear("resultaten")
+    if _local_err:
+        return {
+            "ok": False,
+            "error": (f"Supabase: {_sb_error} | lokaal: {_local_err}"
+                      if _sb_error else _local_err),
+            "degraded": False,
+        }
+    if _sb_error:
+        return {"ok": True, "error": _sb_error, "degraded": True}
+    return {"ok": True, "error": None, "degraded": False}
 
 
 # ── Parlays ───────────────────────────────────────────────────────────────────
