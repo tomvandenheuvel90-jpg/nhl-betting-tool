@@ -18,6 +18,15 @@ sys.path.insert(0, str(Path(__file__).parent / "sports"))
 from moneypuck_local import poisson_hit_rate as _poisson_hr
 
 
+# Hoeveel de tegenstanderfactor de kans mag verschuiven, als VERMENIGVULDIGING.
+# De factor loopt van 0.30 (moeilijk) tot 0.70 (gunstig), dus (factor − 0.5) ligt
+# tussen −0.20 en +0.20; met 0.30 geeft dat maximaal ±6% op de kans. Een prop van
+# 60% wordt daarmee 63.6% tegen een zwakke tegenstander of 56.4% tegen een sterke.
+# Bewust bescheiden: tegenstanderkwaliteit verschuift een player prop een paar
+# procentpunt, geen twintig.
+_OPP_TILT = 0.30
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _sample_reliability(n: int) -> float:
@@ -326,9 +335,45 @@ def composite_score(
     opp_factor   = _opponent_factor(bet_type, opponent_stats, sport)
     reliability  = _sample_reliability(sample_size)
 
+    # ── Eerlijke kans (apart van de composite) ────────────────────────────────
+    # `composite` is een RANGSCHIK-score, geen kans: twee van de vier termen zijn
+    # geen kansen. Een neutrale tegenstander (0.50) telt altijd +0.10 op en een
+    # volle steekproef (betrouwbaarheid 1.0) ook +0.10 — een prop krijgt dus
+    # "kans" erbij puur omdat er veel data over is. In het neutrale geval komt de
+    # composite neer op `0.7 × kans + 0.20`, wat alles samenperst rond 65%.
+    # Gevolg voor `1/composite`: bij een echte kans van 30% adviseerde de app
+    # odds van 2.44 waar 3.33 nodig is — precies de verkeerde kant op bij
+    # longshots.
+    #
+    # `fair_prob` is daarom een apart getal dat wél een kans is, en dat de
+    # "Min. odds"-chip gebruikt. De composite blijft ongemoeid voor sortering en
+    # ratings, die daarop zijn afgestemd.
+    #
+    #   1. Alleen middelen wat een kans IS: linemate_hr en season_hr.
+    #   2. Tegenstander als vermenigvuldiging (max ±6%), niet als optelling.
+    #   3. Betrouwbaarheid telt NIET mee — veel data maakt een prop niet
+    #      waarschijnlijker, alleen de schatting zekerder. Dat wordt op de kaart
+    #      getoond als datakwaliteit-waarschuwing.
+    #
+    # Bewuste keuze van Tom: GEEN gladstrijking van kleine steekproeven. Een
+    # Linemate-hitrate van 9/9 telt dus als 100%. Daardoor kan `fair_prob` tegen
+    # de 1.0 aanlopen en wordt de Min. odds ~1.00 ("elke prijs is value"). Die
+    # combinatie (mini-sample zonder seizoensdata) krijgt op de prop-kaart al de
+    # rode datakwaliteit-waarschuwing. De clamp hieronder voorkomt deling door nul.
     # Als er geen seizoensdata en geen historische data beschikbaar is:
     # gebruik alleen Linemate hit rate (redistribute season_weight naar linemate)
     no_season_data = (games_sampled == 0 and hist_lam == 0)
+
+    if no_season_data:
+        _basis = linemate_hit_rate
+    elif linemate_weight <= 0:
+        _basis = season_hr
+    else:
+        _basis = 0.5 * linemate_hit_rate + 0.5 * season_hr
+
+    fair_prob = _basis * (1 + (opp_factor - 0.5) * _OPP_TILT)
+    fair_prob = min(max(fair_prob, 0.01), 0.99)
+
     if no_season_data:
         eff_lm_weight     = linemate_weight + season_weight
         eff_season_weight = 0.0
@@ -346,6 +391,9 @@ def composite_score(
 
     return {
         "composite":      round(composite, 4),
+        # Eerlijke trefkans — gebruikt voor de "Min. odds"-chip. Zie de uitleg
+        # hierboven: dit is wél een kans, de composite niet.
+        "fair_prob":      round(fair_prob, 4),
         "linemate_hr":    round(linemate_hit_rate, 4),
         "season_hr":      round(season_hr, 4),
         "opp_factor":     round(opp_factor, 4),

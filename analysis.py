@@ -1175,6 +1175,9 @@ def enrich_bet(bet: dict, cache: dict,
         "linemate_hr":    score["linemate_hr"],
         "season_hr":      score["season_hr"],
         "composite":      score["composite"],
+        # Eerlijke trefkans voor het odds-advies ("Min. odds"-chip). Apart van
+        # composite, want die is een rangschik-score en geen kans.
+        "fair_prob":      score.get("fair_prob", score["composite"]),
         # Model-transparantie: component-bijdrages voor de Score opbouw weergave
         "opp_factor":     score.get("opp_factor", 0.5),
         "reliability":    score.get("reliability", 0.0),

@@ -545,12 +545,15 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
                 f"<div style='font-size:0.90rem;font-weight:700;color:#e0e0ff;'>{val}</div>"
                 f"</div>")
 
-    # Break-even odds = 1 / composite hit rate. Dit is de laagste odds waarbij
+    # Break-even odds = 1 / eerlijke trefkans. Dit is de laagste odds waarbij
     # deze bet volgens het model nog winstgevend is. Bewust onafhankelijk van de
     # Linemate-odds: die komen vaak van een bookmaker die wij niet kunnen
     # gebruiken en liggen structureel hoger. Vergelijk dit getal met wat jouw
     # eigen bookmaker aanbiedt.
-    _comp_raw = float(bet.get("composite") or 0.0)
+    # Gebruikt `fair_prob` (een echte kans) en NIET `composite` (een rangschik-
+    # score waarin tegenstander en betrouwbaarheid als bijtelling zitten). Oudere
+    # opgeslagen props kennen het veld nog niet; die vallen terug op composite.
+    _comp_raw = float(bet.get("fair_prob") or bet.get("composite") or 0.0)
     _min_odds = f"{1.0 / _comp_raw:.2f}" if _comp_raw > 0 else "—"
     # Label markeren zodra er weinig data achter zit, zodat de waarschuwing
     # hierboven en het getal waar Tom op afgaat visueel aan elkaar vastzitten.
