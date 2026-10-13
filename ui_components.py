@@ -488,11 +488,50 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
                    "padding:5px 9px;font-size:0.72rem;color:#fbbf24;margin:3px 0;")
     _info_style = ("background:#1a1a2a;border:1px solid #4a4a8a;border-radius:6px;"
                    "padding:5px 9px;font-size:0.72rem;color:#a0a0d0;margin:3px 0;")
+    _alarm_style = ("background:#2d0b0b;border:1px solid #b91c1c;border-radius:6px;"
+                    "padding:5px 9px;font-size:0.72rem;color:#fca5a5;margin:3px 0;")
+
+    # ── Datakwaliteit ─────────────────────────────────────────────────────────
+    # Hoeveel data zit er werkelijk achter de kans (en dus achter "Min. odds")?
+    #   games_sampled  = aantal echte wedstrijden uit de sport-API achter de seizoens-HR
+    #   sample_n       = de steekproef die Linemate op het screenshot toonde (N/M)
+    #   no_season_data = geen enkele seizoens- of historische data gevonden
+    #
+    # Bewust hier berekend en niet overgenomen uit filter_and_rank_props(): die
+    # functie zet haar waarschuwingen op een KOPIE van de bet (`bet = dict(bet)`),
+    # terwijl de kaarten `enriched` renderen — het origineel. Daardoor kwam de
+    # bestaande "⚠️ Klein sample"-melding nooit op een kaart terecht. Deze velden
+    # staan altijd op het bet-object (analysis.py enrich_bet), dus dit werkt
+    # ongeacht uit welke lijst de prop komt.
+    _games_s  = int(bet.get("games_sampled") or 0)
+    _samp_n   = int(bet.get("sample_n") or 0)
+    _geen_sez = bool(bet.get("no_season_data"))
+    _data_mager = _geen_sez or (0 < _games_s < 10)
+
     warnings_html = ""
     if bet.get("_ev_penalty_note"):
-        warnings_html += f"<div style='{_warn_style}'>⚠️ {bet['_ev_penalty_note']}</div>"
+        warnings_html += f"<div style='{_warn_style}'>{bet['_ev_penalty_note']}</div>"
     if bet.get("_sample_warning"):
-        warnings_html += f"<div style='{_warn_style}'>⚠️ {bet['_sample_warning']}</div>"
+        warnings_html += f"<div style='{_warn_style}'>{bet['_sample_warning']}</div>"
+
+    if _geen_sez:
+        warnings_html += (
+            f"<div style='{_alarm_style}'>🚨 <b>Weinig data</b> — geen seizoensdata gevonden. "
+            f"De kans komt alleen uit de Linemate-hitrate"
+            f"{f' ({_samp_n} wedstrijden)' if _samp_n else ''}. "
+            f"Behandel “Min. odds” als een ruwe schatting.</div>"
+        )
+    elif 0 < _games_s < 10:
+        warnings_html += (
+            f"<div style='{_warn_style}'>⚠️ <b>Weinig data</b> — het model gebruikte maar "
+            f"{_games_s} wedstrijd{'en' if _games_s != 1 else ''} seizoensdata. "
+            f"“Min. odds” is navenant onzeker.</div>"
+        )
+
+    if 0 < _samp_n < 5 and not _geen_sez:
+        warnings_html += (f"<div style='{_warn_style}'>⚠️ Kleine Linemate-steekproef "
+                          f"({_samp_n} wedstrijden).</div>")
+
     if bet.get("no_linemate_hr"):
         warnings_html += (f"<div style='{_info_style}'>⚠️ Linemate HR niet gevonden — "
                           f"EV op historische data.</div>")
@@ -513,15 +552,20 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
     # eigen bookmaker aanbiedt.
     _comp_raw = float(bet.get("composite") or 0.0)
     _min_odds = f"{1.0 / _comp_raw:.2f}" if _comp_raw > 0 else "—"
+    # Label markeren zodra er weinig data achter zit, zodat de waarschuwing
+    # hierboven en het getal waar Tom op afgaat visueel aan elkaar vastzitten.
+    _min_label = "Min. odds ⚠" if _data_mager else "Min. odds"
     _min_tip  = ("Laagste odds waarbij deze bet volgens het model nog winstgevend is "
                  "(1 / hit rate). Vergelijk met de odds bij jouw eigen bookmaker.")
+    if _data_mager:
+        _min_tip += " LET OP: er zit weinig data achter deze schatting."
 
     stats_html = (
         f"<div style='display:flex;flex-wrap:wrap;gap:5px;margin:6px 0;'>"
         f"{_chip('LM HR',  f'{_lm_hr*100:.0f}%')}"
         f"{_chip('Sez HR', f'{_s_hr*100:.0f}%' if not _no_s else '—')}"
         f"{_chip('Odds',   str(bet['odds']))}"
-        f"{_chip('Min. odds', _min_odds, _min_tip)}"
+        f"{_chip(_min_label, _min_odds, _min_tip)}"
         f"{_chip('Sample', str(bet.get('sample','—')))}"
         f"</div>"
     )
@@ -535,9 +579,18 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
                 f"<span style='color:{color};font-weight:600;'>{val}</span>"
                 f"</span>")
 
+    # Hoeveel wedstrijden er achter de seizoens-HR zitten, expliciet zichtbaar —
+    # anders is "Sez 60%" niet te onderscheiden van "60% uit 3 wedstrijden".
+    if _geen_sez:
+        _gs_text, _gs_c = "geen", "#f87171"
+    else:
+        _gs_text = f"{_games_s} wedstr."
+        _gs_c    = "#4ade80" if _games_s >= 20 else ("#facc15" if _games_s >= 10 else "#f87171")
+
     pills_html = (
         _pill(f"LM {_eff_lm_w*100:.0f}%", f"{_lm_hr*100:.0f}%")
         + _pill(f"Sez {_eff_s_w*100:.0f}%", f"{_s_hr*100:.0f}%" if not _no_s else "—")
+        + _pill("Seizoensdata", _gs_text, _gs_c)
         + _pill("Tegenstander", _opp_text, _opp_c)
         + _pill("Betrouwb.", _rel_text, _rel_c)
     )
