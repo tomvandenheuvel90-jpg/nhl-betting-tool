@@ -438,7 +438,7 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
     ev_val        = bet["ev"]
     ev_str        = f"+{ev_val:.3f}" if ev_val >= 0 else f"{ev_val:.3f}"
     ev_color      = "#4ade80" if ev_val >= 0.05 else ("#facc15" if ev_val >= 0 else "#f87171")
-    composite_pct = int(bet["composite"] * 100)
+    composite_pct = int(float(bet["composite"] or 0.0) * 100)
     rat           = bet["rating"]
     rat_color     = _rating_color(rat)
 
@@ -497,19 +497,31 @@ def render_bet_card(bet: dict, rank: int, total: int, is_fav: bool = False, sess
         warnings_html += (f"<div style='{_info_style}'>⚠️ Linemate HR niet gevonden — "
                           f"EV op historische data.</div>")
 
-    # ── Stat chips (LM HR / Sez HR / Odds / Sample) ───────────────────────────
-    def _chip(label: str, val: str) -> str:
-        return (f"<div style='background:#0d0d24;border:1px solid #2a2a58;border-radius:8px;"
-                f"padding:4px 8px;text-align:center;flex:1;min-width:0;'>"
+    # ── Stat chips (LM HR / Sez HR / Odds / Min. odds / Sample) ───────────────
+    def _chip(label: str, val: str, title: str = "") -> str:
+        _t = f" title='{title}'" if title else ""
+        return (f"<div{_t} style='background:#0d0d24;border:1px solid #2a2a58;border-radius:8px;"
+                f"padding:4px 8px;text-align:center;flex:1;min-width:56px;'>"
                 f"<div style='font-size:0.62rem;color:#6868a0;'>{label}</div>"
                 f"<div style='font-size:0.90rem;font-weight:700;color:#e0e0ff;'>{val}</div>"
                 f"</div>")
 
+    # Break-even odds = 1 / composite hit rate. Dit is de laagste odds waarbij
+    # deze bet volgens het model nog winstgevend is. Bewust onafhankelijk van de
+    # Linemate-odds: die komen vaak van een bookmaker die wij niet kunnen
+    # gebruiken en liggen structureel hoger. Vergelijk dit getal met wat jouw
+    # eigen bookmaker aanbiedt.
+    _comp_raw = float(bet.get("composite") or 0.0)
+    _min_odds = f"{1.0 / _comp_raw:.2f}" if _comp_raw > 0 else "—"
+    _min_tip  = ("Laagste odds waarbij deze bet volgens het model nog winstgevend is "
+                 "(1 / hit rate). Vergelijk met de odds bij jouw eigen bookmaker.")
+
     stats_html = (
-        f"<div style='display:flex;gap:5px;margin:6px 0;'>"
+        f"<div style='display:flex;flex-wrap:wrap;gap:5px;margin:6px 0;'>"
         f"{_chip('LM HR',  f'{_lm_hr*100:.0f}%')}"
         f"{_chip('Sez HR', f'{_s_hr*100:.0f}%' if not _no_s else '—')}"
         f"{_chip('Odds',   str(bet['odds']))}"
+        f"{_chip('Min. odds', _min_odds, _min_tip)}"
         f"{_chip('Sample', str(bet.get('sample','—')))}"
         f"</div>"
     )
