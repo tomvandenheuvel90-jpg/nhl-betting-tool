@@ -621,24 +621,53 @@ def save_favorieten(favs: list) -> None:
 
 def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date: str = "") -> None:
     datum = datetime.date.today().isoformat()
+
+    # ── Bestaande waarden beschermen ──────────────────────────────────────────
+    # Dit is een UPSERT op make_fav_id(speler, bet_type), dus dezelfde prop die
+    # langs twee wegen binnenkomt landt op dezelfde rij. Zet je een prop eerst
+    # vanuit de 🔍 Analyse-tab op je shortlist (mét modelvoorspelling) en
+    # importeer je later de betslip van diezelfde bet, dan overschreef die
+    # import de rij — en screenshot_import.py geeft `composite` expliciet als
+    # 0.0 mee, want een betslip van BetCity kent het model niet. Daarmee werd de
+    # voorspelling gewist. Dat is precies waarom `composite` in 0 van de 361
+    # favorieten stond en modelvalidatie onmogelijk was.
+    #
+    # Daarom: een leeg binnenkomend veld betekent "onbekend", niet "maak leeg".
+    # Alleen een échte waarde mag een bestaande overschrijven.
+    _oud = {}
+    try:
+        _oud = next((f for f in load_favorieten() if f.get("id") == fav_id), {}) or {}
+    except Exception:
+        _oud = {}
+
+    def _behoud(nieuw, veld, leeg=("", None)):
+        return nieuw if nieuw not in leeg else _oud.get(veld, nieuw)
+
+    _composite = round(float(bet.get("composite") or 0), 4)
+    if _composite <= 0:
+        try:
+            _composite = round(float(_oud.get("composite") or 0), 4)
+        except (TypeError, ValueError):
+            _composite = 0.0
+
     row = {
         "id":                fav_id,
         "datum":             datum,
-        "game_date":         game_date or datum,  # datum wedstrijd; default = vandaag
+        "game_date":         game_date or _oud.get("game_date") or datum,
         "speler":            bet.get("player", ""),
-        "team":              bet.get("team", ""),   # team van speler/bet, voor display in Shortlist
+        "team":              _behoud(bet.get("team", ""), "team"),
         "bet":               bet.get("bet_type", ""),
         "odds":              round(float(bet.get("odds", 0)), 2),
         "ev_score":          round(float(bet.get("ev", 0)), 4),
         "sport":             bet.get("sport", ""),
         "bet365_status":     bet.get("bet365", {}).get("status", "unknown"),
-        "source_session_id": source_session_id,
+        "source_session_id": _behoud(source_session_id, "source_session_id"),
         # Model-kalibratie velden — voor feedback loop in Bankroll tab
-        "rating":            bet.get("rating", ""),
-        "composite":         round(float(bet.get("composite") or 0), 4),
+        "rating":            _behoud(bet.get("rating", ""), "rating"),
+        "composite":         _composite,
         # Screenshot import velden
-        "import_method":     bet.get("import_method", ""),
-        "bookmaker":         bet.get("bookmaker", ""),
+        "import_method":     _behoud(bet.get("import_method", ""), "import_method"),
+        "bookmaker":         _behoud(bet.get("bookmaker", ""), "bookmaker"),
     }
     if _using_supabase:
         try:
@@ -658,11 +687,21 @@ def add_favoriet(fav_id: str, bet: dict, source_session_id: str = "", game_date:
             except Exception:
                 pass  # Supabase volledig onbeschikbaar → lokale fallback
 
-    # JSON fallback — voeg alleen toe als nog niet aanwezig
+    # JSON fallback — werk bij als de rij al bestaat, anders toevoegen.
+    #
+    # Stond hier eerder `if any(...): return` — een bestaande favoriet werd dan
+    # stilzwijgend NIET bijgewerkt, terwijl het Supabase-pad hierboven wel een
+    # echte upsert doet. Dezelfde aanroep had dus een ander resultaat afhankelijk
+    # van welke backend actief was: aangepaste odds kwamen lokaal nooit aan.
+    # De bescherming van bestaande waarden zit nu in `row` zelf (zie boven), dus
+    # bijwerken is veilig — een leeg veld overschrijft niets meer.
     favs = load_favorieten()
-    if any(f.get("id") == fav_id for f in favs):
-        return
-    favs.insert(0, row)
+    for _i, _f in enumerate(favs):
+        if _f.get("id") == fav_id:
+            favs[_i] = row
+            break
+    else:
+        favs.insert(0, row)
     save_favorieten(favs)
     _ttl_clear("favorieten")
 

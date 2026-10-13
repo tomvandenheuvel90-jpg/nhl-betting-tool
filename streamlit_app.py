@@ -4174,6 +4174,14 @@ with tab_history:
                             "team":       _hp.get("team", ""),
                             "match_home": _hp.get("match_home", ""),
                             "match_away": _hp.get("match_away", ""),
+                            # Modelvoorspelling MOET mee, anders is achteraf niet te
+                            # controleren of het model klopte. `alle_props_json` in de
+                            # geschiedenis bewaart beide velden, maar dit hand-gebouwde
+                            # dict liet ze vallen — zelfde fout als eerder met
+                            # match_home/match_away. Gevolg was dat `composite` in 0 van
+                            # de 361 favorieten stond en modelvalidatie onmogelijk was.
+                            "composite": float(_hp.get("composite") or 0),
+                            "rating":    _hp.get("rating", ""),
                         }, source_session_id=_sid, game_date=datetime.date.today().isoformat())
                         st.success(f"✅ {_player} toegevoegd aan Shortlist")
                         st.rerun()
