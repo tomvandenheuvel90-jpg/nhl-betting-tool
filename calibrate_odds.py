@@ -169,6 +169,23 @@ def verzamel_paren():
             redenen["odds ongewijzigd"] += 1
             continue
 
+        # Herkomst van de opgeslagen odds. Dit is cruciaal en ging eerder mis:
+        # alleen een favoriet die aantoonbaar uit de 🔍 Analyse-tab komt heeft
+        # een LINEMATE-odds in het `odds`-veld. Een favoriet uit het handmatige
+        # formulier bevat de odds die Tom zelf intypte — doorgaans al die van
+        # zijn eigen bookmaker. Zo'n paar vergelijkt BetCity met BetCity en
+        # levert per definitie een verhouding rond 1.00 op, wat ten onrechte
+        # leest als "Linemate wijkt nauwelijks af".
+        #
+        # `composite > 0` is het bewijs van analyse-herkomst: dat veld wordt
+        # alleen gevuld door het model. (Tot 13-10-2026 wiste een latere
+        # betslip-import dit veld, waardoor ALLE favorieten op 0 stonden en
+        # geen enkel paar als betrouwbaar kon worden aangemerkt.)
+        try:
+            _uit_analyse = float(fav.get("composite") or 0) > 0
+        except (TypeError, ValueError):
+            _uit_analyse = False
+
         bruikbaar.append({
             "id":     rid,
             "speler": fav.get("speler") or r.get("speler") or "?",
@@ -178,6 +195,7 @@ def verzamel_paren():
             "o_lm":   o_lm,
             "o_echt": o_echt,
             "ratio":  ratio,
+            "betrouwbaar": _uit_analyse,
         })
 
     return bruikbaar, redenen, len(res)
@@ -248,10 +266,39 @@ def main() -> int:
         print()
         return 0
 
+    # ── Herkomstcontrole ──────────────────────────────────────────────────────
+    # Zonder deze stap meet het script mogelijk BetCity tegen BetCity. Zie de
+    # uitleg bij `betrouwbaar` hierboven.
+    _zeker = [p for p in paren if p.get("betrouwbaar")]
+    print(f"  Waarvan aantoonbaar uit de Analyse-tab (met modelvoorspelling): "
+          f"{len(_zeker)} van {len(paren)}")
+    if not _zeker:
+        print()
+        print("  ⚠️  GEEN ENKEL PAAR IS BETROUWBAAR.")
+        print("  Van geen van deze favorieten staat vast dat het opgeslagen")
+        print("  odds-veld een Linemate-odds bevat. Komen ze uit het handmatige")
+        print("  formulier, dan heb je die odds zelf ingetypt — doorgaans al die")
+        print("  van je eigen bookmaker. Dan vergelijkt dit script BetCity met")
+        print("  BetCity en komt er vanzelf iets rond 1.00 uit, wat niets zegt.")
+        print()
+        print("  De cijfers hieronder zijn dus NIET te gebruiken als maat voor de")
+        print("  Linemate-opslag. Ze staan er alleen ter informatie.")
+        print()
+    elif len(_zeker) < len(paren):
+        print(f"  De overige {len(paren) - len(_zeker)} paren hebben geen bewijs van")
+        print("  herkomst; die kunnen BetCity-tegen-BetCity zijn. Hieronder staan")
+        print("  beide groepen apart.")
+        print()
+
     ratios = [p["ratio"] for p in paren]
     totaal = _samenvatting(ratios)
 
-    print("  TOTAAL")
+    if _zeker:
+        print("  BETROUWBAAR (odds aantoonbaar van Linemate)")
+        print(_regel("uit de Analyse-tab", _samenvatting([p["ratio"] for p in _zeker])))
+        print()
+
+    print("  ALLE PAREN (incl. onbewezen herkomst)")
     print(_regel("alle bets", totaal))
     print()
 
@@ -286,6 +333,22 @@ def main() -> int:
     print("  CONCLUSIE")
     print("=" * 72)
 
+    # Conclusie uitsluitend op de betrouwbare groep. Is die leeg, dan is er geen
+    # conclusie — een getal uit onbewezen paren is erger dan geen getal, want het
+    # leest als bewijs terwijl het BetCity-tegen-BetCity kan zijn.
+    if not _zeker:
+        print("  GEEN CONCLUSIE MOGELIJK.")
+        print()
+        print("  Er is geen enkel paar waarvan vaststaat dat het de Linemate-odds")
+        print("  bevat. Dit script kan de opslag pas meten als er bets zijn die")
+        print("  via de 🔍 Analyse-tab op de shortlist zijn gezet (die krijgen een")
+        print("  modelvoorspelling mee) én waarbij je de odds bij het plaatsen hebt")
+        print("  aangepast naar wat je bookmaker werkelijk gaf.")
+        print()
+        return 0
+
+    _zeker_stats = _samenvatting([p["ratio"] for p in _zeker])
+    totaal = _zeker_stats
     med = totaal["mediaan"]
 
     if totaal["n"] < _MIN_N:
